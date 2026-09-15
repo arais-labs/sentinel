@@ -76,7 +76,7 @@ def make_fake_instance_context(
 ) -> Any:
     from app.config import settings
     from app.services.instance_runtime_context import InstanceRuntimeContext
-    from app.services.sub_agents import SubAgentOrchestrator
+    from app.services.sub_agents.orchestrator import SubAgentOrchestrator
     from app.services.tools import ToolExecutor, ToolRegistry
     from app.services.triggers.trigger_scheduler import TriggerScheduler
 

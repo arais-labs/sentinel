@@ -5,41 +5,24 @@ title: Browser Automation
 
 # Browser Automation
 
-Sentinel ships a Playwright-based browser tool. Agents browse the web, interact with
-pages, extract data, and take screenshots — all autonomously. The browser runs as a
-**visible Chromium** on the instance's SSH runtime target, so operators can watch
-execution live through the runtime desktop view.
+The browser module uses Playwright to navigate pages, inspect accessibility/DOM
+state, fill forms, and capture screenshots inside the attached workspace.
 
----
+## Where it runs
 
-## Where the browser runs
+The workspace can run on this Mac or a remote SSH machine. Chromium runs inside
+that Linux workspace, not inside the Electron shell or on the host desktop.
+The browser pool is keyed by instance and conversation and controls Chromium
+through the existing workspace connection and Chrome DevTools Protocol.
 
-The browser is **not** a separate service in the Docker stack. Each agent session gets
-its own Chromium process, launched on the **per-instance SSH/tmux runtime target** under
-that runtime's X display, inside the session's workspace directory. Sentinel controls it
-over the Chrome DevTools Protocol (CDP) through an SSH-forwarded local port.
+Each conversation has its own browser profile. Conversations attached to one
+workspace nevertheless share the same filesystem and graphical desktop; other
+workspace tools can access that shared environment. This is not a security
+boundary between browser sessions.
 
-Two consequences follow from this design:
-
-- **A configured SSH runtime is required.** Browser tools resolve against the runtime
-  attached to the instance. With no SSH runtime configured for the instance, the browser
-  pool cannot start a session and browser commands fail. See
-  [Runtime Exec Security](../guides/runtime-exec-security.md) for how runtimes are managed
-  and sandboxed.
-- **Browser state is per session and per instance.** The pool is keyed by
-  `(instance, session)`. Open tabs, cookies, and the persistent Chromium profile live in
-  that session's workspace on its runtime target and survive across tool calls within a
-  turn. Different instances and different sessions never share a browser context.
-
-:::note Multi-instance
-Sentinel hosts multiple instances in one deployment. Browser sessions are isolated
-per instance — each instance drives its own runtime target, and one instance can never
-see or control another instance's browser. The desktop app follows the same model: the
-browser lives on whatever SSH runtime the instance is configured against, not inside the
-desktop shell itself.
-:::
-
----
+With Desktop installed, Chromium appears in the live desktop pane. Without a
+graphical desktop it can run headlessly. See [Workspaces](../guides/workspaces.md)
+and [execution security](../guides/runtime-exec-security.md).
 
 ## Standard execution flow
 
@@ -62,9 +45,9 @@ truncated with a notice that prompts the agent to narrow its selector.
 
 ## The `browser` tool
 
-Browser automation is exposed as a **single `browser` module** invoked with a `command`
-argument (for example, `command=navigate`, `command=click`). It is one of Sentinel's
-built-in system modules. The supported commands are:
+Browser automation is exposed as a **single `browser` module** invoked with an `action`
+argument (for example, `action=navigate`, `action=click`). It is one of Sentinel's
+built-in system modules. The supported actions are:
 
 | Command | Description |
 |---|---|
@@ -160,7 +143,7 @@ Browser commands use a standard timeout by default. For slow pages, pass `timeou
 extend the wait window:
 
 ```
-browser command=click selector="button: Submit" timeout_ms=10000
+browser action=click selector="button: Submit" timeout_ms=10000
 ```
 
 ---
@@ -187,14 +170,7 @@ Use the live desktop view to:
 - Debug unexpected navigation
 - Confirm the agent is interacting with the right elements
 
-:::warning Limitations
-- **The live view is the runtime's desktop, not a dedicated browser stream.** There is no
-  `/vnc/` HTTP page; the desktop is bridged through the instance-scoped runtime
-  WebSocket (`/api/v1/instances/{instance_name}/runtime/live-view/{session_id}/rfb`) and
-  surfaced in the Sessions UI. It is only available when the instance has an SSH runtime
-  configured and its desktop session can start.
-- **The browser tool itself has no built-in VNC or display server.** Visibility comes
-  entirely from the runtime desktop layer; the Playwright tool only speaks CDP. If the
-  runtime cannot provide a desktop, the agent can still drive the browser headlessly, but
-  there is nothing to watch.
-:::
+The viewer streams the whole workspace desktop. Browser automation itself uses
+CDP and does not supply its own VNC server. Closing the viewer leaves applications
+running; stopping the desktop or workspace has a different effect. Desktop mouse
+input and automated browser actions can interfere, so coordinate manual testing.

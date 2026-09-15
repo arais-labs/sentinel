@@ -1,0 +1,69 @@
+/* Git uses the chat surface language; all account workflows remain local to the page. */
+.git-page {
+  background: var(--surface-0);
+  container-type: inline-size;
+}
+html.dark .git-page { background: #0c0c0e; }
+.git-page-content {
+  --git-face: var(--surface-1);
+  --git-edge: color-mix(in srgb, var(--text-primary) 5%, transparent);
+  --git-depth: 2px 3px 8px #0000000a, 7px 8px 24px #0000000b, inset 0 1px 0 #ffffff70;
+  padding-block: 8px 24px;
+}
+html.dark .git-page-content {
+  --git-face: #101012;
+  --git-depth: 2px 3px 8px #0000001a, 7px 8px 24px #00000030, -4px -4px 15px #ffffff03, inset 0 1px 0 #ffffff06;
+}
+.git-page .git-connect-panel,
+.git-page .git-accounts-panel {
+  background: var(--git-face);
+  border-color: var(--git-edge);
+  border-radius: 22px;
+  box-shadow: var(--git-depth);
+}
+.git-page h2 { font-size: 12px; font-weight: 550; letter-spacing: .045em; }
+.git-page h2 > svg { color: var(--sentinel-blue); stroke-width: 1.7; }
+.git-page p { line-height: 1.65; }
+.git-page .git-account {
+  border-radius: 16px;
+  border-color: var(--git-edge);
+  background: color-mix(in srgb, var(--git-face) 88%, var(--surface-2));
+  transition: border-color 180ms ease, background 180ms ease;
+  animation: git-reveal 240ms ease both;
+}
+.git-page .git-account:hover { border-color: color-mix(in srgb, var(--text-primary) 10%, transparent); }
+.git-account-description { overflow-wrap: anywhere; }
+.git-page .git-account-options { border-top: 1px solid var(--git-edge); padding-top: 12px; }
+.git-page .git-account-options summary { transition: color 180ms ease; }
+.git-page .git-account-options summary:hover { color: var(--text-primary); }
+.git-page .git-account-options[open] fieldset,
+.git-page .git-account > fieldset { animation: git-reveal 220ms ease both; }
+.git-page :is(.btn-primary, .btn-secondary),
+.git-token-dialog :is(.btn-primary, .btn-secondary) {
+  border-radius: 999px;
+  min-height: 34px;
+  transition: background 180ms ease, color 180ms ease, box-shadow 180ms ease;
+}
+.git-page .btn-secondary {
+  background: color-mix(in srgb, var(--git-face) 78%, var(--surface-2));
+  border-color: var(--git-edge);
+  box-shadow: 2px 3px 7px #00000012, inset 0 1px 0 #ffffff06;
+}
+.git-page .btn-secondary:hover:not(:disabled) { background: var(--surface-2); }
+.git-page .input-field, .git-token-dialog .input-field {
+  min-width: 0;
+  border-radius: 11px;
+  transition: border-color 180ms ease, box-shadow 180ms ease;
+}
+.git-page button:disabled { opacity: .5; }
+.git-token-dialog[open] { animation: git-reveal 220ms ease both; }
+@container (max-width: 600px) {
+  .git-page .git-connect-steps { grid-template-columns: minmax(0, 1fr); }
+  .git-page .git-connect-panel, .git-page .git-accounts-panel { padding: 18px; }
+  .git-page .git-connect-steps > form { border-top: 1px solid var(--git-edge); padding-top: 20px; }
+  .git-page fieldset .grid { grid-template-columns: minmax(0, 1fr); }
+}
+@keyframes git-reveal { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+@media (prefers-reduced-motion: reduce) {
+  .git-page *, .git-token-dialog, .git-token-dialog * { animation: none !important; transition: none !important; }
+}

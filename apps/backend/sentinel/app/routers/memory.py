@@ -6,7 +6,6 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies import get_db
-from app.middleware.auth import TokenPayload, require_auth
 from app.schemas.memory import (
     MemoryChildrenResponse,
     MemoryListResponse,
@@ -56,10 +55,8 @@ async def list_memory(
     root_id: UUID | None = Query(default=None),
     roots_only: bool = Query(default=False),
     limit: int = Query(default=20, ge=1, le=200),
-    user: TokenPayload = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ) -> MemoryListResponse:
-    _ = user
     memory_search = getattr(request.app.state, "memory_search_service", None)
     result = await _memory_service.list_memories(
         db,
@@ -81,10 +78,8 @@ async def list_memory(
 async def store_memory(
     payload: StoreMemoryRequest,
     request: Request,
-    user: TokenPayload = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ) -> MemoryResponse:
-    _ = user
     embedding_service = getattr(request.app.state, "embedding_service", None)
     try:
         memory = await _memory_service.create_memory(
@@ -111,10 +106,8 @@ async def store_memory(
 async def search_memory(
     payload: MemorySearchRequest,
     request: Request,
-    user: TokenPayload = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ) -> MemoryListResponse:
-    _ = user
     memory_search = getattr(request.app.state, "memory_search_service", None)
     result = await _memory_service.search_memories(
         db,
@@ -133,10 +126,8 @@ async def search_memory(
 @router.get("/roots")
 async def list_root_memories(
     category: str | None = Query(default=None),
-    user: TokenPayload = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ) -> MemoryListResponse:
-    _ = user
     roots = await _memory_service.list_root_memories(db, category=category)
     return MemoryListResponse(items=[memory_to_response(item) for item in roots], total=len(roots))
 
@@ -144,10 +135,8 @@ async def list_root_memories(
 @router.get("/nodes/{id}")
 async def get_memory_node(
     id: UUID,
-    user: TokenPayload = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ) -> MemoryResponse:
-    _ = user
     try:
         memory = await _memory_service.get_memory(db, id)
     except MemoryServiceError as exc:
@@ -160,10 +149,8 @@ async def get_memory_node(
 async def list_memory_children(
     id: UUID,
     limit: int = Query(default=100, ge=1, le=500),
-    user: TokenPayload = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ) -> MemoryChildrenResponse:
-    _ = user
     try:
         result = await _memory_service.list_children(db, parent_id=id, limit=limit)
     except MemoryServiceError as exc:
@@ -181,10 +168,8 @@ async def update_memory_node(
     id: UUID,
     payload: UpdateMemoryRequest,
     request: Request,
-    user: TokenPayload = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ) -> MemoryResponse:
-    _ = user
     embedding_service = getattr(request.app.state, "embedding_service", None)
     try:
         memory = await _memory_service.update_memory(
@@ -203,10 +188,8 @@ async def update_memory_node(
 @router.post("/nodes/{id}/touch")
 async def touch_memory_node(
     id: UUID,
-    user: TokenPayload = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ) -> MemoryResponse:
-    _ = user
     try:
         memory = await _memory_service.touch_memory(db, id)
     except MemoryServiceError as exc:
@@ -217,10 +200,8 @@ async def touch_memory_node(
 
 @router.get("/stats")
 async def memory_stats(
-    user: TokenPayload = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ) -> MemoryStatsResponse:
-    _ = user
     categories = await _memory_service.memory_stats(db)
     return MemoryStatsResponse(total_memories=sum(categories.values()), categories=categories)
 
@@ -228,10 +209,8 @@ async def memory_stats(
 @router.delete("/{id}")
 async def delete_memory(
     id: UUID,
-    user: TokenPayload = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, str]:
-    _ = user
     try:
         await _memory_service.delete_memory(db, id)
     except MemoryServiceError as exc:

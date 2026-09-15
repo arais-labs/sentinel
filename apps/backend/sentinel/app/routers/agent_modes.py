@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter
 
-from app.middleware.auth import TokenPayload, require_auth
 from app.schemas.agent_modes import AgentModeOptionResponse, AgentModesResponse
 from app.services.agent.agent_modes import (
     get_default_agent_mode,
@@ -13,9 +12,7 @@ router = APIRouter()
 
 
 @router.get("", response_model=AgentModesResponse)
-async def list_agent_modes(
-    _: TokenPayload = Depends(require_auth),
-) -> AgentModesResponse:
+async def list_agent_modes() -> AgentModesResponse:
     modes = list_agent_mode_definitions()
     return AgentModesResponse(
         items=[

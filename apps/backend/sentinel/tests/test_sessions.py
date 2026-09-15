@@ -1,6 +1,7 @@
 import asyncio
+import pytest
+from types import SimpleNamespace
 import mimetypes
-import os
 import subprocess
 import tempfile
 import uuid
@@ -10,18 +11,24 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
-import jwt
 from fastapi.testclient import TestClient
-from sqlalchemy.dialects import postgresql
+from sqlalchemy.dialects import sqlite
 
-os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-with-32-bytes-min")
 
-from tests.helpers import install_fake_db_overrides, make_fake_instance_context, restore_test_app
+from tests.helpers import (
+    install_fake_db_overrides,
+    make_fake_instance_context,
+    restore_test_app,
+)
 from app.main import app
 from app.models import Message, Session, SessionBinding, ToolApproval
-from app.services.llm.generic.types import AssistantMessage, SystemMessage, TextContent, UserMessage
+from sentral.llm.generic.types import (
+    AssistantMessage,
+    SystemMessage,
+    TextContent,
+    UserMessage,
+)
 from app.services.runtime.files import (
-    RuntimeDownload,
     RuntimePathInvalidError,
     RuntimePathIsDirectoryError,
 )
@@ -31,6 +38,24 @@ from app.services.sessions.service import SessionService
 from tests.fake_db import FakeDB
 
 SESSIONS_API = "/api/v1/instances/main/sessions"
+
+
+class _TestDownload:
+    def __init__(self, content, download_name, media_type):
+        self.data = content
+        self.metadata = {
+            "name": download_name,
+            "media_type": media_type,
+            "length": len(content),
+            "size": len(content),
+            "status": 200,
+        }
+
+    async def content(self):
+        yield self.data
+
+    async def close(self):
+        pass
 
 
 class _LocalRuntimeWorkspaceFiles:
@@ -71,7 +96,7 @@ class _LocalRuntimeWorkspaceFiles:
         workspace = self._workspace(session_id)
         target = self._resolve(session_id, path)
         if not target.is_dir():
-            raise RuntimePathInvalidError("Runtime path is not a directory")
+            raise RuntimePathInvalidError("Machine path is not a directory")
         children = sorted(target.iterdir(), key=lambda item: (item.is_file(), item.name.lower()))
         entries = [self._entry(workspace, child) for child in children[:limit]]
         return {
@@ -104,10 +129,18 @@ class _LocalRuntimeWorkspaceFiles:
             "max_bytes": max_bytes,
         }
 
-    async def download(self, session_id: uuid.UUID | str, *, path: str) -> RuntimeDownload:
+    async def download(
+        self,
+        session_id: uuid.UUID | str,
+        *,
+        path: str,
+        range_header=None,
+        if_range=None,
+        head=False,
+    ) -> _TestDownload:
         target = self._resolve(session_id, path)
         if target.is_file():
-            return RuntimeDownload(
+            return _TestDownload(
                 content=target.read_bytes(),
                 download_name=target.name,
                 media_type=mimetypes.guess_type(target.name)[0] or "application/octet-stream",
@@ -118,7 +151,7 @@ class _LocalRuntimeWorkspaceFiles:
                 if current.is_file():
                     archive.write(current, current.relative_to(target).as_posix())
         buffer.seek(0)
-        return RuntimeDownload(
+        return _TestDownload(
             content=buffer.read(),
             download_name=f"{target.name}.zip",
             media_type="application/zip",
@@ -176,23 +209,6 @@ class _LocalRuntimeWorkspaceFiles:
         }
 
 
-def _make_token(*, sub: str, role: str = "agent", agent_id: str = "agent-test") -> str:
-    secret = os.getenv("JWT_SECRET_KEY", "test-secret-key-with-32-bytes-min")
-    return jwt.encode(
-        {
-            "sub": sub,
-            "role": role,
-            "agent_id": agent_id,
-            "exp": 1999999999,
-            "iat": 1771810000,
-            "jti": str(uuid.uuid4()),
-            "token_type": "access",
-        },
-        secret,
-        algorithm="HS256",
-    )
-
-
 def test_mark_session_read_preserves_updated_at():
     session = Session(
         id=uuid.uuid4(),
@@ -243,7 +259,7 @@ def test_mark_session_read_preserves_updated_at():
     asyncio.run(_run())
 
     assert len(captured_updates) == 1
-    sql = str(captured_updates[0].compile(dialect=postgresql.dialect()))
+    sql = str(captured_updates[0].compile(dialect=sqlite.dialect()))
     assert "updated_at=sessions.updated_at" in sql.replace(" ", "")
 
 
@@ -340,48 +356,33 @@ def test_delete_session_keeps_database_rows_when_cleanup_fails():
 
 
 def test_sessions_crud_and_ownership(monkeypatch):
-    from app.routers import sessions as sessions_router
-
-    async def _noop_runtime_cleanup(_session_ids: list[uuid.UUID], *, instance_name: str) -> None:
-        assert instance_name == "main"
-        return None
-
-    monkeypatch.setattr(
-        sessions_router,
-        "_cleanup_runtime_for_deleted_sessions",
-        _noop_runtime_cleanup,
-    )
     fake_db = FakeDB()
 
     old_init = install_fake_db_overrides(app_db=fake_db)
 
     try:
-        client = TestClient(app)
-        user1_token_resp = client.post(
-            "/api/v1/auth/login", json={"username": "admin", "password": "admin"}
+        client = TestClient(
+            app, headers={"x-sentinel-desktop-token": "test-desktop-transport-token"}
         )
-        assert user1_token_resp.status_code == 200
-        user1_token = user1_token_resp.json()["access_token"]
-
-        user2_token = _make_token(sub="other-user")
-
         s1 = client.post(
             SESSIONS_API,
             json={"title": "alpha"},
-            headers={"Authorization": f"Bearer {user1_token}"},
+            headers={"x-sentinel-desktop-token": "test-desktop-transport-token"},
         )
         s2 = client.post(
-            SESSIONS_API, json={"title": "beta"}, headers={"Authorization": f"Bearer {user1_token}"}
+            SESSIONS_API,
+            json={"title": "beta"},
+            headers={"x-sentinel-desktop-token": "test-desktop-transport-token"},
         )
         s_child = client.post(
             SESSIONS_API,
             json={"title": "sub-agent:child"},
-            headers={"Authorization": f"Bearer {user1_token}"},
+            headers={"x-sentinel-desktop-token": "test-desktop-transport-token"},
         )
         s3 = client.post(
             SESSIONS_API,
             json={"title": "gamma"},
-            headers={"Authorization": f"Bearer {user2_token}"},
+            headers={"x-sentinel-desktop-token": "test-desktop-transport-token"},
         )
         assert (
             s1.status_code == 200
@@ -403,62 +404,59 @@ def test_sessions_crud_and_ownership(monkeypatch):
                 item.initial_prompt = "first prompt"
                 item.latest_system_prompt = "large system prompt" * 1000
 
-        list_user1 = client.get(SESSIONS_API, headers={"Authorization": f"Bearer {user1_token}"})
+        list_user1 = client.get(
+            SESSIONS_API,
+            headers={"x-sentinel-desktop-token": "test-desktop-transport-token"},
+        )
         assert list_user1.status_code == 200
         list_items_user1 = list_user1.json()["items"]
         ids_user1 = {item["id"] for item in list_items_user1}
         assert session1_id in ids_user1
         assert session2_id in ids_user1
         assert child_session_id not in ids_user1
-        assert session3_id not in ids_user1
+        assert session3_id in ids_user1
         listed_session1 = next(item for item in list_items_user1 if item["id"] == session1_id)
         assert "initial_prompt" not in listed_session1
         assert "latest_system_prompt" not in listed_session1
 
         forbidden_get = client.get(
-            f"{SESSIONS_API}/{session3_id}", headers={"Authorization": f"Bearer {user1_token}"}
+            f"{SESSIONS_API}/{session3_id}",
+            headers={"x-sentinel-desktop-token": "test-desktop-transport-token"},
         )
-        assert forbidden_get.status_code == 404
-
-        set_main_resp = client.post(
-            f"{SESSIONS_API}/{session2_id}/main",
-            headers={"Authorization": f"Bearer {user1_token}"},
-        )
-        assert set_main_resp.status_code == 200
-        assert set_main_resp.json()["is_main"] is True
+        assert forbidden_get.status_code == 200
 
         delete_resp = client.delete(
             f"{SESSIONS_API}/{session1_id}",
-            headers={"Authorization": f"Bearer {user1_token}"},
+            headers={"x-sentinel-desktop-token": "test-desktop-transport-token"},
         )
         assert delete_resp.status_code == 200
         assert delete_resp.json()["status"] == "deleted"
         deleted_session = client.get(
             f"{SESSIONS_API}/{session1_id}",
-            headers={"Authorization": f"Bearer {user1_token}"},
+            headers={"x-sentinel-desktop-token": "test-desktop-transport-token"},
         )
         assert deleted_session.status_code == 404
 
         m1 = client.post(
             f"{SESSIONS_API}/{session2_id}/messages",
             json={"role": "user", "content": "first", "metadata": {}},
-            headers={"Authorization": f"Bearer {user1_token}"},
+            headers={"x-sentinel-desktop-token": "test-desktop-transport-token"},
         )
         m2 = client.post(
             f"{SESSIONS_API}/{session2_id}/messages",
             json={"role": "system", "content": "second", "metadata": {}},
-            headers={"Authorization": f"Bearer {user1_token}"},
+            headers={"x-sentinel-desktop-token": "test-desktop-transport-token"},
         )
         m3 = client.post(
             f"{SESSIONS_API}/{session2_id}/messages",
             json={"role": "user", "content": "third", "metadata": {}},
-            headers={"Authorization": f"Bearer {user1_token}"},
+            headers={"x-sentinel-desktop-token": "test-desktop-transport-token"},
         )
         assert m1.status_code == 200 and m2.status_code == 200 and m3.status_code == 200
 
         history = client.get(
             f"{SESSIONS_API}/{session2_id}/messages?limit=2",
-            headers={"Authorization": f"Bearer {user1_token}"},
+            headers={"x-sentinel-desktop-token": "test-desktop-transport-token"},
         )
         assert history.status_code == 200
         payload = history.json()
@@ -467,7 +465,7 @@ def test_sessions_crud_and_ownership(monkeypatch):
 
         stop_resp = client.post(
             f"{SESSIONS_API}/{session2_id}/stop",
-            headers={"Authorization": f"Bearer {user1_token}"},
+            headers={"x-sentinel-desktop-token": "test-desktop-transport-token"},
         )
         assert stop_resp.status_code == 200
         assert stop_resp.json()["status"] in {"stopping", "idle"}
@@ -481,10 +479,10 @@ def test_session_rename_endpoint():
     old_init = install_fake_db_overrides(app_db=fake_db)
 
     try:
-        client = TestClient(app)
-        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
-        assert login.status_code == 200
-        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        client = TestClient(
+            app, headers={"x-sentinel-desktop-token": "test-desktop-transport-token"}
+        )
+        headers = {"x-sentinel-desktop-token": "test-desktop-transport-token"}
 
         created = client.post(SESSIONS_API, json={"title": "alpha"}, headers=headers)
         assert created.status_code == 200
@@ -509,7 +507,23 @@ def test_session_rename_endpoint():
         restore_test_app(old_init)
 
 
-def test_retry_message_endpoint_reruns_existing_user_message():
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        None,
+        {},
+        {
+            "tier": "normal",
+            "provider_id": "openai-codex",
+            "reasoning_level": "high",
+            "fast_mode": True,
+            "agent_mode": "normal",
+            "max_iterations": 0,
+        },
+        {"provider_id": None, "reasoning_level": None, "fast_mode": False},
+    ],
+)
+def test_retry_message_endpoint_reruns_existing_user_message(overrides):
     fake_db = FakeDB()
 
     old_ws_manager = getattr(app.state, "ws_manager", None)
@@ -527,7 +541,7 @@ def test_retry_message_endpoint_reruns_existing_user_message():
     async def _db_factory():
         yield fake_db
 
-    runtime_support = object()
+    runtime_support = SimpleNamespace(provider=SimpleNamespace(model_context=lambda model: {}))
     instance_context = make_fake_instance_context(
         app_db=fake_db,
         agent_runtime_support=runtime_support,
@@ -558,10 +572,10 @@ def test_retry_message_endpoint_reruns_existing_user_message():
         app.state.agent_runtime_support = runtime_support
         app.state.db_factory = _db_factory
 
-        client = TestClient(app)
-        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
-        assert login.status_code == 200
-        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        client = TestClient(
+            app, headers={"x-sentinel-desktop-token": "test-desktop-transport-token"}
+        )
+        headers = {"x-sentinel-desktop-token": "test-desktop-transport-token"}
 
         created = client.post(SESSIONS_API, json={"title": "alpha"}, headers=headers)
         assert created.status_code == 200
@@ -574,6 +588,12 @@ def test_retry_message_endpoint_reruns_existing_user_message():
                 "content": "retry me",
                 "metadata": {
                     "agent_mode": "read_only",
+                    "retryable_error": "Prior provider failure",
+                    "model_selection": {
+                        "provider_id": "anthropic",
+                        "reasoning_level": "low",
+                        "fast_mode": False,
+                    },
                     "generation": {
                         "requested_tier": "hard",
                         "max_iterations": 17,
@@ -587,11 +607,15 @@ def test_retry_message_endpoint_reruns_existing_user_message():
 
         with (
             patch("app.routers.sessions.run_agent_once", new=_fake_run_agent_once),
-            patch("app.routers.sessions.asyncio.create_task", side_effect=_fake_create_task),
+            patch(
+                "app.routers.sessions.asyncio.create_task",
+                side_effect=_fake_create_task,
+            ),
         ):
             response = client.post(
                 f"{SESSIONS_API}/{session_id}/messages/{message_id}/retry",
                 headers=headers,
+                **({"json": overrides} if overrides is not None else {}),
             )
 
             assert response.status_code == 200
@@ -602,10 +626,23 @@ def test_retry_message_endpoint_reruns_existing_user_message():
 
             assert captured["session_key"] == session_id
             assert captured["persist_user_message"] is False
-            assert str(captured["tier"]) == "hard"
-            assert captured["max_iterations"] == 17
-            assert str(captured["agent_mode"]) == "read_only"
+            effective = {
+                "tier": "hard",
+                "max_iterations": 17,
+                "agent_mode": "read_only",
+                "provider_id": "anthropic",
+                "reasoning_level": "low",
+                "fast_mode": False,
+                **(overrides or {}),
+            }
+            for field, expected in effective.items():
+                assert captured[field] == expected
             assert captured["payload"] == "retry me"
+            assert str(captured["user_message"].id) == message_id
+            assert (
+                captured["user_message"].metadata_json["retryable_error"]
+                == "Prior provider failure"
+            )
             assert captured["thinking_session_key"] == session_id
     finally:
         restore_test_app(old_init)
@@ -614,52 +651,24 @@ def test_retry_message_endpoint_reruns_existing_user_message():
         app.state.db_factory = old_db_factory
 
 
-def test_cannot_set_telegram_channel_session_as_main():
+def test_removed_main_session_endpoints_return_404():
     fake_db = FakeDB()
 
     old_init = install_fake_db_overrides(app_db=fake_db)
 
     try:
-        client = TestClient(app)
-        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
-        assert login.status_code == 200
-        token = login.json()["access_token"]
-        headers = {"Authorization": f"Bearer {token}"}
-
-        main_resp = client.get(f"{SESSIONS_API}/default", headers=headers)
-        assert main_resp.status_code == 200
-        main_session_id = main_resp.json()["id"]
-
-        channel_resp = client.post(SESSIONS_API, json={"title": "TG Group · Ops"}, headers=headers)
-        assert channel_resp.status_code == 200
-        channel_session_id = channel_resp.json()["id"]
-
-        import jwt as _jwt
-
-        _decoded = _jwt.decode(token, options={"verify_signature": False})
-        _actual_user_id = _decoded["sub"]
-        fake_db.add(
-            SessionBinding(
-                user_id=_actual_user_id,
-                binding_type="telegram_group",
-                binding_key="group:-100123",
-                session_id=uuid.UUID(channel_session_id),
-                is_active=True,
-                metadata_json={"chat_id": -100123},
-            )
+        client = TestClient(
+            app, headers={"x-sentinel-desktop-token": "test-desktop-transport-token"}
         )
+        headers = {"x-sentinel-desktop-token": "test-desktop-transport-token"}
 
-        forbidden = client.post(f"{SESSIONS_API}/{channel_session_id}/main", headers=headers)
-        assert forbidden.status_code == 400
-        payload = forbidden.json()
-        detail = (
-            payload.get("detail") or (payload.get("error") or {}).get("message") or str(payload)
-        )
-        assert "Telegram channel sessions cannot be set as main" in detail
+        created = client.post(SESSIONS_API, json={"title": "ordinary"}, headers=headers)
+        assert created.status_code == 200
+        session_id = created.json()["id"]
 
-        still_main = client.get(f"{SESSIONS_API}/{main_session_id}", headers=headers)
-        assert still_main.status_code == 200
-        assert still_main.json()["is_main"] is True
+        assert client.get(f"{SESSIONS_API}/default", headers=headers).status_code == 404
+        assert client.post(f"{SESSIONS_API}/default/reset", headers=headers).status_code == 404
+        assert client.post(f"{SESSIONS_API}/{session_id}/main", headers=headers).status_code == 404
     finally:
         restore_test_app(old_init)
 
@@ -670,20 +679,16 @@ def test_cannot_rename_telegram_channel_session():
     old_init = install_fake_db_overrides(app_db=fake_db)
 
     try:
-        client = TestClient(app)
-        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
-        assert login.status_code == 200
-        token = login.json()["access_token"]
-        headers = {"Authorization": f"Bearer {token}"}
+        client = TestClient(
+            app, headers={"x-sentinel-desktop-token": "test-desktop-transport-token"}
+        )
+        headers = {"x-sentinel-desktop-token": "test-desktop-transport-token"}
 
         channel_resp = client.post(SESSIONS_API, json={"title": "TG Group · Ops"}, headers=headers)
         assert channel_resp.status_code == 200
         channel_session_id = channel_resp.json()["id"]
 
-        import jwt as _jwt
-
-        _decoded = _jwt.decode(token, options={"verify_signature": False})
-        _actual_user_id = _decoded["sub"]
+        _actual_user_id = "local"
         fake_db.add(
             SessionBinding(
                 user_id=_actual_user_id,
@@ -710,39 +715,24 @@ def test_cannot_rename_telegram_channel_session():
         restore_test_app(old_init)
 
 
-def test_reset_default_session_keeps_previous_main_runtime_workspace():
+def test_delete_any_root_session_succeeds():
     fake_db = FakeDB()
 
     old_init = install_fake_db_overrides(app_db=fake_db)
 
     try:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            runtime_base = Path(tmpdir)
-            client = TestClient(app)
-            login = client.post(
-                "/api/v1/auth/login", json={"username": "admin", "password": "admin"}
-            )
-            assert login.status_code == 200
-            token = login.json()["access_token"]
-            headers = {"Authorization": f"Bearer {token}"}
+        client = TestClient(
+            app, headers={"x-sentinel-desktop-token": "test-desktop-transport-token"}
+        )
+        headers = {"x-sentinel-desktop-token": "test-desktop-transport-token"}
 
-            main_resp = client.get(f"{SESSIONS_API}/default", headers=headers)
-            assert main_resp.status_code == 200
-            old_main_id = main_resp.json()["id"]
+        created = client.post(SESSIONS_API, json={"title": "former main"}, headers=headers)
+        assert created.status_code == 200
+        session_id = created.json()["id"]
 
-            old_workspace = runtime_base / old_main_id / "workspace"
-            old_workspace.mkdir(parents=True, exist_ok=True)
-            marker = old_workspace / "keep.txt"
-            marker.write_text("preserve")
-
-            reset_resp = client.post(f"{SESSIONS_API}/default/reset", headers=headers)
-            assert reset_resp.status_code == 200
-            new_main_id = reset_resp.json()["id"]
-            assert new_main_id != old_main_id
-
-            assert old_workspace.exists() is True
-            assert marker.exists() is True
-            assert marker.read_text() == "preserve"
+        deleted = client.delete(f"{SESSIONS_API}/{session_id}", headers=headers)
+        assert deleted.status_code == 200
+        assert deleted.json()["status"] == "deleted"
     finally:
         restore_test_app(old_init)
 
@@ -753,11 +743,10 @@ def test_stop_session_generation_cancels_pending_git_approvals():
     old_init = install_fake_db_overrides(app_db=fake_db)
 
     try:
-        client = TestClient(app)
-        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
-        assert login.status_code == 200
-        token = login.json()["access_token"]
-        headers = {"Authorization": f"Bearer {token}"}
+        client = TestClient(
+            app, headers={"x-sentinel-desktop-token": "test-desktop-transport-token"}
+        )
+        headers = {"x-sentinel-desktop-token": "test-desktop-transport-token"}
 
         session_resp = client.post(
             SESSIONS_API, json={"title": "stop-cancels-approvals"}, headers=headers
@@ -793,14 +782,15 @@ def test_stop_session_generation_materializes_unresolved_tool_calls():
     old_init = install_fake_db_overrides(app_db=fake_db)
 
     try:
-        client = TestClient(app)
-        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
-        assert login.status_code == 200
-        token = login.json()["access_token"]
-        headers = {"Authorization": f"Bearer {token}"}
+        client = TestClient(
+            app, headers={"x-sentinel-desktop-token": "test-desktop-transport-token"}
+        )
+        headers = {"x-sentinel-desktop-token": "test-desktop-transport-token"}
 
         session_resp = client.post(
-            SESSIONS_API, json={"title": "stop-materializes-tool-result"}, headers=headers
+            SESSIONS_API,
+            json={"title": "stop-materializes-tool-result"},
+            headers=headers,
         )
         assert session_resp.status_code == 200
         session_id = uuid.UUID(session_resp.json()["id"])
@@ -822,7 +812,10 @@ def test_stop_session_generation_materializes_unresolved_tool_calls():
                         {
                             "id": "toolu_pending_runtime",
                             "name": "runtime",
-                            "arguments": {"command": "user", "shell_command": "sleep 20"},
+                            "arguments": {
+                                "action": "exec",
+                                "shell_command": "sleep 20",
+                            },
                         }
                     ],
                 },
@@ -882,11 +875,11 @@ def test_context_usage_prefers_rebuilt_context_when_runtime_snapshot_missing():
     )
 
     try:
-        client = TestClient(app)
+        client = TestClient(
+            app, headers={"x-sentinel-desktop-token": "test-desktop-transport-token"}
+        )
 
-        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
-        assert login.status_code == 200
-        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        headers = {"x-sentinel-desktop-token": "test-desktop-transport-token"}
 
         session_resp = client.post(SESSIONS_API, json={"title": "usage-rebuild"}, headers=headers)
         assert session_resp.status_code == 200
@@ -895,9 +888,54 @@ def test_context_usage_prefers_rebuilt_context_when_runtime_snapshot_missing():
         usage_resp = client.get(f"{SESSIONS_API}/{session_id}/context-usage", headers=headers)
         assert usage_resp.status_code == 200
         payload = usage_resp.json()
-        assert payload["source"] == "rebuilt_context_estimate"
-        assert isinstance(payload["estimated_context_tokens"], int)
-        assert payload["estimated_context_tokens"] > 0
+        assert payload["source"] == "unavailable"
+        assert payload["last_request_usage"] is None
+        assert "estimated_context_tokens" not in payload
+        measured = {"usage": {"input_tokens": 119, "output_tokens": 5}}
+        row = Message(
+            session_id=uuid.UUID(session_id),
+            role="assistant",
+            content="OK",
+            metadata_json={"provider": "openai-codex", "provider_usage": measured},
+        )
+        fake_db.add(row)
+        payload = client.get(f"{SESSIONS_API}/{session_id}/context-usage", headers=headers).json()
+        assert payload["last_request_usage"] == measured
+        assert "estimated_context_tokens" not in payload
+        row.metadata_json = {"provider": "openai-codex"}
+        payload = client.get(f"{SESSIONS_API}/{session_id}/context-usage", headers=headers).json()
+        assert payload["last_request_usage"] is None
+        assert "estimated_context_tokens" not in payload
+    finally:
+        restore_test_app(old_init)
+
+
+def test_file_requests_without_workspace_are_an_expected_conflict():
+    from app.services.runtime.machines import InstanceRuntimeNotConfigured
+
+    fake_db = FakeDB()
+    old_init = install_fake_db_overrides(app_db=fake_db)
+    try:
+        client = TestClient(
+            app, headers={"x-sentinel-desktop-token": "test-desktop-transport-token"}
+        )
+        created = client.post(SESSIONS_API, json={"title": "unattached"})
+        assert created.status_code == 200
+        session_id = created.json()["id"]
+        with patch(
+            "app.routers.sessions.get_runtime_workspace_files",
+            side_effect=InstanceRuntimeNotConfigured(
+                "No workspace attached. Use Attach in the session toolbar to choose a workspace."
+            ),
+        ) as files:
+            for path in ["files", "file?path=README.md", "download?path=README.md"]:
+                response = client.get(f"{SESSIONS_API}/{session_id}/runtime/{path}")
+                assert response.status_code == 409
+                assert "No workspace attached" in response.json()["error"]["message"]
+            files.reset_mock()
+            missing = client.get(f"{SESSIONS_API}/{uuid.uuid4()}/runtime/files")
+            assert missing.status_code == 404
+            files.assert_not_called()
     finally:
         restore_test_app(old_init)
 
@@ -908,11 +946,10 @@ def test_runtime_file_explorer_endpoints():
     old_init = install_fake_db_overrides(app_db=fake_db)
 
     try:
-        client = TestClient(app)
-        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
-        assert login.status_code == 200
-        token = login.json()["access_token"]
-        headers = {"Authorization": f"Bearer {token}"}
+        client = TestClient(
+            app, headers={"x-sentinel-desktop-token": "test-desktop-transport-token"}
+        )
+        headers = {"x-sentinel-desktop-token": "test-desktop-transport-token"}
 
         created = client.post(SESSIONS_API, json={"title": "runtime-explorer"}, headers=headers)
         assert created.status_code == 200
@@ -981,11 +1018,10 @@ def test_runtime_git_diff_supports_deleted_and_untracked_files():
     old_init = install_fake_db_overrides(app_db=fake_db)
 
     try:
-        client = TestClient(app)
-        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
-        assert login.status_code == 200
-        token = login.json()["access_token"]
-        headers = {"Authorization": f"Bearer {token}"}
+        client = TestClient(
+            app, headers={"x-sentinel-desktop-token": "test-desktop-transport-token"}
+        )
+        headers = {"x-sentinel-desktop-token": "test-desktop-transport-token"}
 
         created = client.post(SESSIONS_API, json={"title": "runtime-git-diff"}, headers=headers)
         assert created.status_code == 200
@@ -998,10 +1034,18 @@ def test_runtime_git_diff_supports_deleted_and_untracked_files():
 
             subprocess.run(["git", "-C", str(repo_dir), "init"], check=True)
             subprocess.run(
-                ["git", "-C", str(repo_dir), "config", "user.name", "Test User"], check=True
+                ["git", "-C", str(repo_dir), "config", "user.name", "Test User"],
+                check=True,
             )
             subprocess.run(
-                ["git", "-C", str(repo_dir), "config", "user.email", "test-user@example.com"],
+                [
+                    "git",
+                    "-C",
+                    str(repo_dir),
+                    "config",
+                    "user.email",
+                    "test-user@example.com",
+                ],
                 check=True,
             )
 
@@ -1046,11 +1090,10 @@ def test_runtime_download_supports_files_and_directories():
     old_init = install_fake_db_overrides(app_db=fake_db)
 
     try:
-        client = TestClient(app)
-        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
-        assert login.status_code == 200
-        token = login.json()["access_token"]
-        headers = {"Authorization": f"Bearer {token}"}
+        client = TestClient(
+            app, headers={"x-sentinel-desktop-token": "test-desktop-transport-token"}
+        )
+        headers = {"x-sentinel-desktop-token": "test-desktop-transport-token"}
 
         created = client.post(SESSIONS_API, json={"title": "runtime-download"}, headers=headers)
         assert created.status_code == 200
@@ -1076,7 +1119,7 @@ def test_runtime_download_supports_files_and_directories():
                 )
                 assert file_resp.status_code == 200
                 assert file_resp.headers["content-type"].startswith("text/markdown")
-                assert 'filename="README.md"' in file_resp.headers["content-disposition"]
+                assert "filename*=UTF-8''README.md" in file_resp.headers["content-disposition"]
                 assert file_resp.text == "# demo\n"
 
                 folder_resp = client.get(
@@ -1085,7 +1128,7 @@ def test_runtime_download_supports_files_and_directories():
                 )
                 assert folder_resp.status_code == 200
                 assert folder_resp.headers["content-type"] == "application/zip"
-                assert 'filename="docs.zip"' in folder_resp.headers["content-disposition"]
+                assert "filename*=UTF-8''docs.zip" in folder_resp.headers["content-disposition"]
 
                 archive_path = runtime_base / "download-check.zip"
                 archive_path.write_bytes(folder_resp.content)

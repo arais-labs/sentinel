@@ -14,7 +14,7 @@ const config = {
   projectName: 'sentinel',
 
   onBrokenLinks: 'throw',
-  onBrokenMarkdownLinks: 'warn',
+  markdown: { hooks: { onBrokenMarkdownLinks: 'throw' } },
 
   i18n: {
     defaultLocale: 'en',
@@ -106,7 +106,7 @@ const config = {
       prism: {
         theme: themes.github,
         darkTheme: themes.dracula,
-        additionalLanguages: ['bash', 'yaml', 'docker'],
+        additionalLanguages: ['bash', 'yaml'],
       },
       algolia: undefined,
     }),

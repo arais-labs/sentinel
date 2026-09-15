@@ -1,0 +1,13 @@
+.run-settings-control { flex-shrink: 0; }
+.run-settings-menu { width: 304px; max-width: calc(100vw - 16px); overflow-y: auto; overscroll-behavior: contain; border: 1px solid var(--border-strong); border-radius: 16px; background: var(--surface-0); box-shadow: 0 12px 36px #0004; padding: 0; animation: subagent-panel-in 180ms cubic-bezier(.22,1,.36,1); }
+.run-settings-section + .run-settings-section { border-top: 1px solid var(--border-subtle); margin-top: 0; padding-top: 0; }
+ .run-settings-section-toggle { display: flex; align-items: center; gap: 9px; width: 100%; min-height: 44px; padding: 10px 14px; border: 0; border-radius: 0; background: transparent; text-align: left; color: var(--text-primary); }
+.run-settings-section-toggle:hover { background: var(--surface-1); }
+.run-settings-section-toggle:focus-visible { outline: 1px solid var(--sentinel-blue); outline-offset: -2px; }
+.run-settings-section-toggle:disabled { opacity: .4; }
+.run-settings-section-label { font-size: 10px; font-weight: 600; }
+.run-settings-section-value { margin-left: auto; font-size: 10px; color: var(--text-secondary); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.run-settings-section-toggle > svg:last-child { flex-shrink: 0; }
+.run-settings-options { padding: 6px 0; }
+
+@media (prefers-reduced-motion: reduce) { .run-settings-menu { animation: none; } }

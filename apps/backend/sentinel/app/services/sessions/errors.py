@@ -6,27 +6,19 @@ class SessionServiceError(Exception):
 
 
 class SessionNotFoundError(SessionServiceError):
-    """Requested session does not exist or is not owned by the caller."""
+    """Requested session does not exist."""
 
 
 class MessageNotFoundError(SessionServiceError):
     """Requested message does not exist in the target session."""
 
 
-class MainSessionDeletionError(SessionServiceError):
-    """Main session cannot be deleted."""
-
-
 class SessionWorkspaceCleanupError(SessionServiceError):
-    """Runtime workspace cleanup failed before session deletion."""
+    """Machine workspace cleanup failed before session deletion."""
 
     def __init__(self, message: str, *, detail: str | None = None) -> None:
         super().__init__(message)
         self.detail = detail
-
-
-class MainSessionTargetInvalidError(SessionServiceError):
-    """Requested main session target is invalid."""
 
 
 class AgentRuntimeUnavailableError(SessionServiceError):

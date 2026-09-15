@@ -1,19 +1,20 @@
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 from urllib.parse import urlparse
 
 from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import Settings, is_desktop_app, settings
+import sentral.llm.claude_credentials as claude_credentials_module
+from app.config import Settings, settings
 from app.models.system import SystemSetting
-from app.services.llm.ids import ProviderChoice, parse_provider_choice
-from app.services.llm.providers.gemini_oauth import GeminiOAuthCredentials
+import sentral.llm.antigravity_credentials as antigravity_credentials_module
+from sentral.llm.codex_credentials import extract_codex_access_token
+from sentral.llm.ids import ProviderChoice, parse_provider_choice
+from sentral.llm.providers.gemini_oauth import GeminiOAuthCredentials
 from app.services.settings.system_settings import (
     delete_system_setting,
     upsert_system_setting,
@@ -40,7 +41,7 @@ class DesktopCodexOauthStatus:
 
 
 @dataclass(frozen=True, slots=True)
-class DesktopCodexOauthImportResult:
+class DesktopOauthImportResult:
     masked_key: str
 
 
@@ -113,13 +114,47 @@ class SettingsService:
             value=normalized_gemini_oauth,
         )
 
+    async def import_desktop_claude_oauth_token(self, db: AsyncSession) -> DesktopOauthImportResult:
+
+        try:
+            token = await claude_credentials_module.read_claude_access_token()
+        except (OSError, ValueError, TimeoutError) as exc:
+            raise HTTPException(
+                status_code=422,
+                detail="Could not read Claude CLI credentials. Sign in to Claude CLI and try again.",
+            ) from exc
+        if not token:
+            raise HTTPException(
+                status_code=404,
+                detail="No Claude CLI login found. Run claude auth login, then import again.",
+            )
+        await upsert_system_setting(db, key="anthropic_oauth_token", value=token)
+        return DesktopOauthImportResult(masked_key=self._mask_secret(token) or "****")
+
+    async def import_desktop_gemini_oauth_token(self, db: AsyncSession) -> DesktopOauthImportResult:
+
+        try:
+            credentials = await antigravity_credentials_module.read_antigravity_credentials()
+        except (OSError, ValueError, TimeoutError) as exc:
+            raise HTTPException(
+                status_code=422,
+                detail="Could not import Antigravity OAuth. Sign in with agy on this Mac and retry, "
+                "or paste an exported Antigravity OAuth credential bundle.",
+            ) from exc
+        if credentials is None:
+            raise HTTPException(
+                status_code=404,
+                detail="No Antigravity login found. Run agy and sign in with Google, then import again.",
+            )
+        await upsert_system_setting(db, key="gemini_oauth_credentials", value=credentials.as_json())
+        return DesktopOauthImportResult(masked_key=credentials.mask_secret() or "****")
+
     def get_desktop_codex_oauth_status(
         self, *, auth_path: Path | None = None
     ) -> DesktopCodexOauthStatus:
-        enabled = is_desktop_app()
         return DesktopCodexOauthStatus(
-            enabled=enabled,
-            auth_file_found=enabled and (auth_path or self._codex_auth_path()).is_file(),
+            enabled=True,
+            auth_file_found=(auth_path or self._codex_auth_path()).is_file(),
         )
 
     async def import_desktop_codex_oauth_token(
@@ -127,7 +162,7 @@ class SettingsService:
         db: AsyncSession,
         *,
         auth_path: Path | None = None,
-    ) -> DesktopCodexOauthImportResult:
+    ) -> DesktopOauthImportResult:
         path = auth_path or self._codex_auth_path()
         try:
             raw = path.read_text(encoding="utf-8")
@@ -142,7 +177,7 @@ class SettingsService:
 
         token = self._extract_codex_access_token(raw)
         await upsert_system_setting(db, key="openai_oauth_token", value=token)
-        return DesktopCodexOauthImportResult(masked_key=self._mask_secret(token) or "****")
+        return DesktopOauthImportResult(masked_key=self._mask_secret(token) or "****")
 
     def get_api_keys_status(self, instance_settings: Settings | None = None) -> ApiKeysStatus:
         settings_source = instance_settings or settings
@@ -274,67 +309,6 @@ class SettingsService:
     @staticmethod
     def _extract_codex_access_token(raw: str) -> str:
         try:
-            payload = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            raise HTTPException(
-                status_code=422, detail="Codex auth file is not valid JSON."
-            ) from exc
-
-        if not isinstance(payload, dict):
-            raise HTTPException(
-                status_code=422, detail="Codex auth file must contain a JSON object."
-            )
-
-        token = SettingsService._find_codex_access_token(payload)
-        if token is None:
-            raise HTTPException(
-                status_code=422,
-                detail="Codex auth file does not contain an access_token.",
-            )
-        return token
-
-    @staticmethod
-    def _find_codex_access_token(payload: dict[str, Any]) -> str | None:
-        priority_paths = (
-            ("tokens", "access_token"),
-            ("tokens", "accessToken"),
-            ("auth", "access_token"),
-            ("auth", "accessToken"),
-            ("oauth", "access_token"),
-            ("oauth", "accessToken"),
-            ("access_token",),
-            ("accessToken",),
-            ("OPENAI_OAUTH_TOKEN",),
-        )
-        for path in priority_paths:
-            current: Any = payload
-            for key in path:
-                if not isinstance(current, dict):
-                    current = None
-                    break
-                current = current.get(key)
-            token = SettingsService._strip_or_none(current if isinstance(current, str) else None)
-            if token is not None:
-                return token
-
-        return SettingsService._find_nested_access_token(payload)
-
-    @staticmethod
-    def _find_nested_access_token(value: Any) -> str | None:
-        if isinstance(value, dict):
-            for key in ("access_token", "accessToken"):
-                token = SettingsService._strip_or_none(
-                    value.get(key) if isinstance(value.get(key), str) else None
-                )
-                if token is not None:
-                    return token
-            for child in value.values():
-                token = SettingsService._find_nested_access_token(child)
-                if token is not None:
-                    return token
-        if isinstance(value, list):
-            for child in value:
-                token = SettingsService._find_nested_access_token(child)
-                if token is not None:
-                    return token
-        return None
+            return extract_codex_access_token(raw)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc

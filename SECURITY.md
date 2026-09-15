@@ -36,7 +36,7 @@ In scope:
 - privilege escalation
 - remote code execution
 - SSRF / internal network access bypass
-- vulnerabilities in default Docker/local deployment
+- vulnerabilities in desktop installation
 
 Out of scope:
 

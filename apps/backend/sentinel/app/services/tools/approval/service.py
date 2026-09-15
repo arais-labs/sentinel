@@ -31,7 +31,7 @@ class ApprovalService:
     ) -> tuple[list[ApprovalRecord], int]:
         provider_rows, _ = await self._tool_provider.list(
             db,
-            provider=provider.strip() if isinstance(provider, str) and provider.strip() else None,
+            provider=(provider.strip() if isinstance(provider, str) and provider.strip() else None),
             status_filter=status_filter,
             limit=max(500, limit + offset),
             offset=0,
@@ -55,6 +55,7 @@ class ApprovalService:
         decision: str,
         decision_by: str,
         note: str | None,
+        scope: str = "once",
     ) -> ApprovalRecord:
         normalized = provider.strip()
         if not normalized:
@@ -66,6 +67,7 @@ class ApprovalService:
             decision=decision,
             decision_by=decision_by,
             note=note,
+            scope=scope,
         )
 
 

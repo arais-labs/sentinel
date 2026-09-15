@@ -1,46 +1,47 @@
 {
   "name": "sentinel-desktop",
   "private": true,
-  "version": "0.1.0",
+  "version": "2.0.0",
   "description": "Sentinel desktop management app",
   "type": "module",
   "main": "dist/main/main.js",
   "engines": {
-    "node": ">=22",
+    "node": ">=22.12.0",
     "npm": ">=10"
   },
   "scripts": {
-    "desktop:build": "node scripts/desktop-build.mjs build",
-    "desktop:clean": "node scripts/desktop-build.mjs clean",
-    "desktop:verify": "node scripts/desktop-build.mjs verify",
-    "payload:build": "node scripts/payload-build.mjs build"
-  },
-  "dependencies": {
-    "http-proxy": "^1.18.1",
-    "sirv": "^3.0.2"
+    "desktop:build": "node scripts/packaging/desktop-build.mjs build",
+    "desktop:clean": "node scripts/packaging/desktop-build.mjs clean",
+    "desktop:verify": "node scripts/packaging/desktop-build.mjs verify",
+    "payload:build": "node scripts/packaging/payload-build.mjs build",
+    "dev": "node scripts/dev/workspace-runtime-dev.mjs && electron-vite dev --watch",
+    "test": "tsc -p tsconfig.json --outDir .test-dist && node --test tests/unit/*.test.mjs",
+    "test:graphics-build": "PYTHONPATH=scripts/packaging/graphics python3 -m unittest discover -s tests/unit -p 'test_*.py'",
+    "build": "electron-vite build",
+    "postbuild": "node --check dist/main/main.js && node --check dist/preload/preload.mjs"
   },
   "devDependencies": {
-    "@types/http-proxy": "^1.17.16",
     "@types/node": "^25.9.1",
-    "electron": "^42.3.0",
-    "electron-builder": "^26.0.12",
-    "typescript": "^6.0.3"
+    "@types/ws": "^8.18.1",
+    "@vitejs/plugin-react": "^6.1.1",
+    "electron": "^44.3.0",
+    "electron-builder": "^26.15.3",
+    "electron-vite": "6.0.0-beta.1",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.0"
   },
   "build": {
     "appId": "us.arais.sentinel.desktop",
     "productName": "Sentinel",
     "asar": true,
     "directories": {
-      "output": "dist"
+      "output": "release"
     },
     "files": [
       "assets/icon.png",
       "dist/main/**/*",
       "dist/preload/**/*",
       "dist/renderer/**/*",
-      "dist/shared/**/*",
-      "src/renderer/index.html",
-      "src/renderer/styles.css",
       "package.json"
     ],
     "extraResources": [],
@@ -53,5 +54,8 @@
       "hardenedRuntime": false,
       "gatekeeperAssess": false
     }
+  },
+  "dependencies": {
+    "ws": "^8.21.3"
   }
 }

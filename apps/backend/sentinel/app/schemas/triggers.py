@@ -32,10 +32,7 @@ TriggerConfig = Annotated[
 
 class AgentMessageActionConfig(BaseModel):
     message: str = Field(min_length=1)
-    route_mode: Literal["main", "session"] = "main"
-    target_session_id: UUID | None = None
-    # Backward compatibility (legacy + resolved route target)
-    session_id: UUID | None = None
+    target_session_id: UUID
     resolved_session_id: UUID | None = None
 
 
@@ -120,8 +117,6 @@ class TriggerLogResponse(BaseModel):
 class FireTriggerResponse(BaseModel):
     log: TriggerLogResponse
     resolved_session_id: UUID | None = None
-    route_mode: str | None = None
-    used_fallback: bool | None = None
 
 
 class TriggerLogListResponse(BaseModel):

@@ -1,0 +1,209 @@
+.workspace-desktop {
+  --desktop-face: var(--surface-1);
+  --desktop-edge: color-mix(in srgb, var(--text-primary) 5%, transparent);
+  --desktop-relief: 2px 3px 8px #00000008, 7px 8px 24px #0000000c, -4px -4px 15px #ffffff80, inset 0 1px 0 #ffffff90;
+}
+.workspace-desktop {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  color: var(--text-primary);
+  background: var(--app-bg);
+}
+.workspace-desktop-toolbar {
+  position: relative;
+  z-index: 1;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 46px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--desktop-edge);
+  background: var(--app-bg);
+  font-size: 12px;
+}
+.workspace-desktop-toolbar strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 30%;
+  font-weight: 500;
+}
+.workspace-desktop-state {
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+.workspace-desktop-state[data-running='true']::before {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 7px;
+  border-radius: 50%;
+  background: #74bd95;
+}
+.workspace-desktop-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.workspace-desktop button {
+  -webkit-app-region: no-drag;
+  user-select: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid var(--desktop-edge);
+  border-radius: 999px;
+  background: var(--desktop-face);
+  color: var(--text-secondary);
+  box-shadow: var(--desktop-relief);
+  transition: background-color 180ms, border-color 180ms, color 180ms, box-shadow 180ms;
+  padding: 6px 10px;
+  font-size: 12px;
+}
+.workspace-desktop button:hover:not(:disabled) {
+  color: var(--text-primary);
+  border-color: color-mix(in srgb, var(--text-primary) 10%, transparent);
+  background: color-mix(in srgb, var(--text-primary) 3%, var(--desktop-face));
+}
+.workspace-desktop button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.workspace-desktop button:focus-visible {
+  outline: 2px solid var(--accent-solid);
+  outline-offset: 2px;
+}
+.workspace-desktop-content {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+.workspace-desktop-empty {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 32px;
+  text-align: center;
+  color: var(--text-secondary);
+}
+.workspace-desktop-empty h3 {
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+.workspace-desktop-empty p {
+  font-size: 13px;
+  line-height: 1.7;
+  max-width: 390px;
+}
+.workspace-desktop button.workspace-desktop-primary {
+  padding: 9px 16px;
+  background: color-mix(in srgb, var(--sentinel-blue) 9%, var(--desktop-face));
+  border-color: color-mix(in srgb, var(--sentinel-blue) 16%, var(--desktop-edge));
+  color: var(--text-primary);
+  font-weight: 500;
+}
+.workspace-desktop-resolution {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 12px;
+}
+.workspace-desktop-resolution select {
+  background: var(--desktop-face);
+  color: var(--text-primary);
+  border: 1px solid var(--desktop-edge);
+  box-shadow: inset 0 1px 3px #0000000c;
+  padding: 6px 10px;
+  border-radius: 999px;
+}
+.workspace-desktop-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  font-size: 12px;
+  margin: 10px 14px 0;
+  border: 1px solid var(--desktop-edge);
+  border-radius: 18px;
+  background: var(--desktop-face);
+  box-shadow: var(--desktop-relief);
+}
+.workspace-desktop-notice[role='alert'] {
+  color: var(--text-danger, #e58b79);
+}
+.workspace-desktop-footer {
+  padding: 8px 14px;
+  border-top: 1px solid var(--desktop-edge);
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+html.dark .workspace-desktop {
+  --desktop-face: #101012;
+  --desktop-relief: 2px 3px 8px #0000001a, 7px 8px 24px #00000030, -4px -4px 15px #ffffff03, inset 0 1px 0 #ffffff06;
+}
+html.dark .workspace-desktop { background: #0c0c0e; }
+.workspace-desktop-toolbar > svg { color: var(--sentinel-blue); flex-shrink: 0; }
+.workspace-desktop-toolbar { flex-wrap: wrap; }
+.workspace-desktop-primary > svg { color: var(--sentinel-blue); }
+.workspace-desktop-empty > svg { color: var(--sentinel-blue); opacity: .75; }
+.workspace-desktop-notice[role='alert'] {
+  border-color: color-mix(in srgb, var(--text-danger, #e58b79) 12%, transparent);
+}
+.workspace-desktop-resolution select:focus-visible {
+  outline: 2px solid var(--accent-solid);
+  outline-offset: 2px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .workspace-desktop button { transition: none; }
+}
+
+.workspace-desktop-header-identity,
+.workspace-desktop-header-status {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  text-transform: uppercase;
+}
+.workspace-desktop-header-identity > span,
+.workspace-desktop-header-status > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workspace-desktop-header-identity > span { max-width: 130px; }
+.workspace-desktop-header-status > span:last-child { max-width: 180px; }
+.workspace-desktop-header-identity > svg,
+.workspace-desktop-header-status > svg { flex-shrink: 0; color: var(--sentinel-blue); }
+.workspace-desktop-status-dot {
+  width: 5px;
+  height: 5px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+.workspace-desktop-status-dot[data-running='true'] { background: #51bc83; }
+.workspace-desktop-status-dot[data-error='true'] { background: #cda0ab; }
+.workspace-desktop-stop-icon { color: #cda0ab; }
+
+html.dark .workspace-desktop-toolbar { background: #0c0c0e; }
+
+/* Sidebar-hover surfaces at rest; retain the existing control geometry. */
+html.dark :is(.sentinel-pane-header[data-tour-pane='desktop'], .workspace-desktop-toolbar.chat-header-actions) {
+  --chat-header-face: #101012;
+  --chat-header-hover: #141416;
+  --chat-header-edge: #f4f4f50d;
+  --chat-header-label: #d1d2d8;
+  --chat-header-shadow: 2px 3px 8px #0000001a, 7px 8px 24px #00000030, -4px -4px 15px #ffffff03, inset 0 1px 0 #ffffff06;
+}

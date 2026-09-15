@@ -1,9 +1,7 @@
 from __future__ import annotations
 
+from app.services.agent.policies import INTERACTIVE_OUTPUT_POLICY
 from app.services.agent.interactive_output import (
-    POLICY_CONTENT,
-    POLICY_EXPLANATION,
-    POLICY_TITLE,
     RAW_MARKER,
     THEME_CSS,
     THEMED_MARKER,
@@ -11,26 +9,26 @@ from app.services.agent.interactive_output import (
 
 
 def test_policy_content_mentions_both_markers():
-    assert THEMED_MARKER in POLICY_CONTENT
-    assert RAW_MARKER in POLICY_CONTENT
+    assert THEMED_MARKER in INTERACTIVE_OUTPUT_POLICY.content
+    assert RAW_MARKER in INTERACTIVE_OUTPUT_POLICY.content
 
 
 def test_policy_content_references_sentinel_classes():
-    assert ".sentinel-table" in POLICY_CONTENT
-    assert ".sentinel-button" in POLICY_CONTENT
-    assert ".sentinel-badge" in POLICY_CONTENT
+    assert ".sentinel-table" in INTERACTIVE_OUTPUT_POLICY.content
+    assert ".sentinel-button" in INTERACTIVE_OUTPUT_POLICY.content
+    assert ".sentinel-badge" in INTERACTIVE_OUTPUT_POLICY.content
 
 
 def test_policy_metadata_strings_set():
-    assert POLICY_TITLE.startswith("Agent Mode Policy")
-    assert "Interactive Output" in POLICY_TITLE
-    assert POLICY_EXPLANATION.strip()
+    assert INTERACTIVE_OUTPUT_POLICY.title.startswith("Agent Mode Policy")
+    assert "Interactive Output" in INTERACTIVE_OUTPUT_POLICY.title
+    assert INTERACTIVE_OUTPUT_POLICY.explanation.strip()
 
 
 def test_policy_content_does_not_inline_full_css():
     """CSS body should live in theme.css and be injected at persist time, not in the prompt."""
-    assert "--sentinel-bg" not in POLICY_CONTENT
-    assert "prefers-color-scheme" not in POLICY_CONTENT
+    assert "--sentinel-bg" not in INTERACTIVE_OUTPUT_POLICY.content
+    assert "prefers-color-scheme" not in INTERACTIVE_OUTPUT_POLICY.content
 
 
 def test_theme_css_loaded_and_has_sentinel_classes():

@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sentral-runtime"
+version = "0.1.0"
+description = "Sentral machine-native agent runtime and provider adapters"
+requires-python = ">=3.12"
+dependencies = ["httpx>=0.28,<1", "websockets>=14,<18", "pydantic>=2,<3"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

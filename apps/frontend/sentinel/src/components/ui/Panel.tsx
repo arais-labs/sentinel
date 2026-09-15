@@ -5,7 +5,7 @@ interface PanelProps extends PropsWithChildren, HTMLAttributes<HTMLDivElement> {
 export function Panel({ className = '', children, ...rest }: PanelProps) {
   return (
     <div
-      className={`rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] ${className}`}
+      className={`rounded-lg border border-(--border-subtle) bg-(--surface-0) ${className}`}
       {...rest}
     >
       {children}

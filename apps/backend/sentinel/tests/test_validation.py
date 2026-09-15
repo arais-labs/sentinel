@@ -1,8 +1,5 @@
-import os
-
 from fastapi.testclient import TestClient
 
-os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-with-32-bytes-min")
 
 from app.main import app
 from tests.fake_db import FakeDB
@@ -19,12 +16,10 @@ def test_validation_hardening_rules():
     old_init = install_fake_db_overrides(app_db=fake_db)
 
     try:
-        client = TestClient(app)
-        login = client.post(
-            "/api/v1/auth/login", json={"username": "  admin  ", "password": "  admin  "}
+        client = TestClient(
+            app, headers={"x-sentinel-desktop-token": "test-desktop-transport-token"}
         )
-        assert login.status_code == 200
-        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        headers = {"x-sentinel-desktop-token": "test-desktop-transport-token"}
 
         too_long_title = "x" * 201
         invalid_session = client.post(SESSIONS_API, json={"title": too_long_title}, headers=headers)

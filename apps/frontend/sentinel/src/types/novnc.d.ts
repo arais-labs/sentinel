@@ -12,9 +12,12 @@ declare module '@novnc/novnc' {
     resizeSession: boolean;
     viewOnly: boolean;
     focusOnClick: boolean;
+    background: string;
 
-    constructor(target: HTMLElement, url: string, options?: RFBOptions);
+    constructor(target: HTMLElement, url: string | WebSocket, options?: RFBOptions);
     disconnect(): void;
     focus(): void;
+    clipboardPasteFrom(text: string): void;
+    sendKey(keysym: number, code: string, down?: boolean): void;
   }
 }

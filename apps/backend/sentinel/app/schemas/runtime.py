@@ -30,11 +30,13 @@ class RuntimeProviderInfoResponse(BaseModel):
 
 
 class RuntimeLiveViewResponse(BaseModel):
+    state: str = "unavailable"
     enabled: bool
     available: bool
     mode: str = "none"
     url: str | None = None
     ws_url: str | None = None
+    vnc_update_mode: Literal["native", "paced"] = "paced"
     display: str | None = None
     geometry: str | None = None
     reason: str | None = None
@@ -66,7 +68,6 @@ class RuntimeStatusRuntimeResponse(BaseModel):
     host: str | None = None
     port: int | None = None
     username: str | None = None
-    workspaces_dir: str | None = None
 
 
 class RuntimeStatusCheckResponse(BaseModel):
@@ -84,7 +85,7 @@ class RuntimeStatusResponse(BaseModel):
     summary: str
     checked_at: datetime
     os: Literal["linux", "darwin", "unsupported", "unknown"] = "unknown"
-    sandbox: Literal["bubblewrap", "seatbelt", "unavailable", "unknown"] = "unknown"
+    sandbox: Literal["container", "unavailable", "unknown"] = "unknown"
     runtime: RuntimeStatusRuntimeResponse
     checks: list[RuntimeStatusCheckResponse] = Field(default_factory=list)
     capabilities: dict[str, str] = Field(default_factory=dict)
@@ -125,12 +126,14 @@ class SessionRuntimeFilePreviewResponse(BaseModel):
 
 
 class SessionRuntimeGitRootResponse(BaseModel):
+    refs: list[str] = Field(default_factory=list)
     root_path: str
     branch: str | None = None
     detached_head: bool = False
 
 
 class SessionRuntimeGitRootsResponse(BaseModel):
+    errors: list[dict[str, str]] = Field(default_factory=list)
     session_id: UUID
     runtime_exists: bool
     workspace_exists: bool

@@ -6,28 +6,7 @@ export default defineConfig({
   envPrefix: ['VITE_', 'APP_'],
   plugins: [react()],
   server: {
-    host: true,
+    host: '127.0.0.1',
     port: 5173,
-    proxy: {
-      '/api/v1': {
-        target: 'http://sentinel-backend:8000',
-        changeOrigin: true,
-        ws: true,
-      },
-      '/api': {
-        target: 'http://sentinel-backend:8000',
-        changeOrigin: true,
-        ws: true,
-      },
-      '/ws': {
-        target: 'ws://sentinel-backend:8000',
-        changeOrigin: true,
-        ws: true,
-      },
-      '/health': {
-        target: 'http://sentinel-backend:8000',
-        changeOrigin: true,
-      },
-    },
   },
 });

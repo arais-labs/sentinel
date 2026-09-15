@@ -6,10 +6,11 @@ import types
 import pytest
 from pydantic import ValidationError
 
-from app.models.araios import AraiosModule, AraiosModuleRecord, AraiosModuleSecret
+from app.models.modules import Module, ModuleRecord, ModuleSecret
 from app.schemas.modules import EditModuleRequest
-from app.services.araios.module_updates import fold_ops_into_delta
-from app.services.araios.system_modules.module_manager import handlers
+from app.services.modules.builtins.module_manager import handlers
+from app.services.modules.tool_adapter import build_module_tools
+from app.services.modules.updates import fold_ops_into_delta
 from tests.fake_db import FakeDB
 
 
@@ -39,23 +40,18 @@ def _fake_module(**overrides):
 
 
 def test_edit_module_registered_in_grouped_schema_without_collision():
-    from app.services.araios.system_modules.module_manager.module import MODULE
+    from app.services.modules.builtins.module_manager.module import MODULE
 
-    # to_tool_definitions() raises at module_types._build_grouped_parameters_schema if any two
+    # to_tool_definitions() raises at definitions._build_grouped_parameters_schema if any two
     # commands declare a top-level property with a different shape — this is the guard that
     # adding edit_module did not brick the entire module_manager tool.
-    defs = MODULE.to_tool_definitions()
+    defs = build_module_tools(
+        MODULE,
+    )
     assert len(defs) == 1
     schema = defs[0].parameters_schema
-    assert "edit_module" in schema["properties"]["command"]["enum"]
+    assert "edit_module" in schema["properties"]["action"]["enum"]
     assert {"name", "ops"} <= set(schema["properties"])
-
-
-def test_module_manager_still_registers_with_edit_module():
-    from app.services.tools.registry_builder import build_default_registry
-
-    registry = build_default_registry()
-    assert registry.get("module_manager") is not None
 
 
 # ── Request validation ──
@@ -200,11 +196,11 @@ def _patch_handler_session(monkeypatch, db: FakeDB) -> None:
 
     monkeypatch.setattr(handlers, "AsyncSessionLocal", lambda: _FakeSession(db))
     monkeypatch.setattr(handlers, "get_app_state", lambda: None)
-    monkeypatch.setattr(handlers, "sync_dynamic_module_permissions", _noop_sync)
+    monkeypatch.setattr(handlers, "sync_custom_module_permissions", _noop_sync)
 
 
-def _seed_module(db: FakeDB) -> AraiosModule:
-    mod = AraiosModule(
+def _seed_module(db: FakeDB) -> Module:
+    mod = Module(
         name="contacts",
         label="Contacts",
         description="",
@@ -223,11 +219,11 @@ def _seed_module(db: FakeDB) -> AraiosModule:
 
 
 def test_handle_edit_module_migrates_record_data_and_preserves_records(monkeypatch):
-    db = FakeDB(seed_auth=False)
+    db = FakeDB()
     mod = _seed_module(db)
-    record = AraiosModuleRecord(id="r1", module_name="contacts", data={"company": "Acme"})
+    record = ModuleRecord(id="r1", module_name="contacts", data={"company": "Acme"})
     db.add(record)
-    db.add(AraiosModuleSecret(module_name="contacts", key="token", value="v"))
+    db.add(ModuleSecret(module_name="contacts", key="token", value="v"))
     _patch_handler_session(monkeypatch, db)
 
     result = _run(
@@ -245,13 +241,13 @@ def test_handle_edit_module_migrates_record_data_and_preserves_records(monkeypat
     assert mod.fields_config["titleField"] == "org"
     # Record data migrated to the new key; the secret value row is untouched.
     assert record.data == {"org": "Acme"}
-    assert db.storage[AraiosModuleSecret][0].value == "v"
+    assert db.storage[ModuleSecret][0].value == "v"
 
 
 def test_handle_edit_module_patches_one_action_without_touching_records(monkeypatch):
-    db = FakeDB(seed_auth=False)
+    db = FakeDB()
     mod = _seed_module(db)
-    record = AraiosModuleRecord(id="r1", module_name="contacts", data={"company": "Acme"})
+    record = ModuleRecord(id="r1", module_name="contacts", data={"company": "Acme"})
     db.add(record)
     _patch_handler_session(monkeypatch, db)
 
@@ -270,7 +266,7 @@ def test_handle_edit_module_patches_one_action_without_touching_records(monkeypa
 
 
 def test_handle_edit_module_rejects_system_module(monkeypatch):
-    db = FakeDB(seed_auth=False)
+    db = FakeDB()
     mod = _seed_module(db)
     mod.system = True
     _patch_handler_session(monkeypatch, db)

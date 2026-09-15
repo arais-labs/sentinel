@@ -1,30 +1,32 @@
 from __future__ import annotations
 
+import app.services.runtime.session_cleanup as session_cleanup
+import app.services.telegram.bridge as telegram_bridge_module
+
 import asyncio
 import contextlib
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.config import Settings, settings
+from app.config import Settings
 from app.models.manager import SentinelInstance
-from app.services.agent import ContextBuilder, SentinelRuntimeSupport
+import app.services.agent.context_builder as context_builder_module
+import app.services.agent.runtime_support as runtime_support_module
+from app.services.instances import InvalidInstanceNameError, normalize_instance_name
 from app.services.llm.factory import build_tier_provider_from_settings
 from app.services.memory.backfill import run_memory_embedding_backfill
 from app.services.memory.embeddings import EmbeddingService
 from app.services.settings.settings_service import SettingsService
-from app.services.sub_agents import SubAgentOrchestrator
+import app.services.sub_agents.orchestrator as orchestrator_module
 from app.services.tools import ToolExecutor, ToolRegistry
 from app.services.tools.approval.approval_waiters import (
     build_tool_db_approval_result_recorder,
     build_tool_db_approval_waiter,
 )
 from app.services.tools.runtime_registry import build_runtime_registry
-from app.services.triggers.trigger_scheduler import TriggerScheduler
-
-if TYPE_CHECKING:
-    from app.services.telegram.bridge import TelegramBridge
+import app.services.triggers.trigger_scheduler as trigger_scheduler_module
 
 
 @dataclass(slots=True)
@@ -41,11 +43,11 @@ class InstanceRuntimeContext:
     session_factory: async_sessionmaker[AsyncSession]
     tool_registry: ToolRegistry
     tool_executor: ToolExecutor
-    agent_runtime_support: SentinelRuntimeSupport | None
-    trigger_scheduler: TriggerScheduler
-    sub_agent_orchestrator: SubAgentOrchestrator
+    agent_runtime_support: runtime_support_module.SentinelRuntimeSupport | None
+    trigger_scheduler: trigger_scheduler_module.TriggerScheduler
+    sub_agent_orchestrator: orchestrator_module.SubAgentOrchestrator
     background_tasks: list[asyncio.Task[Any]]
-    telegram_bridge: "TelegramBridge | None" = None
+    telegram_bridge: "telegram_bridge_module.TelegramBridge | None" = None
 
 
 class InstanceRuntimeContextRegistry:
@@ -183,26 +185,27 @@ async def _build_instance_runtime_context(
     agent_runtime_support = None
     if provider is not None:
         available_tools = {tool.name for tool in tool_registry.list_all()}
-        context_builder = ContextBuilder(
+        context_builder = context_builder_module.ContextBuilder(
+            instance_name=instance.name,
             default_system_prompt=instance_settings.default_system_prompt,
             available_tools=available_tools,
             memory_search_service=memory_search_service,
         )
-        agent_runtime_support = SentinelRuntimeSupport(
+        agent_runtime_support = runtime_support_module.SentinelRuntimeSupport(
             provider,
             context_builder,
             tool_registry,
             tool_executor,
         )
 
-    scheduler = TriggerScheduler(
+    scheduler = trigger_scheduler_module.TriggerScheduler(
         agent_runtime_support=agent_runtime_support,
         tool_executor=tool_executor,
         ws_manager=getattr(app_state, "ws_manager", None),
         run_registry=getattr(app_state, "agent_run_registry", None),
         db_factory=session_factory,
     )
-    sub_agent_orchestrator = SubAgentOrchestrator(
+    sub_agent_orchestrator = orchestrator_module.SubAgentOrchestrator(
         agent_runtime_support=agent_runtime_support,
         db_factory=session_factory,
         base_tool_registry=tool_registry,
@@ -215,11 +218,10 @@ async def _build_instance_runtime_context(
     telegram_bridge = None
     _tg_token = getattr(instance_settings, "telegram_bot_token", None)
     if _tg_token:
-        from app.services.telegram.bridge import TelegramBridge
 
-        telegram_bridge = TelegramBridge(
+        telegram_bridge = telegram_bridge_module.TelegramBridge(
             bot_token=_tg_token,
-            user_id=instance_settings.telegram_owner_user_id or instance_settings.dev_user_id,
+            user_id=instance_settings.telegram_owner_user_id or "local",
             agent_runtime_support=agent_runtime_support,
             run_registry=getattr(app_state, "agent_run_registry", None),
             ws_manager=getattr(app_state, "ws_manager", None),
@@ -230,6 +232,12 @@ async def _build_instance_runtime_context(
     tasks: list[asyncio.Task[Any]] = []
     stop_event = getattr(app_state, "instance_stop_event", None)
     if isinstance(stop_event, asyncio.Event):
+
+        tasks.append(
+            asyncio.create_task(
+                session_cleanup.run_cleanup_worker(session_factory, instance.name, stop_event)
+            )
+        )
         tasks.append(asyncio.create_task(scheduler.start(stop_event)))
         if telegram_bridge is not None:
             tasks.append(asyncio.create_task(telegram_bridge.start(stop_event)))
@@ -266,6 +274,7 @@ async def _build_instance_runtime_context(
 
 
 async def _stop_instance_context(context: InstanceRuntimeContext) -> None:
+    await context.sub_agent_orchestrator.close()
     for task in context.background_tasks:
         task.cancel()
     if context.background_tasks:
@@ -276,7 +285,6 @@ async def _stop_instance_context(context: InstanceRuntimeContext) -> None:
 
 
 def _normalize_context_name(instance_name: str) -> str:
-    from app.services.instances import InvalidInstanceNameError, normalize_instance_name
 
     try:
         return normalize_instance_name(instance_name)

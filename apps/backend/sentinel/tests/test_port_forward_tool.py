@@ -5,7 +5,8 @@ from uuid import uuid4
 import pytest
 
 from app.services.runtime.port_forwards import RuntimePortForwardManager
-from app.services.tools.executor import ToolExecutor, ToolValidationError
+from sentral.errors import ToolValidationError
+from app.services.tools.executor import ToolExecutor
 from app.services.tools.registry import ToolRuntimeContext
 from app.services.tools.registry_builder import build_default_registry
 
@@ -22,7 +23,7 @@ class _ListenerStub:
         self.waited = True
 
 
-class _SSHStub:
+class _TransportStub:
     def __init__(self) -> None:
         self.calls: list[dict[str, object]] = []
         self.listeners: list[_ListenerStub] = []
@@ -49,8 +50,8 @@ class _SSHStub:
 
 @pytest.mark.asyncio
 async def test_port_forward_manager_reuses_same_session_target() -> None:
-    ssh = _SSHStub()
-    manager = RuntimePortForwardManager(ssh)  # type: ignore[arg-type]
+    transport = _TransportStub()
+    manager = RuntimePortForwardManager(transport)  # type: ignore[arg-type]
 
     first = await manager.open_forward(
         session_id="session-1",
@@ -68,13 +69,13 @@ async def test_port_forward_manager_reuses_same_session_target() -> None:
     assert first.forward_id == second.forward_id
     assert first.target_host == "127.0.0.1"
     assert first.proxy_path == f"/sessions/session-1/runtime/forwards/{first.forward_id}/"
-    assert len(ssh.calls) == 1
+    assert len(transport.calls) == 1
 
 
 @pytest.mark.asyncio
 async def test_port_forward_manager_closes_session_forwards() -> None:
-    ssh = _SSHStub()
-    manager = RuntimePortForwardManager(ssh)  # type: ignore[arg-type]
+    transport = _TransportStub()
+    manager = RuntimePortForwardManager(transport)  # type: ignore[arg-type]
 
     await manager.open_forward(
         session_id="session-1",
@@ -89,18 +90,18 @@ async def test_port_forward_manager_closes_session_forwards() -> None:
 
     await manager.close_session("session-1")
 
-    assert ssh.listeners[0].closed is True
-    assert ssh.listeners[0].waited is True
-    assert ssh.listeners[1].closed is False
+    assert transport.listeners[0].closed is True
+    assert transport.listeners[0].waited is True
+    assert transport.listeners[1].closed is False
     assert len(await manager.list_forwards(session_id="session-1")) == 0
     assert len(await manager.list_forwards(session_id="session-2")) == 1
 
 
 @pytest.mark.asyncio
 async def test_port_forward_tool_open_list_close(monkeypatch) -> None:
-    from app.services.araios.system_modules.port_forward import handlers
+    from app.services.modules.builtins.port_forward import handlers
 
-    manager = RuntimePortForwardManager(_SSHStub())  # type: ignore[arg-type]
+    manager = RuntimePortForwardManager(_TransportStub())  # type: ignore[arg-type]
 
     async def _runtime_configured(**_kwargs: object) -> bool:
         return True
@@ -117,7 +118,7 @@ async def test_port_forward_tool_open_list_close(monkeypatch) -> None:
     opened, _duration_ms = await executor.execute(
         "port_forward",
         {
-            "command": "open",
+            "action": "open",
             "port": 4173,
             "host": "localhost",
             "protocol": "ws",
@@ -134,14 +135,14 @@ async def test_port_forward_tool_open_list_close(monkeypatch) -> None:
 
     listed, _duration_ms = await executor.execute(
         "port_forward",
-        {"command": "list"},
+        {"action": "list"},
         runtime=ToolRuntimeContext(session_id=session_id),
     )
     assert [item["forward_id"] for item in listed["forwards"]] == [opened["forward_id"]]
 
     closed, _duration_ms = await executor.execute(
         "port_forward",
-        {"command": "close", "forward_id": opened["forward_id"]},
+        {"action": "close", "forward_id": opened["forward_id"]},
         runtime=ToolRuntimeContext(session_id=session_id),
     )
     assert closed["status"] == "closed"
@@ -149,9 +150,9 @@ async def test_port_forward_tool_open_list_close(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_port_forward_tool_rejects_non_loopback_target(monkeypatch) -> None:
-    from app.services.araios.system_modules.port_forward import handlers
+    from app.services.modules.builtins.port_forward import handlers
 
-    manager = RuntimePortForwardManager(_SSHStub())  # type: ignore[arg-type]
+    manager = RuntimePortForwardManager(_TransportStub())  # type: ignore[arg-type]
 
     async def _runtime_configured(**_kwargs: object) -> bool:
         return True
@@ -164,11 +165,11 @@ async def test_port_forward_tool_rejects_non_loopback_target(monkeypatch) -> Non
 
     executor = ToolExecutor(build_default_registry())
 
-    with pytest.raises(ToolValidationError, match="Only loopback"):
+    with pytest.raises(ToolValidationError, match="Host must be .* inside the workspace container"):
         await executor.execute(
             "port_forward",
             {
-                "command": "open",
+                "action": "open",
                 "port": 3000,
                 "host": "10.0.0.5",
             },

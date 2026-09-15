@@ -16,7 +16,7 @@ import {
   Loader2,
   Pencil,
 } from 'lucide-react';
-import { toast } from 'sonner';
+import { notificationPublisher } from '../lib/notifications';
 
 import { AppShell } from '../components/AppShell';
 import { Markdown } from '../components/ui/Markdown';
@@ -29,6 +29,10 @@ import type {
   MemoryListResponse,
   MemoryStats,
 } from '../types/api';
+
+import './memory-page.css';
+
+const notify = notificationPublisher('Memory');
 
 const categories = ['core', 'preference', 'project', 'correction'];
 
@@ -49,9 +53,20 @@ interface TreeRowProps {
 
 const TreeRow = memo(({ entry, depth, isExpanded, isSelected, isLoading, hasChildren, onToggle, onSelect }: TreeRowProps) => {
   return (
-    <div 
-      className={`group flex items-center gap-1 py-1 px-2 rounded-md transition-colors cursor-pointer ${
-        isSelected ? 'bg-[color:var(--surface-accent)] text-[color:var(--text-primary)]' : 'hover:bg-[color:var(--surface-1)] text-[color:var(--text-secondary)]'
+    <div
+      role="button"
+      tabIndex={0}
+      aria-expanded={hasChildren ? isExpanded : undefined}
+      aria-pressed={isSelected}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          onSelect(entry.id);
+          if (hasChildren) onToggle(entry);
+        }
+      }}
+      className={`memory-tree-row group flex items-center gap-1 py-1 px-2 rounded-md transition-colors cursor-pointer ${
+        isSelected ? 'bg-(--surface-accent) text-(--text-primary)' : 'hover:bg-(--surface-1) text-(--text-secondary)'
       }`}
       style={{ marginLeft: `${depth * 12}px` }}
       onClick={() => {
@@ -61,9 +76,9 @@ const TreeRow = memo(({ entry, depth, isExpanded, isSelected, isLoading, hasChil
     >
       <div className="w-6 flex items-center justify-center">
         {isLoading ? (
-          <RefreshCw size={12} className="animate-spin text-[color:var(--text-muted)]" />
+          <RefreshCw size={12} className="animate-spin text-(--text-muted)" />
         ) : hasChildren ? (
-          <div className="p-1 rounded hover:bg-[color:var(--surface-2)] text-[color:var(--text-muted)]">
+          <div className="p-1 rounded hover:bg-(--surface-2) text-(--text-muted)">
             {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
           </div>
         ) : null}
@@ -253,7 +268,7 @@ export function MemoryPage() {
           importance: editImportance,
           pinned: editPinned,
         });
-        toast.success('Memory updated');
+        notify.success('Memory updated');
         setIsEditorOpen(false);
         setNodesById((current) => ({ ...current, [updated.id]: updated }));
         // Update in roots if it's a root
@@ -278,7 +293,7 @@ export function MemoryPage() {
           importance: editImportance,
           pinned: editPinned,
         });
-        toast.success('Memory preserved');
+        notify.success('Memory preserved');
         setIsEditorOpen(false);
         await refreshAll();
         if (editorParent) {
@@ -286,7 +301,7 @@ export function MemoryPage() {
           setExpanded((current) => new Set(current).add(editorParent.id));
         }
       }
-    } catch { toast.error(editorMode === 'edit' ? 'Failed to update memory' : 'Failed to preserve memory'); }
+    } catch { notify.error(editorMode === 'edit' ? 'Failed to update memory' : 'Failed to preserve memory'); }
   }
 
   async function togglePin(node: MemoryEntry) {
@@ -294,7 +309,7 @@ export function MemoryPage() {
     setTogglingPin(true);
     try {
       const updated = await api.patch<MemoryEntry>(`/memory/nodes/${node.id}`, { pinned: !node.pinned });
-      toast.success(updated.pinned ? 'Memory pinned' : 'Memory unpinned');
+      notify.success(updated.pinned ? 'Memory pinned' : 'Memory unpinned');
       setNodesById((current) => ({ ...current, [updated.id]: updated }));
       setRoots((current) => current.map((r) => r.id === updated.id ? updated : r));
       if (updated.parent_id) {
@@ -306,14 +321,14 @@ export function MemoryPage() {
           return next;
         });
       }
-    } catch { toast.error('Failed to update pin'); }
+    } catch { notify.error('Failed to update pin'); }
     finally { setTogglingPin(false); }
   }
 
   async function deleteNode(node: MemoryEntry) {
     try {
       await api.delete(`/memory/${node.id}`);
-      toast.success('Memory purged');
+      notify.success('Memory purged');
       if (selectedId === node.id) setSelectedId(null);
       // Optimistically remove from local state
       setRoots((current) => current.filter((r) => r.id !== node.id));
@@ -332,45 +347,43 @@ export function MemoryPage() {
         return next;
       });
       void loadStats();
-    } catch { toast.error('Purge failed'); }
+    } catch { notify.error('Purge failed'); }
   }
 
   return (
     <AppShell
       title="Memory"
-      subtitle="Hierarchical DURABLE Knowledge Base"
-      contentClassName="h-full !p-0 overflow-hidden"
+      subtitle="Browse and organize durable knowledge"
+      contentClassName="memory-page h-full p-0! overflow-hidden"
       actions={
         <div className="flex items-center gap-2">
-          <button onClick={() => void refreshAll()} className="p-2 text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] transition-colors active:scale-95">
-            <RefreshCw size={18} className={loadingRoots ? 'animate-spin' : ''} />
+          <button onClick={() => void refreshAll()} aria-label="Refresh memories" title="Refresh memories" className="memory-refresh chat-header-pill inline-flex h-7 w-7 items-center justify-center rounded-full border border-(--border-subtle) bg-(--surface-1) text-(--text-secondary) transition-all hover:bg-(--surface-2) hover:text-(--text-primary) hover:border-(--border-strong) active:scale-95 shadow-xs">
+            <RefreshCw size={14} className={loadingRoots ? 'animate-spin' : ''} />
           </button>
-          <div className="h-4 w-px bg-[color:var(--border-subtle)] mx-1" />
-          <button
-           onClick={() => openEditor(null)}
-           className="inline-flex h-9 items-center gap-2.5 rounded-full border border-transparent bg-[color:var(--accent-solid)] px-4 text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--app-bg)] transition-all hover:opacity-90 active:scale-95 shadow-md shadow-black/5"
-         >
-            <Plus size={14} />
-            Add Memory
-          </button>
+
         </div>
       }    >
-      <div className="flex h-full w-full overflow-hidden bg-[color:var(--surface-0)]">
+      <div className="memory-layout flex h-full w-full overflow-hidden bg-(--surface-0)">
         {/* Left Explorer */}
-        <aside className="w-80 flex flex-col border-r border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]">
-          <div className="p-4 border-b border-[color:var(--border-subtle)] space-y-3">
-            <div className="relative">
-              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[color:var(--text-muted)]" />
+        <aside className="memory-explorer w-80 flex flex-col border-r border-(--border-subtle) bg-(--surface-1)">
+          <div className="p-4 border-b border-(--border-subtle) space-y-3">
+            <div className="memory-search-row">
+            <div className="relative min-w-0 flex-1">
+              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-(--text-muted)" />
               <input
                 className="input-field pl-9 h-9 text-xs"
-                placeholder="Search knowledge..."
+                aria-label="Search memories"
+                placeholder="Search memories..."
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
               />
             </div>
+            <button type="button" className="memory-add-button" onClick={() => openEditor(null)} title="Add memory" aria-label="Add memory"><Plus size={16} /></button>
+            </div>
             <div className="flex gap-2">
-              <select 
-                className="bg-[color:var(--surface-2)] text-[10px] font-bold uppercase tracking-wider px-2 py-1.5 rounded outline-none border border-transparent focus:border-[color:var(--border-strong)] transition-all flex-1"
+              <select
+                aria-label="Filter memory category"
+                className="bg-(--surface-2) text-[10px] font-bold uppercase tracking-wider px-2 py-1.5 rounded outline-hidden border border-transparent focus:border-(--border-strong) transition-all flex-1"
                 value={category}
                 onChange={(e) => { setCategory(e.target.value); void loadRoots(e.target.value); }}
               >
@@ -392,7 +405,7 @@ export function MemoryPage() {
                 </div>
               ) : (
                 searchResults.map(entry => (
-                  <TreeRow 
+                  <TreeRow
                     key={entry.id}
                     entry={entry}
                     depth={0}
@@ -407,11 +420,11 @@ export function MemoryPage() {
               )
             ) : loadingRoots ? (
               <div className="flex justify-center p-8">
-                <Loader2 size={20} className="animate-spin text-[color:var(--text-muted)]" />
+                <Loader2 size={20} className="animate-spin text-(--text-muted)" />
               </div>
             ) : (
               treeRows.map(({ entry, depth }) => (
-                <TreeRow 
+                <TreeRow
                   key={entry.id}
                   entry={entry}
                   depth={depth}
@@ -428,32 +441,32 @@ export function MemoryPage() {
         </aside>
 
         {/* Right Inspector */}
-        <main className="flex-1 overflow-y-auto bg-[color:var(--surface-0)]">
+        <main className="memory-inspector flex-1 overflow-y-auto bg-(--surface-0)">
           {!selectedNode ? (
             <div className="h-full flex flex-col items-center justify-center opacity-30 gap-4">
               <Brain size={64} strokeWidth={1} />
-              <p className="text-xs font-bold uppercase tracking-[0.2em]">Select a memory node to inspect</p>
+              <p className="text-xs font-bold uppercase tracking-[0.2em]">Select a memory to read or edit</p>
             </div>
           ) : (
-            <div className="max-w-4xl mx-auto p-8 lg:p-12 animate-in fade-in slide-in-from-bottom-2 duration-300">
-              <div className="flex items-start justify-between gap-6 mb-8">
+            <div className="memory-detail max-w-4xl mx-auto p-8 lg:p-12 animate-in fade-in slide-in-from-bottom-2 duration-300">
+              <div className="memory-detail-heading flex items-start justify-between gap-6 mb-8">
                 <div className="space-y-2">
                   <div className="flex items-center gap-3">
                     <StatusChip label={selectedNode.category} tone="info" />
                     {selectedNode.pinned && <StatusChip label="pinned" tone="warn" />}
-                    <span className="text-[10px] font-bold text-[color:var(--text-muted)] uppercase tracking-widest">
+                    <span className="text-[10px] font-bold text-(--text-muted) uppercase tracking-widest">
                       Importance: {selectedNode.importance}
                     </span>
                   </div>
                   <h1 className="text-2xl font-bold tracking-tight leading-tight">
-                    {selectedNode.title || 'Untitled Knowledge Node'}
+                    {selectedNode.title || 'Untitled memory'}
                   </h1>
-                  <p className="text-[11px] font-medium text-[color:var(--text-muted)] uppercase tracking-widest flex items-center gap-2">
+                  <p className="text-[11px] font-medium text-(--text-muted) uppercase tracking-widest flex items-center gap-2">
                     <Info size={12} />
                     Established {formatCompactDate(selectedNode.created_at)}
                   </p>
                 </div>
-                <div className="flex items-center gap-2 shrink-0">
+                <div className="memory-detail-actions flex items-center gap-2 shrink-0">
                   <button onClick={() => openEditor(selectedNode)} className="btn-secondary h-9 px-3 text-xs gap-2">
                     <Plus size={14} />
                     Add Child
@@ -468,7 +481,7 @@ export function MemoryPage() {
                         <Pin size={14} />
                         {selectedNode.pinned ? 'Pinned' : 'Pin'}
                       </button>
-                      <div className="absolute bottom-full mb-2 right-0 bg-[color:var(--surface-2)] text-[color:var(--text-muted)] text-[10px] px-2 py-1 rounded whitespace-nowrap pointer-events-none opacity-0 group-hover/sys:opacity-100 transition-opacity z-10 border border-[color:var(--border-subtle)]">
+                      <div className="absolute bottom-full mb-2 right-0 bg-(--surface-2) text-(--text-muted) text-[10px] px-2 py-1 rounded whitespace-nowrap pointer-events-none opacity-0 group-hover/sys:opacity-100 transition-opacity z-10 border border-(--border-subtle)">
                         System memory — cannot unpin
                       </div>
                     </div>
@@ -494,7 +507,7 @@ export function MemoryPage() {
                         <Trash2 size={14} />
                         Purge
                       </button>
-                      <div className="absolute bottom-full mb-2 right-0 bg-[color:var(--surface-2)] text-[color:var(--text-muted)] text-[10px] px-2 py-1 rounded whitespace-nowrap pointer-events-none opacity-0 group-hover/sysdel:opacity-100 transition-opacity z-10 border border-[color:var(--border-subtle)]">
+                      <div className="absolute bottom-full mb-2 right-0 bg-(--surface-2) text-(--text-muted) text-[10px] px-2 py-1 rounded whitespace-nowrap pointer-events-none opacity-0 group-hover/sysdel:opacity-100 transition-opacity z-10 border border-(--border-subtle)">
                         System memory — cannot purge
                       </div>
                     </div>
@@ -510,37 +523,37 @@ export function MemoryPage() {
               <div className="space-y-8">
                 {selectedNode.summary && (
                   <section className="space-y-3">
-                    <h3 className="text-[10px] font-bold uppercase tracking-[0.2em] text-[color:var(--text-muted)]">Abstract</h3>
-                    <div className="p-5 rounded-xl bg-[color:var(--surface-1)] border border-[color:var(--border-subtle)]">
+                    <h3 className="text-[10px] font-bold uppercase tracking-[0.2em] text-(--text-muted)">Summary</h3>
+                    <div className="memory-surface p-5 rounded-xl bg-(--surface-1) border border-(--border-subtle)">
                       <Markdown content={selectedNode.summary} className="italic" muted />
                     </div>
                   </section>
                 )}
 
                 <section className="space-y-3">
-                  <h3 className="text-[10px] font-bold uppercase tracking-[0.2em] text-[color:var(--text-muted)]">Raw Content</h3>
-                  <div className="p-6 rounded-xl bg-[color:var(--surface-1)] border border-[color:var(--border-subtle)]">
+                  <h3 className="text-[10px] font-bold uppercase tracking-[0.2em] text-(--text-muted)">Content</h3>
+                  <div className="memory-surface p-6 rounded-xl bg-(--surface-1) border border-(--border-subtle)">
                     <Markdown content={selectedNode.content} className="font-medium" />
                   </div>
                 </section>
 
                 <section className="space-y-3">
-                  <h3 className="text-[10px] font-bold uppercase tracking-[0.2em] text-[color:var(--text-muted)]">Sub-Nodes</h3>
+                  <h3 className="text-[10px] font-bold uppercase tracking-[0.2em] text-(--text-muted)">Child memories</h3>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                     {(childrenByParent[selectedNode.id] ?? []).map(child => (
-                      <button 
+                      <button
                         key={child.id}
                         onClick={() => setSelectedId(child.id)}
-                        className="p-4 rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] hover:bg-[color:var(--surface-1)] hover:border-[color:var(--border-strong)] transition-all text-left group"
+                        className="memory-child p-4 rounded-xl border border-(--border-subtle) bg-(--surface-0) hover:bg-(--surface-1) hover:border-(--border-strong) transition-all text-left group"
                       >
-                        <span className="text-[13px] font-semibold block truncate group-hover:text-[color:var(--accent-solid)]">{child.title || truncate(child.content, 40)}</span>
-                        <span className="text-[10px] text-[color:var(--text-muted)] mt-1 block uppercase font-bold tracking-widest">{child.category}</span>
+                        <span className="text-[13px] font-semibold block truncate group-hover:text-(--accent-solid)">{child.title || truncate(child.content, 40)}</span>
+                        <span className="text-[10px] text-(--text-muted) mt-1 block uppercase font-bold tracking-widest">{child.category}</span>
                       </button>
                     ))}
                     {(childrenByParent[selectedNode.id] ?? []).length === 0 && (
-                      <div className="col-span-full py-12 flex flex-col items-center justify-center opacity-30 border-2 border-dashed border-[color:var(--border-subtle)] rounded-2xl">
+                      <div className="col-span-full py-12 flex flex-col items-center justify-center opacity-30 border-2 border-dashed border-(--border-subtle) rounded-2xl">
                         <Filter size={24} className="mb-2" />
-                        <span className="text-[10px] font-bold uppercase tracking-widest">No dependent nodes</span>
+                        <span className="text-[10px] font-bold uppercase tracking-widest">No child memories</span>
                       </div>
                     )}
                   </div>
@@ -553,18 +566,18 @@ export function MemoryPage() {
 
       {/* Editor Modal */}
       {isEditorOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 animate-in fade-in duration-200">
-          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setIsEditorOpen(false)} />
-          <Panel className="relative w-full max-w-2xl bg-[color:var(--surface-0)] shadow-2xl overflow-hidden animate-in zoom-in-95 duration-200">
+        <div className="memory-editor fixed inset-0 z-50 flex items-center justify-center p-4 animate-in fade-in duration-200">
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-xs" onClick={() => setIsEditorOpen(false)} />
+          <Panel className="relative w-full max-w-2xl bg-(--surface-0) shadow-2xl overflow-hidden animate-in zoom-in-95 duration-200">
             <form onSubmit={handleSubmit}>
-              <div className="px-6 py-4 border-b border-[color:var(--border-subtle)] flex items-center justify-between bg-[color:var(--surface-1)]">
+              <div className="px-6 py-4 border-b border-(--border-subtle) flex items-center justify-between bg-(--surface-1)">
                 <div className="flex items-center gap-3">
-                  <Brain size={18} className="text-[color:var(--accent-solid)]" />
+                  <Brain size={18} className="text-(--accent-solid)" />
                   <h2 className="font-bold text-sm uppercase tracking-widest">
                     {editorMode === 'edit' ? 'Edit Memory Node' : editorParent ? 'Add Child Memory' : 'Preserve Root Knowledge'}
                   </h2>
                 </div>
-                <button type="button" onClick={() => setIsEditorOpen(false)} className="text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)]">
+                <button type="button" onClick={() => setIsEditorOpen(false)} className="text-(--text-muted) hover:text-(--text-primary)">
                   <X size={20} />
                 </button>
               </div>
@@ -573,21 +586,21 @@ export function MemoryPage() {
                 {editorMode === 'create' && editorParent && (
                   <div className="p-3 rounded-lg bg-blue-500/5 border border-blue-500/10 text-xs flex items-center gap-2">
                     <Info size={14} className="text-blue-500" />
-                    <span className="text-[color:var(--text-muted)]">Parent: </span>
+                    <span className="text-(--text-muted)">Parent: </span>
                     <span className="font-bold truncate text-blue-500">{editorParent.title || truncate(editorParent.content, 50)}</span>
                   </div>
                 )}
                 {editorMode === 'edit' && editingNode && (
                   <div className="p-3 rounded-lg bg-amber-500/5 border border-amber-500/10 text-xs flex items-center gap-2">
                     <Pencil size={14} className="text-amber-500" />
-                    <span className="text-[color:var(--text-muted)]">Editing: </span>
+                    <span className="text-(--text-muted)">Editing: </span>
                     <span className="font-bold truncate text-amber-500">{editingNode.title || truncate(editingNode.content, 50)}</span>
                   </div>
                 )}
 
                 <div className="space-y-2">
-                  <label className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Subject Header</label>
-                  <input 
+                  <label className="text-[10px] font-bold uppercase tracking-widest text-(--text-muted)">Subject Header</label>
+                  <input
                     className="input-field h-11"
                     placeholder="Enter node title..."
                     value={editTitle}
@@ -596,8 +609,8 @@ export function MemoryPage() {
                 </div>
 
                 <div className="space-y-2">
-                  <label className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Abstract / Summary</label>
-                  <textarea 
+                  <label className="text-[10px] font-bold uppercase tracking-widest text-(--text-muted)">Abstract / Summary</label>
+                  <textarea
                     className="input-field min-h-[80px] py-3 resize-none"
                     placeholder="Brief overview..."
                     value={editSummary}
@@ -606,8 +619,8 @@ export function MemoryPage() {
                 </div>
 
                 <div className="space-y-2">
-                  <label className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] text-[color:var(--accent-solid)]">Durable Content</label>
-                  <textarea 
+                  <label className="text-[10px] font-bold uppercase tracking-widest text-(--text-muted) text-(--accent-solid)">Durable Content</label>
+                  <textarea
                     className="input-field min-h-[160px] py-3 resize-none font-medium"
                     placeholder="The core memory content..."
                     value={editContent}
@@ -618,8 +631,8 @@ export function MemoryPage() {
 
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
-                    <label className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Category</label>
-                    <select 
+                    <label className="text-[10px] font-bold uppercase tracking-widest text-(--text-muted)">Category</label>
+                    <select
                       className="input-field h-11 uppercase font-bold text-[10px] tracking-wider"
                       value={editCategory}
                       onChange={(e) => setEditCategory(e.target.value)}
@@ -628,31 +641,31 @@ export function MemoryPage() {
                     </select>
                   </div>
                   <div className="space-y-2">
-                    <label className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Priority Level: {editImportance}%</label>
-                    <input 
+                    <label className="text-[10px] font-bold uppercase tracking-widest text-(--text-muted)">Priority Level: {editImportance}%</label>
+                    <input
                       type="range"
-                      className="w-full mt-4 accent-[color:var(--accent-solid)]"
+                      className="w-full mt-4 accent-(--accent-solid)"
                       value={editImportance}
                       onChange={(e) => setEditImportance(parseInt(e.target.value))}
                     />
                   </div>
                 </div>
 
-                <label className="flex items-center gap-3 p-4 rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] cursor-pointer hover:border-[color:var(--border-strong)] transition-all">
-                  <input 
+                <label className="flex items-center gap-3 p-4 rounded-xl border border-(--border-subtle) bg-(--surface-1) cursor-pointer hover:border-(--border-strong) transition-all">
+                  <input
                     type="checkbox"
-                    className="w-4 h-4 accent-[color:var(--accent-solid)]"
+                    className="w-4 h-4 accent-(--accent-solid)"
                     checked={editPinned}
                     onChange={(e) => setEditPinned(e.target.checked)}
                   />
                   <div className="flex flex-col">
                     <span className="text-xs font-bold uppercase tracking-widest">Pin to context</span>
-                    <span className="text-[10px] text-[color:var(--text-muted)]">Pinned nodes are prioritized during LLM retrieval</span>
+                    <span className="text-[10px] text-(--text-muted)">Pinned nodes are prioritized during LLM retrieval</span>
                   </div>
                 </label>
               </div>
 
-              <div className="p-6 bg-[color:var(--surface-1)] border-t border-[color:var(--border-subtle)] flex items-center justify-end gap-3">
+              <div className="p-6 bg-(--surface-1) border-t border-(--border-subtle) flex items-center justify-end gap-3">
                 <button type="button" onClick={() => setIsEditorOpen(false)} className="btn-secondary h-11 px-6">Cancel</button>
                 <button type="submit" className="btn-primary h-11 px-8 gap-2">
                   <Save size={18} />

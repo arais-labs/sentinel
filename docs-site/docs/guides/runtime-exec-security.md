@@ -1,147 +1,71 @@
 ---
 sidebar_position: 7
-title: Runtime Exec Security
+title: Workspace Runtime
 ---
 
-# Runtime Exec Security
+# Workspace Runtime
 
-The agent runs shell commands through the **`runtime`** system module. Every
-command executes on the instance's managed **SSH/tmux runtime target**, inside an
-OS-level sandbox: **Bubblewrap** on Linux runtimes and **macOS Seatbelt**
-(`sandbox-exec`) on macOS runtimes. There is no unconfined or "root" execution
-mode — all `runtime` commands run confined.
+The `runtime` tool executes commands in the session's attached workspace: a
+persistent Linux container managed by Sentinel. On Apple silicon Macs, Sentinel
+uses Apple Containerization. It does not execute agent commands in the host shell.
 
-Each Sentinel instance has its own runtime target and its own per-session
-workspace, so command execution is isolated per instance. See
-[Multi-instance](./multi-instance.md) for how instances are scoped.
+## Project paths
 
-## The `runtime` module
+The selected project folder is mounted at **the same absolute path** inside the
+container. For example, `/Users/developer/Projects/app` is the project directory on both
+the Mac and in the container. New terminals start there. There is no `/workspace`
+alias or per-tool path translation.
 
-`runtime` is a grouped system tool with four actions:
+Absolute symlinks and Git worktree metadata can resolve naturally when their
+targets are within the shared folder. A worktree whose metadata or files are
+outside that folder is not automatically shared. Select a common parent folder
+when the repository and its worktrees need to be available together.
 
-| Action | What it does |
+The parent directories of the mount are container directories. Preserving the
+project's path does not expose the host's home directory or neighboring projects.
+
+## Filesystem and tool installation
+
+The project folder is shared read/write with the host. The rest of the container's
+filesystem is private to that workspace:
+
+| Location | Storage |
 |---|---|
-| `runtime.user` | Run a shell command in the session workspace |
-| `runtime.terminal_list` | List active tmux-backed terminals for the session |
-| `runtime.terminal_read` | Read recent (ANSI-stripped) output from terminals |
-| `runtime.terminal_close` | Close one or more terminals |
+| Selected project path | Shared host project folder |
+| `/root` (`HOME`) | Workspace's persistent container disk |
+| `/tmp` (`TMPDIR`) | Inside the workspace container |
+| Installed packages and caches | Workspace's persistent container disk |
+| Docker images and volumes | Workspace's private Docker engine |
 
-Commands run inside the session's tmux-backed sandbox on the runtime target. If
-no runtime SSH target is configured for the instance, the tool fails with
-`Runtime SSH target is not configured.`
+Agents can install missing packages with the distribution’s package manager
+(`apk` on Alpine, `apt` on Ubuntu or Debian) or put local executables in
+`$HOME/.local/bin`, which is on the terminal PATH. These are Linux programs; a
+macOS executable in the shared project does not become a Linux executable.
+Container root is not host root. No host Docker socket is shared.
 
-### `runtime.user` parameters
+## Commands and terminals
 
-| Field | Required | Notes |
-|---|---|---|
-| `shell_command` | yes | The command to run |
-| `cwd` | no | Working directory inside the sandbox, e.g. `/workspace` |
-| `terminal_id` | no | Defaults to `0`, the prioritized main terminal |
-| `timeout_seconds` | no | Defaults to `300`, capped at `3600` |
-| `background` | no | Run in a non-primary terminal and return immediately |
-| `env` | no | Extra environment variables for this command |
+`runtime` is a grouped model tool. Select its operation with the `action` argument.
 
-## Sandbox contract
+- `workspace`: inspect the attachment and available workspaces.
+- `exec`: run a shell command in a pane.
+- `terminal_list`: inspect the session's windows and panes.
+- `window_create`, `window_rename`, `window_close`: manage windows.
+- `pane_split`, `pane_rename`, `pane_close`: manage panes.
+- `pane_input`, `pane_read`: interact with a program or read pane output.
 
-All `runtime.user` commands run confined. The sandbox is chosen automatically
-from the detected runtime OS:
+Use the pane IDs returned by `terminal_list`; the UI's selected pane is independent
+of the agent's target. When multiple panes exist, `exec` requires `pane_id`.
+Omit `cwd` to retain the shell's current directory. An explicit `cwd` refers to a
+path inside the container.
 
-- **Linux runtime** → Bubblewrap (`bwrap`)
-- **macOS runtime** → Seatbelt (`sandbox-exec`)
+Several sessions may share the same workspace files and installed tools. Each
+session has its own tmux session; a workspace is not a separate checkout for each
+agent. Coordinate concurrent edits or use separate Git worktrees.
 
-If the runtime is neither a Linux host with Bubblewrap nor a macOS host with
-`sandbox-exec`, the runtime refuses to execute and reports
-`runtime_sandbox_unavailable` rather than running unconfined.
+## Lifecycle
 
-### Filesystem confinement
-
-The filesystem is read-only by default; only the session's own paths are
-writable. Writes outside the session workspace (for example `/app`, `/etc`,
-`/root`, system directories) are blocked.
-
-**Linux (Bubblewrap).** System roots such as `/usr` and `/etc` are mounted
-read-only, `/tmp` is a fresh tmpfs, and only the session paths are bound
-read-write:
-
-| Path inside the sandbox | Writable |
-|---|---|
-| `/workspace` (session workspace) | yes |
-| `/state` (session state, incl. `HOME`) | yes |
-| `/tmp/sentinel` (`TMPDIR`) | yes |
-| everything else | no |
-
-**macOS (Seatbelt).** The profile is `(deny default)` with explicit allows.
-File writes are permitted only under the session's workspace tree; system roots
-(`/usr/lib`, `/usr/share`, the frameworks, and tool roots like Homebrew or the
-Command Line Tools) are read-only.
-
-### What is allowed
-
-- `process-exec` / `process-fork` so the shell can spawn child processes.
-- Outbound network access (the sandbox does **not** block network egress).
-- Read-only access to system libraries and resolved tool roots (`bash`, `tmux`,
-  `git`, `gh`, `ssh`).
-
-## Background commands
-
-Pass `background=true` to run a long-lived command in a non-primary terminal and
-return immediately; the call yields a `job_id` and `status: "running"`, and a
-runtime job-completed event is broadcast when it finishes. Background commands
-cannot use terminal `0` (the main terminal) — supply a `terminal_id` or one is
-generated. Use `runtime.terminal_read` to inspect progress (not to busy-poll for
-completion) and `runtime.terminal_close` to clean up.
-
-## Timeout behavior
-
-Foreground executions enforce `timeout_seconds` (default `300`, max `3600`). For
-work that may exceed the timeout, prefer `background=true` rather than a long
-inline timeout, then read the terminal or wait for the completion event.
-
-## Approvals
-
-The `runtime` module's actions are not approval-gated by default — there is no
-per-command approval prompt for `runtime.user`. Approvals in Sentinel are a
-separate, module-action-level mechanism (the three-level `allow` / `approval` /
-`deny` system) and apply to whichever module actions are configured to require
-them. See [Permissions](./permissions.md) for how levels are resolved and how
-approval-gated actions return `202 Accepted`.
-
-:::warning Current limitations
-
-- **No privileged / unconfined mode.** Earlier builds exposed a `privilege=root`
-  unconfined path on a `runtime_exec` tool; that no longer exists. The current
-  `runtime` module only offers the sandboxed `runtime.user` action. Commands that
-  genuinely need elevated host access are not supported through the agent
-  runtime.
-- **Sandbox protects the filesystem, not the network.** Outbound network access
-  is allowed inside the sandbox. Treat anything the agent can reach over the
-  network as in scope.
-- **macOS Seatbelt is applied at the runtime, not at the SSH transport.** The
-  sandbox confines the executed command on the target host; SSH key/password auth
-  to the runtime is a separate security boundary.
-- **No RBAC.** All users of an instance share the same module permission levels;
-  per-user runtime restrictions are not available.
-
-:::
-
-## Example payloads
-
-Run a command in the session workspace (foreground):
-
-```json
-{
-  "shell_command": "pytest -q",
-  "cwd": "/workspace",
-  "timeout_seconds": 300
-}
-```
-
-Run a long-lived command in the background:
-
-```json
-{
-  "shell_command": "npm run dev",
-  "terminal_id": "dev",
-  "background": true
-}
-```
+Stopping a workspace stops its container and terminals while retaining its disk.
+Removing it deletes its private container data and detaches linked sessions when
+requested; the selected host project folder is preserved. Active agents must stop
+before their workspace can be removed.

@@ -2,57 +2,36 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Callable
 
-from alembic.config import Config
-from alembic.script import ScriptDirectory
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import Select
 
 from app.config import app_version
-from app.models.araios import AraiosModule, AraiosModuleRecord, AraiosModuleSecret
 from app.models.memory import Memory, SessionSummary
+from app.models.modules import Module, ModuleRecord, ModuleSecret
 from app.models.session_bindings import SessionBinding
 from app.models.sessions import Message, Session
 from app.models.sub_agents import SubAgentTask
 from app.models.triggers import Trigger, TriggerLog
+from app.models.workspaces import Workspace
 from app.services.backup.crypto import decrypt_backup, encrypt_backup
-from app.services.backup.errors import BackupCompatibilityError, BackupFormatError
+from app.services.backup.errors import BackupFormatError
 from app.services.secrets import is_invalid_secret
 from app.services.secrets.encryption import SecretDecryptionError
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 3
 BACKUP_KIND = "sentinel-instance-backup"
 
-# ── backup compatibility contract ──
-# Every backup is stamped with the app version that wrote it
-# (`created_by_version`). It restores only when:
-#     MIN_RESTORABLE_VERSION <= created_by_version        (full SemVer compare)
-#     created_by_version.major <= running app's major     (forward guard)
-# MIN_RESTORABLE_VERSION is the single knob: raise it to the current VERSION
-# whenever a change makes older backups unrestorable. Until then every newer
-# backup keeps restoring for free — compatibility is the default, you opt out.
-MIN_RESTORABLE_VERSION = "0.1.0"
-
-# Dead-man's-switch for schema drift. Pinned to the instance migration head this
-# build is verified to restore onto. Any new instance migration moves the real
-# head, which both reddens test_backup_verified_head_matches_instance_head and
-# makes restore refuse at runtime — until a commit re-affirms this head (and, if
-# the migration breaks old backups, raises MIN_RESTORABLE_VERSION).
-VERIFIED_INSTANCE_ALEMBIC_HEAD = "0000_instance_v1"
-
-_BACKEND_ROOT = Path(__file__).resolve().parents[3]
-_INSTANCE_SCRIPT_LOCATION = _BACKEND_ROOT / "db" / "alembic" / "instance"
-_VERSION_RE = re.compile(r"(\d+)\.(\d+)\.(\d+)")
+# Backup compatibility is determined by the payload format, not app versions.
+# Session grants and pending approvals are excluded: restore requires fresh consent.
 
 _EPOCH = datetime.min.replace(tzinfo=timezone.utc)
 
@@ -91,7 +70,10 @@ ITEMS: dict[str, Item] = {
         tables=(
             TableSpec(
                 Session,
-                nullable_refs=(Ref("parent_session_id", Session, "id"),),
+                nullable_refs=(
+                    Ref("parent_session_id", Session, "id"),
+                    Ref("workspace_id", Workspace, "id"),
+                ),
                 order_by="created_at",
             ),
             TableSpec(Message, required_refs=(Ref("session_id", Session, "id"),)),
@@ -120,16 +102,16 @@ ITEMS: dict[str, Item] = {
         label="Modules",
         tables=(
             TableSpec(
-                AraiosModule,
-                export_filter=lambda q: q.where(AraiosModule.system.is_(False)),
+                Module,
+                export_filter=lambda q: q.where(Module.system.is_(False)),
             ),
             TableSpec(
-                AraiosModuleRecord,
-                required_refs=(Ref("module_name", AraiosModule, "name"),),
+                ModuleRecord,
+                required_refs=(Ref("module_name", Module, "name"),),
             ),
             TableSpec(
-                AraiosModuleSecret,
-                required_refs=(Ref("module_name", AraiosModule, "name"),),
+                ModuleSecret,
+                required_refs=(Ref("module_name", Module, "name"),),
             ),
         ),
     ),
@@ -171,56 +153,15 @@ class ImportSummary:
             self.skipped += 1
 
     def as_dict(self) -> dict[str, Any]:
-        return {"imported": self.imported, "skipped": self.skipped, "by_table": self.by_table}
+        return {
+            "imported": self.imported,
+            "skipped": self.skipped,
+            "by_table": self.by_table,
+        }
 
 
 def available_items() -> list[dict[str, str]]:
     return [{"key": i.key, "label": i.label} for i in ITEMS.values()]
-
-
-# ── version compatibility ──
-def _version_tuple(value: str | None) -> tuple[int, int, int] | None:
-    match = _VERSION_RE.match((value or "").strip())
-    if not match:
-        return None
-    return (int(match.group(1)), int(match.group(2)), int(match.group(3)))
-
-
-def restorable_reason(created_by_version: str | None) -> str | None:
-    """None if a backup stamped `created_by_version` can be restored on this
-    build, otherwise a human-readable reason it cannot."""
-    made = _version_tuple(created_by_version)
-    if made is None:
-        return "Backup has no valid version stamp and cannot be restored."
-    floor = _version_tuple(MIN_RESTORABLE_VERSION) or (0, 0, 0)
-    if made < floor:
-        return (
-            f"Backup was made by Sentinel {created_by_version}; this version "
-            f"only restores backups from {MIN_RESTORABLE_VERSION} or newer."
-        )
-    current = _version_tuple(app_version()) or (0, 0, 0)
-    if made[0] > current[0]:
-        return f"Backup was made by a newer Sentinel ({created_by_version}). Update to restore it."
-    return None
-
-
-def _instance_migration_head() -> str | None:
-    try:
-        config = Config()
-        config.set_main_option("script_location", str(_INSTANCE_SCRIPT_LOCATION))
-        heads = ScriptDirectory.from_config(config).get_heads()
-    except Exception:  # pragma: no cover - migrations missing/unreadable
-        return None
-    return heads[0] if len(heads) == 1 else None
-
-
-def _assert_schema_verified() -> None:
-    if _instance_migration_head() != VERIFIED_INSTANCE_ALEMBIC_HEAD:
-        raise BackupCompatibilityError(
-            "Instance database schema has changed and backup restore has not "
-            "been re-verified for it. Restore is disabled until the app is "
-            "updated."
-        )
 
 
 # ── serialization helpers ──
@@ -248,8 +189,6 @@ def _jsonable(value: Any) -> Any:
         return str(value)
     if isinstance(value, datetime):
         return value.isoformat()
-    if hasattr(value, "tolist"):  # numpy ndarray (pgvector embedding)
-        return value.tolist()
     return value
 
 
@@ -269,7 +208,7 @@ def _coerce(value: Any, column) -> Any:
     try:
         pytype = column.type.python_type
     except NotImplementedError:
-        return value  # e.g. pgvector Vector — accepts a plain list
+        return value
     if pytype is uuid.UUID and isinstance(value, str):
         return uuid.UUID(value)
     if pytype is datetime and isinstance(value, str):
@@ -405,24 +344,37 @@ def _decode_payload(blob: bytes, passphrase: str) -> dict[str, Any]:
         raise BackupFormatError("Backup payload is not valid JSON.") from exc
     if not isinstance(payload, dict) or payload.get("kind") != BACKUP_KIND:
         raise BackupFormatError("File is not a Sentinel instance backup.")
-    if payload.get("schema_version") != SCHEMA_VERSION:
+    if (
+        type(payload.get("schema_version")) is not int
+        or payload["schema_version"] != SCHEMA_VERSION
+    ):
         raise BackupFormatError("Unsupported backup schema version.")
     if not isinstance(payload.get("tables"), dict):
         raise BackupFormatError("Backup is missing its table payload.")
+    items = payload.get("items")
+    if not isinstance(items, list) or any(
+        not isinstance(item, str) or item not in ITEMS for item in items
+    ):
+        raise BackupFormatError("Backup has invalid item selections.")
+    allowed_tables = {spec.model.__tablename__ for item in items for spec in ITEMS[item].tables}
+    for table, rows in payload["tables"].items():
+        if (
+            table not in allowed_tables
+            or not isinstance(rows, list)
+            or any(not isinstance(row, dict) for row in rows)
+        ):
+            raise BackupFormatError("Backup has an invalid table payload.")
     return payload
 
 
 def inspect_backup(blob: bytes, passphrase: str) -> dict[str, Any]:
     payload = _decode_payload(blob, passphrase)
     created_by = payload.get("created_by_version")
-    reason = restorable_reason(created_by)
     return {
         "source_instance": payload.get("source_instance"),
         "created_at": payload.get("created_at"),
         "created_by_version": created_by,
         "items": [i for i in payload.get("items", []) if i in ITEMS],
-        "restorable": reason is None,
-        "compatibility": reason,
     }
 
 
@@ -487,10 +439,6 @@ async def import_backup(
     owner_user_id: str | None = None,
 ) -> ImportSummary:
     payload = _decode_payload(blob, passphrase)
-    reason = restorable_reason(payload.get("created_by_version"))
-    if reason:
-        raise BackupCompatibilityError(reason)
-    _assert_schema_verified()
     backup_items = set(payload.get("items", []))
     requested = set(items) if items is not None else None
 

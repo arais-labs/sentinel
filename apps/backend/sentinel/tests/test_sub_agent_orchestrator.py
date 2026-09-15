@@ -4,16 +4,17 @@ import asyncio
 import json
 
 from app.models import Message, Session, SubAgentTask
-from app.services.agent import ContextBuilder, SentinelRuntimeSupport
-from app.services.llm.generic.base import LLMProvider
-from app.services.llm.generic.types import (
+from app.services.agent.context_builder import ContextBuilder
+from app.services.agent.runtime_support import SentinelRuntimeSupport
+from sentral.llm.generic.base import LLMProvider
+from sentral.llm.generic.types import (
     AgentEvent,
     AssistantMessage,
     TextContent,
     ToolCallContent,
     TokenUsage,
 )
-from app.services.sub_agents import SubAgentOrchestrator
+from app.services.sub_agents.orchestrator import SubAgentOrchestrator
 from app.services.tools import ToolDefinition, ToolExecutor, ToolRegistry
 from app.services.tools.registry import ToolRuntimeContext
 from tests.fake_db import FakeDB
@@ -63,9 +64,23 @@ class _SequenceProvider(LLMProvider):
         self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None
     ):
         _ = tool_choice
-        if False:
-            yield AgentEvent(type="done", stop_reason="stop")
-        return
+        message = await self.chat(
+            messages, model, tools, temperature, reasoning_config, tool_choice
+        )
+        message.provider_usage = {
+            "usage": {
+                "input_tokens": message.usage.input_tokens,
+                "output_tokens": message.usage.output_tokens,
+            },
+            "price_kind": "api_list_price",
+            "price": {"usd": "0.00012"},
+        }
+        for index, block in enumerate(message.content):
+            if isinstance(block, TextContent):
+                yield AgentEvent(type="text_delta", content_index=index, delta=block.text)
+            elif isinstance(block, ToolCallContent):
+                yield AgentEvent(type="toolcall_start", content_index=index, tool_call=block)
+        yield AgentEvent(type="done", message=message, stop_reason=message.stop_reason)
 
 
 class _SlowProvider(LLMProvider):
@@ -110,8 +125,6 @@ def _add_task(db: FakeDB, session: Session, **kwargs) -> SubAgentTask:
         context=kwargs.get("context", "scope"),
         constraints=[],
         allowed_tools=kwargs.get("allowed_tools", []),
-        max_turns=kwargs.get("max_turns", 3),
-        timeout_seconds=kwargs.get("timeout_seconds", 30),
         status="pending",
     )
     db.add(task)
@@ -122,7 +135,7 @@ def test_orchestrator_completes_and_creates_child_session_with_usage():
     db = FakeDB()
     parent = Session(user_id="dev-admin", status="active", title="parent")
     db.add(parent)
-    task = _add_task(db, parent, max_turns=2)
+    task = _add_task(db, parent)
 
     provider = _SequenceProvider(
         [
@@ -140,7 +153,7 @@ def test_orchestrator_completes_and_creates_child_session_with_usage():
 
     _run(orchestrator.run_task(task.id))
 
-    assert task.status == "completed"
+    assert task.status == "completed", task.result
     assert task.turns_used == 1
     assert task.tokens_used == 12
     child_id = task.result["child_session_id"]
@@ -152,7 +165,7 @@ def test_orchestrator_scopes_allowed_tools():
     db = FakeDB()
     parent = Session(user_id="dev-admin", status="active", title="parent")
     db.add(parent)
-    task = _add_task(db, parent, allowed_tools=["allowed_tool"], max_turns=2)
+    task = _add_task(db, parent, allowed_tools=["allowed_tool"])
 
     registry = ToolRegistry()
 
@@ -202,7 +215,7 @@ def test_orchestrator_scopes_allowed_tools():
 
     _run(orchestrator.run_task(task.id))
 
-    assert task.status == "completed"
+    assert task.status == "completed", task.result
     child_id = task.result["child_session_id"]
     tool_result = next(
         m for m in db.storage[Message] if str(m.session_id) == child_id and m.role == "tool_result"
@@ -215,7 +228,7 @@ def test_sub_agents_do_not_receive_delegate_tool_or_policy():
     db = FakeDB()
     parent = Session(user_id="dev-admin", status="active", title="parent")
     db.add(parent)
-    task = _add_task(db, parent, max_turns=2)
+    task = _add_task(db, parent)
 
     registry = ToolRegistry()
 
@@ -236,7 +249,7 @@ def test_sub_agents_do_not_receive_delegate_tool_or_policy():
             AssistantMessage(
                 content=[
                     ToolCallContent(
-                        id="call_delegate", name="delegate", arguments={"command": "spawn"}
+                        id="call_delegate", name="delegate", arguments={"action": "spawn"}
                     )
                 ],
                 model="m",
@@ -263,7 +276,7 @@ def test_sub_agents_do_not_receive_delegate_tool_or_policy():
 
     _run(orchestrator.run_task(task.id))
 
-    assert task.status == "completed"
+    assert task.status == "completed", task.result
     child_id = task.result["child_session_id"]
     tool_result = next(
         m for m in db.storage[Message] if str(m.session_id) == child_id and m.role == "tool_result"
@@ -274,11 +287,11 @@ def test_sub_agents_do_not_receive_delegate_tool_or_policy():
     assert "## Delegation Policy" not in (child_session.latest_system_prompt or "")
 
 
-def test_orchestrator_reports_actual_iterations_with_grace():
+def test_orchestrator_reports_actual_iterations_without_budget():
     db = FakeDB()
     parent = Session(user_id="dev-admin", status="active", title="parent")
     db.add(parent)
-    task = _add_task(db, parent, max_turns=1)
+    task = _add_task(db, parent)
 
     provider = _SequenceProvider(
         [
@@ -290,7 +303,7 @@ def test_orchestrator_reports_actual_iterations_with_grace():
                 usage=TokenUsage(),
                 stop_reason="tool_use",
             ),
-            # Grace analysis response (FAST model).
+            # Next automatic response.
             AssistantMessage(
                 content=[TextContent(text='{"continue": true}')],
                 model="m",
@@ -298,7 +311,7 @@ def test_orchestrator_reports_actual_iterations_with_grace():
                 usage=TokenUsage(),
                 stop_reason="stop",
             ),
-            # Grace iteration.
+            # Unused response after completion.
             AssistantMessage(
                 content=[TextContent(text="done")],
                 model="m",
@@ -312,17 +325,17 @@ def test_orchestrator_reports_actual_iterations_with_grace():
     orchestrator = SubAgentOrchestrator(runtime_support, _SessionFactory(db), ToolRegistry())
 
     _run(orchestrator.run_task(task.id))
-    assert task.status == "completed"
+    assert task.status == "completed", task.result
     assert task.turns_used == 2
     assert isinstance(task.result, dict)
-    assert int(task.result.get("iterations", 0)) == 2
+    assert provider.calls == 2
 
 
 def test_orchestrator_uses_parent_runtime_session_for_runtime_bound_tools():
     db = FakeDB()
     parent = Session(user_id="dev-admin", status="active", title="parent")
     db.add(parent)
-    task = _add_task(db, parent, allowed_tools=["inspect_runtime"], max_turns=2)
+    task = _add_task(db, parent, allowed_tools=["inspect_runtime"])
 
     registry = ToolRegistry()
 
@@ -364,7 +377,7 @@ def test_orchestrator_uses_parent_runtime_session_for_runtime_bound_tools():
 
     _run(orchestrator.run_task(task.id))
 
-    assert task.status == "completed"
+    assert task.status == "completed", task.result
     child_id = task.result["child_session_id"]
     tool_result = next(
         m for m in db.storage[Message] if str(m.session_id) == child_id and m.role == "tool_result"
@@ -374,26 +387,11 @@ def test_orchestrator_uses_parent_runtime_session_for_runtime_bound_tools():
     assert payload["runtime_session_id"] == str(parent.id)
 
 
-def test_orchestrator_timeout_marks_task_failed():
-    db = FakeDB()
-    parent = Session(user_id="dev-admin", status="active", title="parent")
-    db.add(parent)
-    task = _add_task(db, parent, timeout_seconds=1)
-
-    orchestrator = SubAgentOrchestrator(
-        _build_base_runtime_support(_SlowProvider()), _SessionFactory(db), ToolRegistry()
-    )
-    _run(orchestrator.run_task(task.id))
-
-    assert task.status == "failed"
-    assert "timed out" in (task.result or {}).get("error", "")
-
-
 def test_orchestrator_start_task_returns_true_and_runs():
     db = FakeDB()
     parent = Session(user_id="dev-admin", status="active", title="parent")
     db.add(parent)
-    task = _add_task(db, parent, timeout_seconds=2)
+    task = _add_task(db, parent)
 
     provider = _SequenceProvider(
         [
@@ -415,28 +413,27 @@ def test_orchestrator_start_task_returns_true_and_runs():
         await asyncio.sleep(0.05)
 
     _run(_scenario())
-    assert task.status == "completed"
+    assert task.status == "completed", task.result
 
 
-def test_orchestrator_complete_task_fallback_sets_completed_result():
+def test_orchestrator_without_runtime_reports_failure():
     db = FakeDB()
     parent = Session(user_id="dev-admin", status="active", title="parent")
     db.add(parent)
-    task = _add_task(db, parent, max_turns=3)
+    task = _add_task(db, parent)
 
     orchestrator = SubAgentOrchestrator(None, _SessionFactory(db), ToolRegistry())
     _run(orchestrator.complete_task(db, task))
 
-    assert task.status == "completed"
-    assert isinstance(task.result, dict)
-    assert "summary" in task.result
+    assert task.status == "failed"
+    assert "unavailable" in task.result["error"]
 
 
 def test_orchestrator_cancel_task_marks_cancelled():
     db = FakeDB()
     parent = Session(user_id="dev-admin", status="active", title="parent")
     db.add(parent)
-    task = _add_task(db, parent, timeout_seconds=5)
+    task = _add_task(db, parent)
 
     orchestrator = SubAgentOrchestrator(
         _build_base_runtime_support(_SlowProvider()), _SessionFactory(db), ToolRegistry()
@@ -458,7 +455,7 @@ def test_orchestrator_invokes_completion_callback():
     db = FakeDB()
     parent = Session(user_id="dev-admin", status="active", title="parent")
     db.add(parent)
-    task = _add_task(db, parent, max_turns=1)
+    task = _add_task(db, parent)
 
     provider = _SequenceProvider(
         [
@@ -485,5 +482,5 @@ def test_orchestrator_invokes_completion_callback():
     )
     _run(orchestrator.run_task(task.id))
 
-    assert task.status == "completed"
+    assert task.status == "completed", task.result
     assert seen and seen[-1] == (str(task.id), "completed")

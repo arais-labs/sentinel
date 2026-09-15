@@ -5,12 +5,12 @@ import asyncio
 import pytest
 from pydantic import ValidationError
 
-from app.models.araios import AraiosModule
+from app.models.modules import Module
 from app.schemas.modules import ModuleCreateRequest, module_create_tool_parameters_schema
-from app.services.araios.system_modules.module_manager.handlers import (
+from app.services.modules.builtins.module_manager.handlers import (
     _validate_module_create_payload,
 )
-from app.services.araios.system_modules.module_manager.module import (
+from app.services.modules.builtins.module_manager.module import (
     _create_module_parameters_schema,
 )
 from tests.fake_db import FakeDB
@@ -58,14 +58,14 @@ def test_module_manager_registers_with_generated_create_schema():
     assert registry.get("module_manager") is not None
 
 
-def test_create_dynamic_module_stores_validated_secret_definitions(monkeypatch):
-    from app.routers.araios import modules as modules_router
+def test_create_custom_module_stores_validated_secret_definitions(monkeypatch):
+    from app.routers import modules as modules_router
 
     async def noop_rebuild(_request):
         return None
 
     monkeypatch.setattr(modules_router, "_rebuild_current_instance_runtime", noop_rebuild)
-    db = FakeDB(seed_auth=False)
+    db = FakeDB()
     body = ModuleCreateRequest.model_validate(
         {
             "name": "Interactive_Brokers_Accounts",
@@ -86,14 +86,14 @@ def test_create_dynamic_module_stores_validated_secret_definitions(monkeypatch):
     )
 
     _run(
-        modules_router._create_dynamic_module(
+        modules_router._create_custom_module(
             body=body,
             request=object(),
             db=db,
         )
     )
 
-    [module] = db.storage[AraiosModule]
+    [module] = db.storage[Module]
     assert module.name == "interactive_brokers_accounts"
     assert module.secrets == [
         {"key": "ibkr_bridge_url", "label": "IBKR Bridge URL", "required": True},

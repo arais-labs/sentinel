@@ -3,12 +3,11 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.dependencies import get_db
-from app.middleware.auth import TokenPayload, require_admin
 from app.models import AuditLog
 from app.schemas.admin import AuditLogListResponse, AuditLogResponse, ConfigResponse
 
@@ -21,18 +20,21 @@ async def list_audit_logs(
     user_id: str | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
-    user: TokenPayload = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ) -> AuditLogListResponse:
-    _ = user
-    result = await db.execute(select(AuditLog))
-    items = result.scalars().all()
+    filters = []
     if action:
-        items = [item for item in items if item.action == action]
+        filters.append(AuditLog.action == action)
     if user_id:
-        items = [item for item in items if item.user_id == user_id]
-    items.sort(key=lambda item: item.timestamp or datetime.min.replace(tzinfo=UTC), reverse=True)
-    paged = items[offset : offset + limit]
+        filters.append(AuditLog.user_id == user_id)
+    total = await db.scalar(select(func.count()).select_from(AuditLog).where(*filters))
+    result = await db.execute(
+        select(AuditLog)
+        .where(*filters)
+        .order_by(AuditLog.timestamp.desc(), AuditLog.id.desc())
+        .limit(limit)
+        .offset(offset)
+    )
     return AuditLogListResponse(
         items=[
             AuditLogResponse(
@@ -46,23 +48,16 @@ async def list_audit_logs(
                 ip_address=str(item.ip_address) if item.ip_address is not None else None,
                 request_id=item.request_id,
             )
-            for item in paged
+            for item in result.scalars()
         ],
-        total=len(items),
+        total=total or 0,
     )
 
 
 @router.get("/config")
-async def get_config(
-    user: TokenPayload = Depends(require_admin),
-) -> ConfigResponse:
-    _ = user
+async def get_config() -> ConfigResponse:
     return ConfigResponse(
         app_name=settings.app_name,
         app_env=settings.app_env,
-        jwt_algorithm=settings.jwt_algorithm,
-        access_token_ttl_seconds=settings.access_token_ttl_seconds,
-        refresh_token_ttl_seconds=settings.refresh_token_ttl_seconds,
         context_token_budget=settings.context_token_budget,
-        jwt_secret_key="***",
     )

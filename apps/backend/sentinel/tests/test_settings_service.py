@@ -9,8 +9,8 @@ from fastapi import HTTPException
 from app.config import settings
 from app.models.system import SystemSetting
 from app.services.llm.factory import _build_enabled_providers
-from app.services.llm.ids import ProviderChoice
-from app.services.llm.providers.gemini_oauth import GeminiOAuthProvider
+from sentral.llm.ids import ProviderChoice
+from sentral.llm.providers.gemini_oauth import GeminiOAuthProvider
 from app.services.settings.settings_service import SettingsService
 from tests.fake_db import FakeDB
 
@@ -202,13 +202,9 @@ def test_extract_codex_access_token_rejects_missing_token() -> None:
     assert "access_token" in str(exc.value.detail)
 
 
-def test_desktop_codex_oauth_status_uses_app_env_and_auth_file(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_desktop_codex_oauth_status_finds_auth_file(tmp_path: Path) -> None:
     auth_path = tmp_path / "auth.json"
     auth_path.write_text('{"tokens":{"access_token":"codex-access-token"}}', encoding="utf-8")
-    monkeypatch.setattr(settings, "app_env", "desktop")
 
     status = SettingsService().get_desktop_codex_oauth_status(auth_path=auth_path)
 
@@ -220,7 +216,7 @@ def test_desktop_codex_oauth_status_uses_app_env_and_auth_file(
 async def test_import_desktop_codex_oauth_token_persists_openai_oauth(tmp_path: Path) -> None:
     auth_path = tmp_path / "auth.json"
     auth_path.write_text('{"tokens":{"access_token":"codex-access-token"}}', encoding="utf-8")
-    fake_db = FakeDB(seed_auth=False)
+    fake_db = FakeDB()
 
     result = await SettingsService().import_desktop_codex_oauth_token(fake_db, auth_path=auth_path)
 
@@ -229,3 +225,61 @@ async def test_import_desktop_codex_oauth_token_persists_openai_oauth(tmp_path: 
         row.value for row in fake_db.storage[SystemSetting] if row.key == "openai_oauth_token"
     )
     assert persisted == "codex-access-token"
+
+
+@pytest.mark.asyncio
+async def test_import_claude_oauth_persists_only_backend_token(monkeypatch):
+    from sentral.llm import claude_credentials
+
+    async def read():
+        return "sk-ant-oat-example-token"
+
+    monkeypatch.setattr(claude_credentials, "read_claude_access_token", read)
+    db = FakeDB()
+    result = await SettingsService().import_desktop_claude_oauth_token(db)
+    assert result.masked_key == "sk-a...oken"
+    assert (
+        next(row.value for row in db.storage[SystemSetting] if row.key == "anthropic_oauth_token")
+        == "sk-ant-oat-example-token"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [None, OSError("credential source unavailable")])
+async def test_import_claude_oauth_failure_leaves_settings_untouched(monkeypatch, failure):
+    from sentral.llm import claude_credentials
+
+    async def read():
+        if failure:
+            raise failure
+        return None
+
+    monkeypatch.setattr(claude_credentials, "read_claude_access_token", read)
+    db = FakeDB()
+    with pytest.raises(HTTPException) as caught:
+        await SettingsService().import_desktop_claude_oauth_token(db)
+    assert caught.value.status_code == (422 if failure else 404)
+    assert not db.storage.get(SystemSetting)
+
+
+@pytest.mark.asyncio
+async def test_antigravity_import_persists_refreshable_bundle(monkeypatch):
+    from sentral.llm.providers.gemini_oauth import GeminiOAuthCredentials
+
+    credentials = GeminiOAuthCredentials.parse_input({"refresh_token": "refresh-token"})
+
+    async def read():
+        return credentials
+
+    persisted = []
+
+    async def upsert(db, *, key, value):
+        persisted.append((key, json.loads(value)))
+
+    monkeypatch.setattr("sentral.llm.antigravity_credentials.read_antigravity_credentials", read)
+    monkeypatch.setattr("app.services.settings.settings_service.upsert_system_setting", upsert)
+    result = await SettingsService().import_desktop_gemini_oauth_token(None)
+    assert result.masked_key == "refr...oken"
+    assert persisted[0][0] == "gemini_oauth_credentials"
+    assert persisted[0][1]["refresh_token"] == "refresh-token"
+    assert persisted[0][1]["client_id"].startswith("1071006060591-")

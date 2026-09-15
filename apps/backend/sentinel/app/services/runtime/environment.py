@@ -2,17 +2,20 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from app.services.runtime.ssh_client import SSHClient
+from app.services.runtime import container_transport
+from app.services.runtime.local_transport import RuntimeTransport
+from app.services.runtime.guest_commands import load_guest_command
 
 
 @dataclass(frozen=True, slots=True)
 class RuntimeEnvironment:
     os: str
     sandbox: str
+    home: str = ""
 
     @property
     def supported(self) -> bool:
-        return self.os in {"linux", "darwin"} and self.sandbox in {"bubblewrap", "seatbelt"}
+        return self.os == "linux" and self.sandbox == "container"
 
 
 def normalize_remote_os(value: str) -> str:
@@ -27,24 +30,17 @@ def normalize_remote_os(value: str) -> str:
 
 
 def expected_sandbox_for_os(os_name: str) -> str:
-    if os_name == "linux":
-        return "bubblewrap"
-    if os_name == "darwin":
-        return "seatbelt"
-    return "unavailable"
+    return "container" if os_name == "linux" else "unavailable"
 
 
-async def detect_runtime_environment(ssh: SSHClient) -> RuntimeEnvironment:
-    uname = await ssh.run("uname -s 2>/dev/null || true", timeout=10)
-    os_name = normalize_remote_os(uname.stdout or "")
-    if os_name == "linux":
-        probe = await ssh.run("command -v bwrap >/dev/null 2>&1 && echo yes || echo no", timeout=10)
-        sandbox = "bubblewrap" if (probe.stdout or "").strip() == "yes" else "unavailable"
-    elif os_name == "darwin":
-        probe = await ssh.run(
-            "command -v sandbox-exec >/dev/null 2>&1 && echo yes || echo no", timeout=10
-        )
-        sandbox = "seatbelt" if (probe.stdout or "").strip() == "yes" else "unavailable"
-    else:
-        sandbox = "unavailable"
-    return RuntimeEnvironment(os=os_name, sandbox=sandbox)
+async def detect_runtime_environment(ssh: RuntimeTransport) -> RuntimeEnvironment:
+
+    if isinstance(ssh, container_transport.ContainerTransport):
+        await ssh.wait_ready()
+        return RuntimeEnvironment(os="linux", sandbox="container", home="/root")
+    result = await ssh.run_script(load_guest_command("common/environment.sh"), timeout=10)
+    fields = (result.stdout or "").split("\0")
+    if result.exit_status != 0 or len(fields) != 3:
+        raise RuntimeError("Could not detect the machine environment")
+    os_name, sandbox, home = fields
+    return RuntimeEnvironment(os=normalize_remote_os(os_name), sandbox=sandbox, home=home)

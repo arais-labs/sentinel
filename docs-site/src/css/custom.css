@@ -32,3 +32,48 @@
 .footer__copyright a {
   color: var(--ifm-color-primary-lighter);
 }
+
+/* Keep long reference pages readable without changing the theme's controls. */
+:root {
+  --ifm-line-height-base: 1.7;
+  --ifm-heading-line-height: 1.25;
+  --ifm-global-radius: 0.65rem;
+}
+
+.markdown > h2 {
+  margin-top: 2.5rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--ifm-color-emphasis-200);
+}
+
+.markdown > h3 {
+  margin-top: 1.75rem;
+}
+
+.markdown table {
+  width: 100%;
+  margin-block: 1.25rem;
+}
+
+.markdown table th {
+  text-align: left;
+  background: var(--ifm-color-emphasis-100);
+}
+
+.markdown table td {
+  vertical-align: top;
+}
+
+.menu__link {
+  border-radius: 0.45rem;
+}
+
+.theme-admonition {
+  box-shadow: none;
+}
+
+@media (min-width: 997px) {
+  .theme-doc-markdown {
+    max-width: 78ch;
+  }
+}

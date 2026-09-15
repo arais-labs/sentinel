@@ -1,15 +1,13 @@
-import os
 import asyncio
 
 from fastapi.testclient import TestClient
 
-os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-with-32-bytes-min")
 
 from app.config import settings
 from app.main import app
 from app.models import Session
 from app.models.system import SystemSetting
-from app.services.agent import ContextBuilder
+from app.services.agent.context_builder import ContextBuilder
 from app.services.onboarding.onboarding_defaults import DEFAULT_SYSTEM_PROMPT, build_system_prompt
 from tests.fake_db import FakeDB
 from tests.helpers import install_fake_db_overrides, restore_test_app
@@ -18,10 +16,8 @@ MEMORY_API = "/api/v1/instances/main/memory"
 ONBOARDING_API = "/api/v1/instances/main/onboarding"
 
 
-def _auth_headers(client: TestClient) -> dict[str, str]:
-    login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
-    assert login.status_code == 200
-    return {"Authorization": f"Bearer {login.json()['access_token']}"}
+def _desktop_headers(client: TestClient) -> dict[str, str]:
+    return {"x-sentinel-desktop-token": "test-desktop-transport-token"}
 
 
 def _run(coro):
@@ -35,8 +31,10 @@ def test_onboarding_prompt_when_user_skips_everything():
     old_init = install_fake_db_overrides(app_db=fake_db)
 
     try:
-        client = TestClient(app)
-        headers = _auth_headers(client)
+        client = TestClient(
+            app, headers={"x-sentinel-desktop-token": "test-desktop-transport-token"}
+        )
+        headers = _desktop_headers(client)
 
         complete = client.post(f"{ONBOARDING_API}/complete", json={}, headers=headers)
         assert complete.status_code == 200
@@ -65,8 +63,10 @@ def test_onboarding_prompt_when_user_inputs_everything():
     old_init = install_fake_db_overrides(app_db=fake_db)
 
     try:
-        client = TestClient(app)
-        headers = _auth_headers(client)
+        client = TestClient(
+            app, headers={"x-sentinel-desktop-token": "test-desktop-transport-token"}
+        )
+        headers = _desktop_headers(client)
 
         expected_prompt = build_system_prompt(
             agent_name="Atlas",
@@ -114,8 +114,10 @@ def test_runtime_context_assembly_when_user_skips_everything():
     old_init = install_fake_db_overrides(app_db=fake_db)
 
     try:
-        client = TestClient(app)
-        headers = _auth_headers(client)
+        client = TestClient(
+            app, headers={"x-sentinel-desktop-token": "test-desktop-transport-token"}
+        )
+        headers = _desktop_headers(client)
         complete = client.post(f"{ONBOARDING_API}/complete", json={}, headers=headers)
         assert complete.status_code == 200
 
@@ -161,8 +163,10 @@ def test_runtime_context_assembly_when_user_inputs_everything():
     old_init = install_fake_db_overrides(app_db=fake_db)
 
     try:
-        client = TestClient(app)
-        headers = _auth_headers(client)
+        client = TestClient(
+            app, headers={"x-sentinel-desktop-token": "test-desktop-transport-token"}
+        )
+        headers = _desktop_headers(client)
 
         custom_prompt = build_system_prompt(
             agent_name="Atlas",
@@ -193,7 +197,7 @@ def test_runtime_context_assembly_when_user_inputs_everything():
             MEMORY_API,
             json={
                 "content": (
-                    "The user's name is Alexandre.\n\n"
+                    "The user's name is Morgan.\n\n"
                     "The user is building an autonomous multi-agent platform and prefers direct technical execution."
                 ),
                 "title": "User Profile",
@@ -245,7 +249,7 @@ def test_runtime_context_assembly_when_user_inputs_everything():
         assert "## Memory (pinned): Agent Identity" in assembled
         assert "You are Atlas." in assembled
         assert "## Memory (pinned): User Profile" in assembled
-        assert "The user's name is Alexandre." in assembled
+        assert "The user's name is Morgan." in assembled
         print(f"FULL_INPUT_RUNTIME_CONTEXT:\n{assembled}")
     finally:
         settings.default_system_prompt = old_prompt
@@ -259,8 +263,10 @@ def test_onboarding_complete_creates_default_system_memories_and_prompt():
     old_init = install_fake_db_overrides(app_db=fake_db)
 
     try:
-        client = TestClient(app)
-        headers = _auth_headers(client)
+        client = TestClient(
+            app, headers={"x-sentinel-desktop-token": "test-desktop-transport-token"}
+        )
+        headers = _desktop_headers(client)
 
         complete = client.post(f"{ONBOARDING_API}/complete", json={}, headers=headers)
         assert complete.status_code == 200
@@ -313,8 +319,10 @@ def test_onboarding_complete_keeps_existing_agent_identity_memory():
     old_init = install_fake_db_overrides(app_db=fake_db)
 
     try:
-        client = TestClient(app)
-        headers = _auth_headers(client)
+        client = TestClient(
+            app, headers={"x-sentinel-desktop-token": "test-desktop-transport-token"}
+        )
+        headers = _desktop_headers(client)
 
         custom_agent_content = "You are Atlas. Keep responses terse."
         create_agent = client.post(

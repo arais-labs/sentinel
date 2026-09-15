@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlite_vec import serialize_float32
+from sqlalchemy import and_, case, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Memory
@@ -83,40 +85,33 @@ class MemorySearchService:
         category: str | None,
         limit: int,
     ) -> list[tuple[Memory, float]]:
-        if not query_embedding:
+        if (
+            not query_embedding
+            or not all(math.isfinite(x) for x in query_embedding)
+            or not any(query_embedding)
+        ):
             return []
 
-        try:
-            distance_expr = Memory.embedding.cosine_distance(query_embedding)
-            score_expr = (1 - distance_expr).label("score")
-            stmt = select(Memory, score_expr).where(Memory.embedding.is_not(None))
-            if category:
-                stmt = stmt.where(Memory.category == category)
-            stmt = stmt.order_by(distance_expr).limit(limit)
-            result = await db.execute(stmt)
-            rows = result.all()
-            parsed: list[tuple[Memory, float]] = []
-            for row in rows:
-                memory = row[0]
-                score = float(row[1])
-                parsed.append((memory, score))
-            if parsed:
-                return parsed
-        except Exception:  # noqa: BLE001 - fallback for non-Postgres/fake sessions
-            pass
-
-        result = await db.execute(select(Memory))
-        memories = result.scalars().all()
-        filtered: list[tuple[Memory, float]] = []
-        for memory in memories:
-            if category and memory.category != category:
-                continue
-            if not memory.embedding:
-                continue
-            score = _cosine_similarity(query_embedding, memory.embedding)
-            filtered.append((memory, score))
-        filtered.sort(key=lambda item: item[1], reverse=True)
-        return filtered[:limit]
+        compatible = [
+            Memory.embedding.is_not(None),
+            func.vec_length(Memory.embedding) == len(query_embedding),
+        ]
+        fingerprint = getattr(self._embedding_service, "fingerprint", None)
+        if fingerprint:
+            compatible.append(Memory.metadata_json["_embedding_model"].as_string() == fingerprint)
+        # CASE guards distance evaluation even if SQLite reorders WHERE clauses.
+        distance = case(
+            (
+                and_(*compatible),
+                func.vec_distance_cosine(Memory.embedding, serialize_float32(query_embedding)),
+            ),
+            else_=None,
+        )
+        stmt = select(Memory, (1 - distance).label("score")).where(distance.is_not(None))
+        if category:
+            stmt = stmt.where(Memory.category == category)
+        result = await db.execute(stmt.order_by(distance, Memory.id).limit(limit))
+        return [(memory, float(score)) for memory, score in result.all()]
 
     async def _keyword_search(
         self,
@@ -125,50 +120,22 @@ class MemorySearchService:
         category: str | None,
         limit: int,
     ) -> list[tuple[Memory, float]]:
-        try:
-            query_expr = func.plainto_tsquery("english", query)
-            combined_text = func.concat_ws(
-                " ",
-                func.coalesce(Memory.title, ""),
-                func.coalesce(Memory.summary, ""),
-                Memory.content,
+        terms = re.findall(r"\w+", query, flags=re.UNICODE)
+        if not terms:
+            return []
+        # Treat input as words, never as FTS operators or column expressions.
+        match = " AND ".join('"' + term + '"' for term in terms)
+        stmt = select(Memory, text("-bm25(memories_fts, 3.0, 2.0, 1.0) AS score")).from_statement(
+            text(
+                "SELECT memories.*, -bm25(memories_fts, 3.0, 2.0, 1.0) AS score "
+                "FROM memories JOIN memories_fts ON memories.rowid = memories_fts.rowid "
+                "WHERE memories_fts MATCH :query "
+                "AND (:category IS NULL OR memories.category = :category) "
+                "ORDER BY bm25(memories_fts, 3.0, 2.0, 1.0), memories.id LIMIT :limit"
             )
-            rank_expr = func.ts_rank(func.to_tsvector("english", combined_text), query_expr).label(
-                "score"
-            )
-            stmt = select(Memory, rank_expr).where(
-                func.to_tsvector("english", combined_text).op("@@")(query_expr)
-            )
-            if category:
-                stmt = stmt.where(Memory.category == category)
-            stmt = stmt.order_by(rank_expr.desc()).limit(limit)
-            result = await db.execute(stmt)
-            rows = result.all()
-            parsed: list[tuple[Memory, float]] = []
-            for row in rows:
-                memory = row[0]
-                score = float(row[1])
-                parsed.append((memory, score))
-            if parsed:
-                return parsed
-        except Exception:  # noqa: BLE001 - fallback for non-Postgres/fake sessions
-            pass
-
-        result = await db.execute(select(Memory))
-        memories = result.scalars().all()
-        terms = [part.strip().lower() for part in query.split() if part.strip()]
-        ranked: list[tuple[Memory, float]] = []
-        for memory in memories:
-            if category and memory.category != category:
-                continue
-            text = " ".join(
-                part for part in [memory.title or "", memory.summary or "", memory.content] if part
-            ).lower()
-            score = float(sum(text.count(term) for term in terms))
-            if score > 0:
-                ranked.append((memory, score))
-        ranked.sort(key=lambda item: item[1], reverse=True)
-        return ranked[:limit]
+        )
+        result = await db.execute(stmt, {"query": match, "category": category, "limit": limit})
+        return [(memory, float(score)) for memory, score in result.all()]
 
     async def _substring_fallback(
         self,
@@ -229,14 +196,3 @@ class MemorySearchService:
         ]
         merged.sort(key=lambda item: item.score, reverse=True)
         return merged
-
-
-def _cosine_similarity(a: list[float], b: list[float]) -> float:
-    if not a or not b or len(a) != len(b):
-        return 0.0
-    dot = sum(x * y for x, y in zip(a, b, strict=True))
-    mag_a = math.sqrt(sum(x * x for x in a))
-    mag_b = math.sqrt(sum(y * y for y in b))
-    if mag_a == 0 or mag_b == 0:
-        return 0.0
-    return dot / (mag_a * mag_b)

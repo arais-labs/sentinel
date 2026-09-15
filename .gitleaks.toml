@@ -1,6 +1,17 @@
 [extend]
 useDefault = true
 
+# Public Antigravity installed-app identity, not a user's OAuth token.
+# https://github.com/NoeFabris/opencode-antigravity-auth/blob/main/src/constants.ts
+[[rules]]
+id = "generic-api-key"
+[[rules.allowlists]]
+description = "Shared Antigravity OAuth client constant only"
+condition = "AND"
+regexTarget = "secret"
+paths = ['''^packages/sentral/src/sentral/llm/providers/gemini_oauth\.py$''']
+regexes = ['''^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$''']
+
 [allowlist]
 description = "Allow known synthetic credential fixtures"
 paths = [

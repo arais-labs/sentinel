@@ -7,12 +7,11 @@ from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 from app.config import Settings
-from app.sentral import TextBlock
-from app.services.agent import PreparedRuntimeTurnContext
-from app.services.llm.generic.base import LLMProvider
-from app.services.llm.generic.types import (
+from app.services.sessions.agent_run_registry import AgentRunRegistry
+from app.services.agent.runtime_support import PreparedRuntimeTurnContext
+from sentral.llm.generic.base import LLMProvider
+from sentral.llm.generic.types import (
     AgentEvent,
-    TokenUsage,
 )
 from app.services.tools.executor import ToolExecutor
 from app.services.tools.registry import ToolRegistry
@@ -63,20 +62,6 @@ class _WSManager:
 
     async def broadcast_done(self, session_key: str, stop_reason: str) -> None:
         self.done.append({"session_key": session_key, "stop_reason": stop_reason})
-
-
-class _RunRegistry:
-    async def is_running(self, _session_key: str) -> bool:
-        return False
-
-    async def register(self, _session_key: str, _task) -> bool:
-        return True
-
-    async def clear(self, _session_key: str, _task) -> None:
-        return None
-
-    def drain_interjections(self, _session_key: str) -> list:
-        return []
 
 
 class _FakeProvider(LLMProvider):
@@ -185,7 +170,6 @@ class _RuntimeSupportStub:
 
 def _make_instance_settings(**overrides) -> Settings:
     instance_settings = Settings(_env_file=None)
-    instance_settings.dev_user_id = overrides.pop("dev_user_id", "user-1")
     instance_settings.telegram_bot_token = overrides.pop("telegram_bot_token", "dummy")
     instance_settings.telegram_owner_user_id = overrides.pop("telegram_owner_user_id", None)
     instance_settings.telegram_owner_chat_id = overrides.pop("telegram_owner_chat_id", None)
@@ -202,7 +186,7 @@ def _build_bridge(db: FakeDB) -> TelegramBridge:
         bot_token="dummy",
         user_id="user-1",
         agent_runtime_support=_RuntimeSupportStub(),
-        run_registry=_RunRegistry(),
+        run_registry=AgentRunRegistry(),
         ws_manager=_WSManager(),
         db_factory=lambda: _DBFactory(db),
         instance_settings=_make_instance_settings(),
@@ -222,7 +206,9 @@ def test_telegram_process_message_uses_runtime_adapter_and_preserves_ws_events()
         chat_type="group",
     )
     persisted = SimpleNamespace(
-        message=SimpleNamespace(id=uuid4(), content="hello", created_at=datetime.now(UTC)),
+        message=SimpleNamespace(
+            id=uuid4(), content="hello", created_at=datetime.now(UTC), metadata_json={}
+        ),
         is_first_message=False,
     )
     update = SimpleNamespace(
@@ -233,7 +219,6 @@ def test_telegram_process_message_uses_runtime_adapter_and_preserves_ws_events()
 
     with (
         patch.object(bridge, "_resolve_route_context", new=AsyncMock(return_value=route)),
-        patch.object(bridge, "_wait_for_session_ready", new=AsyncMock(return_value=True)),
         patch.object(
             bridge, "_persist_inbound_user_message", new=AsyncMock(return_value=persisted)
         ),
@@ -242,7 +227,12 @@ def test_telegram_process_message_uses_runtime_adapter_and_preserves_ws_events()
         ) as deliver_mock,
         patch.object(bridge, "_auto_compact_after_run", new=AsyncMock(return_value=None)),
     ):
-        asyncio.run(bridge._process_message(update, {"telegram_user_id": "456"}))  # noqa: SLF001
+
+        async def exercise():
+            await bridge._process_message(update, {"telegram_user_id": "456"})
+            await asyncio.gather(*bridge._reply_tasks)
+
+        asyncio.run(exercise())
 
     ws = bridge._ws_manager  # noqa: SLF001
     assert ws.message_acks

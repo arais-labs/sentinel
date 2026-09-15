@@ -6,8 +6,9 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
+from urllib.parse import quote
 
-from app.services.runtime.ssh_client import SSHClient
+from app.services.runtime.local_transport import RuntimeTransport
 
 
 class RuntimeForwardError(RuntimeError):
@@ -38,18 +39,15 @@ class RuntimeForward:
     def proxy_path(self) -> str:
         return f"/sessions/{self.session_id}/runtime/forwards/{self.forward_id}/"
 
-    @property
-    def default_instance_proxy_path(self) -> str:
-        return f"/api/v1/instances/main{self.proxy_path}"
-
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self, *, instance_name: str = "main") -> dict[str, Any]:
+        url = f"/api/v1/instances/{quote(instance_name, safe='')}{self.proxy_path}"
         return {
             "forward_id": self.forward_id,
             "session_id": self.session_id,
             "status": self.status,
             "proxy_path": self.proxy_path,
-            "proxy_url": self.default_instance_proxy_path,
-            "url": self.default_instance_proxy_path,
+            "proxy_url": url,
+            "url": url,
             "target_host": self.target_host,
             "target_port": self.target_port,
             "protocol": self.protocol,
@@ -65,7 +63,9 @@ def normalize_forward_host(value: str | None) -> str:
     if host == "localhost":
         return "127.0.0.1"
     if host != "127.0.0.1":
-        raise RuntimeForwardError("Only loopback runtimes are supported in v1.")
+        raise RuntimeForwardError(
+            "Host must be 127.0.0.1 or localhost inside the workspace container."
+        )
     return host
 
 
@@ -91,8 +91,8 @@ def _allocate_local_port() -> int:
 
 
 class RuntimePortForwardManager:
-    def __init__(self, ssh: SSHClient) -> None:
-        self._ssh = ssh
+    def __init__(self, transport: RuntimeTransport) -> None:
+        self._transport = transport
         self._forwards: dict[str, RuntimeForward] = {}
         self._lock = asyncio.Lock()
 
@@ -121,14 +121,14 @@ class RuntimePortForwardManager:
 
             local_port = _allocate_local_port()
             try:
-                listener = await self._ssh.forward_local_port(
+                listener = await self._transport.forward_local_port(
                     "127.0.0.1",
                     local_port,
                     target_host,
                     target_port,
                 )
             except Exception as exc:  # noqa: BLE001
-                raise RuntimeForwardError(f"Failed to open SSH forward: {exc}") from exc
+                raise RuntimeForwardError(f"Failed to open workspace port forward: {exc}") from exc
             forward = RuntimeForward(
                 forward_id=f"pf-{uuid4().hex[:12]}",
                 session_id=session_id,
@@ -155,14 +155,14 @@ class RuntimePortForwardManager:
         async with self._lock:
             forward = self._forwards.get(forward_id)
             if forward is None or forward.session_id != session_id or forward.status != "open":
-                raise RuntimeForwardNotFound("Runtime forward not found.")
+                raise RuntimeForwardNotFound("Workspace port forward not found.")
             return forward
 
     async def close_forward(self, *, session_id: str, forward_id: str) -> RuntimeForward:
         async with self._lock:
             forward = self._forwards.get(forward_id)
             if forward is None or forward.session_id != session_id:
-                raise RuntimeForwardNotFound("Runtime forward not found.")
+                raise RuntimeForwardNotFound("Workspace port forward not found.")
             await self._close_locked(forward)
             self._forwards.pop(forward.forward_id, None)
             return forward

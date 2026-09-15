@@ -1,107 +1,105 @@
-import { Activity, Check, Database, LayoutDashboard, Loader2, LogOut, Pencil, Plus, RefreshCw, Trash2, X } from 'lucide-react';
-import { FormEvent, KeyboardEvent, useEffect, useRef, useState } from 'react';
+import { DynamicIcon, iconNames, type IconName } from 'lucide-react/dynamic';
+import { ArrowUpRight, Check, Loader2, SlidersHorizontal, Plus, Trash2, X } from 'lucide-react';
+import { type CSSProperties, FormEvent, KeyboardEvent, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { toast } from 'sonner';
+import { notificationPublisher } from '../lib/notifications';
 
-import { AppShell } from '../components/AppShell';
 import { Panel } from '../components/ui/Panel';
+import { SolidInstanceIcon } from '../components/ui/SolidInstanceIcon';
+import { InstanceClouds } from '../components/ui/InstanceClouds';
 import { api } from '../lib/api';
-import { useAuthStore } from '../store/auth-store';
-import type { Runtime } from '../types/api';
+
+const notify = notificationPublisher('Instances');
 
 interface SentinelInstance {
   name: string;
   database_name: string;
   display_name: string | null;
-  runtime_id: string | null;
+  appearance?: { color?: string | null; icon?: string };
 }
 
-interface AuditEvent {
-  id: string;
-  timestamp: string;
-  user_id: string | null;
-  action: string;
-  status_code: number | null;
-  ip_address: string | null;
+const instanceColors = ['#8ebaff', '#82d9bb', '#c1a5f5', '#efbd80', '#ef9daa', '#a7b4ca'];
+const colorNames = ['Blue', 'Mint', 'Lavender', 'Amber', 'Rose', 'Slate'];
+const availableIcons = new Set<string>(iconNames);
+const iconLabel = (name: string) => name.replace(/-/g, ' ');
+
+function InstanceIcon({ icon, label, size }: { icon?: string; label: string; size: number }) {
+  // Preserve the original glyphs for saved selections.
+  const name = icon === 'code' ? 'code-xml' : icon === 'flask' ? 'flask-conical' : icon;
+  return name && availableIcons.has(name)
+    ? <DynamicIcon name={name as IconName} size={size} strokeWidth={1.5} />
+    : <>{label.slice(0, 1).toUpperCase()}</>;
 }
 
-interface AuditLogList {
-  items: AuditEvent[];
-  total: number;
-}
-
-declare global {
-  interface Window {
-    sentinelDesktop?: {
-      showControlCenter(): Promise<void>;
-    };
-  }
+function instanceColor(id: string) {
+  const hash = Array.from(id).reduce((value, char) => (value * 31 + char.charCodeAt(0)) >>> 0, 0);
+  return instanceColors[hash % instanceColors.length];
 }
 
 export function InstancePickerPage() {
   const navigate = useNavigate();
-  const logout = useAuthStore((s) => s.logout);
-  const desktopApi = typeof window !== 'undefined' ? window.sentinelDesktop : undefined;
   const [instances, setInstances] = useState<SentinelInstance[]>([]);
-  const [runtimes, setRuntimes] = useState<Runtime[]>([]);
   const [name, setName] = useState('');
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
 
-  // Inline rename state.
-  const [renamingName, setRenamingName] = useState<string | null>(null);
-  const [renameValue, setRenameValue] = useState('');
-  const [pendingRename, setPendingRename] = useState(false);
-  const renameInputRef = useRef<HTMLInputElement>(null);
+  // Appearance changes stay in the draft until saved.
+  const [editingName, setEditingName] = useState<string | null>(null);
+  const [displayName, setDisplayName] = useState('');
+  const [savingAppearance, setSavingAppearance] = useState(false);
+  const [draftColor, setDraftColor] = useState(instanceColors[0]);
+  const [draftIcon, setDraftIcon] = useState('initial');
+  const [iconSearch, setIconSearch] = useState('');
+  const [iconLimit, setIconLimit] = useState(60);
+  const matchingIcons = iconNames.filter(icon => iconLabel(icon).includes(iconSearch.trim().toLowerCase().replace(/-/g, ' ')));
+  const nameInputRef = useRef<HTMLInputElement>(null);
 
   // Delete-confirmation modal state.
   const [deleteTarget, setDeleteTarget] = useState<SentinelInstance | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState('');
   const [pendingDelete, setPendingDelete] = useState(false);
 
-  // Recent manager-scoped audit events.
-  const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
-  const [auditLoading, setAuditLoading] = useState(true);
-
-  const load = async () => {
-    setLoading(true);
-    try {
-      setInstances(await api.get<SentinelInstance[]>('/instances'));
-      setRuntimes(await api.get<Runtime[]>('/runtimes'));
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Failed to load instances');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const loadAudit = async () => {
-    setAuditLoading(true);
-    try {
-      const data = await api.get<AuditLogList>('/admin/audit?limit=15');
-      setAuditEvents(data.items);
-    } catch {
-      // Silent — audit pane is non-critical; surface empty state instead.
-      setAuditEvents([]);
-    } finally {
-      setAuditLoading(false);
-    }
-  };
-
   useEffect(() => {
-    void load();
-    void loadAudit();
+    let disposed = false;
+    let pending = false;
+    let initial = true;
+    const refresh = async () => {
+      if (pending || document.hidden) return;
+      pending = true;
+      const [instanceResult] = await Promise.allSettled([
+        api.get<SentinelInstance[]>('/instances'),
+      ]);
+      pending = false;
+      if (disposed) return;
+      if (instanceResult.status === 'fulfilled') setInstances(instanceResult.value);
+      else if (initial) notify.error('Failed to load instances. Retrying automatically.');
+      setLoading(false);
+      initial = false;
+    };
+    void refresh();
+    const interval = window.setInterval(() => void refresh(), 5000);
+    const resume = () => void refresh();
+    window.addEventListener('focus', resume);
+    document.addEventListener('visibilitychange', resume);
+    return () => {
+      disposed = true;
+      window.clearInterval(interval);
+      window.removeEventListener('focus', resume);
+      document.removeEventListener('visibilitychange', resume);
+    };
   }, []);
 
   useEffect(() => {
-    if (renamingName && renameInputRef.current) {
-      renameInputRef.current.focus();
-      renameInputRef.current.select();
+    if (editingName && nameInputRef.current) {
+      nameInputRef.current.focus();
+      nameInputRef.current.select();
     }
-  }, [renamingName]);
+  }, [editingName]);
 
   const openInstance = (instanceName: string) => {
-    navigate(`/instances/${encodeURIComponent(instanceName)}/sessions`);
+    navigate(`/instances/${encodeURIComponent(instanceName)}/workspace`);
   };
 
   const createInstance = async (event: FormEvent) => {
@@ -117,59 +115,63 @@ export function InstancePickerPage() {
           a.name.localeCompare(b.name),
         ),
       );
-      toast.success(`Created instance “${instance.name}”`);
+      notify.success(`Created instance “${instance.name}”`);
       openInstance(instance.name);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Failed to create instance');
+      notify.error(error instanceof Error ? error.message : 'Failed to create instance');
     } finally {
       setCreating(false);
     }
   };
 
-  const startRename = (instance: SentinelInstance) => {
-    setRenamingName(instance.name);
-    setRenameValue(instance.name);
+  const startCustomize = (instance: SentinelInstance) => {
+    setEditingName(instance.name);
+    setIconSearch('');
+    setIconLimit(60);
+    setDisplayName(instance.display_name || instance.name);
+    setDraftColor(instance.appearance?.color || instanceColor(instance.database_name));
+    setDraftIcon(instance.appearance?.icon || 'initial');
   };
 
-  const cancelRename = () => {
-    setRenamingName(null);
-    setRenameValue('');
+  const cancelCustomize = () => {
+    setEditingName(null);
+    setDisplayName('');
   };
 
-  const submitRename = async () => {
-    if (!renamingName) return;
-    const newName = renameValue.trim();
-    if (!newName || newName === renamingName) {
-      cancelRename();
+  const saveAppearance = async () => {
+    if (!editingName) return;
+    const newName = displayName.trim();
+    if (!newName) {
+      cancelCustomize();
       return;
     }
-    setPendingRename(true);
+    setSavingAppearance(true);
     try {
-      const updated = await api.post<SentinelInstance>(
-        `/instances/${encodeURIComponent(renamingName)}/rename`,
-        { name: newName },
+      const updated = await api.patch<SentinelInstance>(
+        `/instances/${encodeURIComponent(editingName)}`,
+        { display_name: newName, appearance: { color: draftColor, icon: draftIcon } },
       );
       setInstances((current) =>
         current
-          .map((row) => (row.name === renamingName ? updated : row))
+          .map((row) => (row.name === editingName ? updated : row))
           .sort((a, b) => a.name.localeCompare(b.name)),
       );
-      toast.success(`Renamed to “${updated.name}”`);
-      cancelRename();
+      notify.success('Instance updated');
+      cancelCustomize();
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Failed to rename instance');
+      notify.error(error instanceof Error ? error.message : 'Failed to update instance');
     } finally {
-      setPendingRename(false);
+      setSavingAppearance(false);
     }
   };
 
-  const handleRenameKey = (event: KeyboardEvent<HTMLInputElement>) => {
+  const handleEditorKey = (event: KeyboardEvent<HTMLInputElement>) => {
     if (event.key === 'Enter') {
       event.preventDefault();
-      void submitRename();
+      void saveAppearance();
     } else if (event.key === 'Escape') {
       event.preventDefault();
-      cancelRename();
+      cancelCustomize();
     }
   };
 
@@ -190,315 +192,116 @@ export function InstancePickerPage() {
       await api.delete(`/instances/${encodeURIComponent(deleteTarget.name)}`);
       const removed = deleteTarget.name;
       setInstances((current) => current.filter((row) => row.name !== removed));
-      toast.success(`Deleted instance “${removed}”`);
+      notify.success(`Deleted instance “${removed}”`);
       cancelDelete();
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Failed to delete instance');
+      notify.error(error instanceof Error ? error.message : 'Failed to delete instance');
     } finally {
       setPendingDelete(false);
     }
   };
 
-  const refreshing = loading;
+  const selected = instances.find(instance => instance.database_name === selectedId) ?? instances[0];
+  const selectedName = selected?.display_name || selected?.name;
+  const editing = editingName !== null;
+  const dialogOpen = createOpen || editing || deleteTarget !== null;
+  const accent = editing ? draftColor : selected?.appearance?.color || (selected ? instanceColor(selected.database_name) : instanceColors[0]);
+  const selectedIcon = editing ? draftIcon : selected?.appearance?.icon;
 
   return (
-    <AppShell
-      title="Instances"
-      subtitle="Choose a Sentinel workspace"
-      actions={
-        <div className="flex items-center gap-2">
-          {desktopApi?.showControlCenter && (
-            <button
-              type="button"
-              onClick={() => void desktopApi.showControlCenter()}
-              className="inline-flex h-9 items-center gap-2 rounded-md border border-[color:var(--border-subtle)] px-3 text-sm text-[color:var(--text-secondary)] hover:bg-[color:var(--surface-1)]"
-            >
-              <LayoutDashboard size={15} />
-              Control Center
-            </button>
-          )}
-          <button
-            type="button"
-            onClick={() => {
-              void load();
-              void loadAudit();
-            }}
-            disabled={refreshing}
-            className="inline-flex h-9 items-center gap-2 rounded-md border border-[color:var(--border-subtle)] px-3 text-sm text-[color:var(--text-secondary)] hover:bg-[color:var(--surface-1)] disabled:opacity-60"
-          >
-            <RefreshCw size={15} className={refreshing ? 'animate-spin' : ''} />
-            Refresh
-          </button>
-          <button
-            type="button"
-            onClick={() => void logout()}
-            className="inline-flex h-9 items-center gap-2 rounded-md border border-[color:var(--border-subtle)] px-3 text-sm text-[color:var(--text-secondary)] hover:bg-rose-500/10 hover:text-rose-500 hover:border-rose-500/30"
-            title="Sign out"
-          >
-            <LogOut size={15} />
-            Sign out
-          </button>
-        </div>
-      }
-      hideSidebar
-      contentClassName="max-w-3xl w-full mx-auto"
-    >
-      <div className="space-y-6">
-        <Panel className="p-5">
-          <form onSubmit={createInstance} className="flex flex-col gap-3 sm:flex-row sm:items-end">
-            <div className="flex-1 min-w-0 space-y-1.5">
-              <label
-                htmlFor="instance-name"
-                className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]"
-              >
-                New instance
-              </label>
-              <input
-                id="instance-name"
-                value={name}
-                onChange={(event) => setName(event.target.value)}
-                placeholder="e.g. main, sandbox, research"
-                className="h-10 w-full rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-3 text-sm outline-none focus:border-[color:var(--accent-solid)]"
-              />
+    <section className="instance-gallery" data-dialog-open={dialogOpen} aria-label="Instances" style={{ '--space-accent': accent } as CSSProperties}>
+      {!loading && selected && <InstanceClouds color={accent} paused={dialogOpen} />}
+      {loading ? <div className="instance-loading" role="status"><Loader2 size={24} className="animate-spin" />Loading your instances…</div> : <>
+        <div className="instance-stage" data-selected={Boolean(selected)} key={selected?.database_name ?? 'empty'}>
+          <div className="instance-art" aria-hidden="true">
+            <div className="instance-core">
+              {selectedName ? <SolidInstanceIcon color={accent} paused={dialogOpen}>
+                <InstanceIcon icon={selectedIcon} label={editing ? displayName || selectedName : selectedName} size={64} />
+              </SolidInstanceIcon> : <Plus size={52} strokeWidth={1} />}
             </div>
-            <button
-              type="submit"
-              disabled={creating || !name.trim()}
-              className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-[color:var(--accent-solid)] px-4 text-sm font-medium text-[color:var(--app-bg)] disabled:opacity-60"
-            >
-              {creating ? <Loader2 size={16} className="animate-spin" /> : <Plus size={16} />}
-              Create
+          </div>
+          <div className="instance-intro">
+            {!selected && <p className="instance-eyebrow">Get started</p>}
+            <h3>{selectedName || 'Your first instance'}</h3>
+            <p className="instance-description">{selected ? 'Independent conversations, memories, settings, and accounts.' : 'Create an instance for your ideas, conversations, and agents.'}</p>
+            <button className="btn-primary h-10 px-4 gap-2 text-[10px] font-bold uppercase tracking-widest mt-6" onClick={() => selected ? openInstance(selected.name) : setCreateOpen(true)}>
+              {selected ? 'Enter instance' : 'Create your first instance'}<ArrowUpRight size={19} />
             </button>
+            {selected && <div className="instance-tools">
+              <button onClick={() => startCustomize(selected)}><SlidersHorizontal size={13} />Customize</button>
+              <button onClick={() => askDelete(selected)} className="instance-delete"><Trash2 size={13} />Delete</button>
+            </div>}
+          </div>
+        </div>
+
+        <div className="instance-roster">
+          <div className="instance-roster-heading"><span>{instances.length} {instances.length === 1 ? 'instance' : 'instances'}</span></div>
+          <div className="instance-choices" role="group" aria-label="Choose an instance">
+            {instances.map(instance => {
+              const active = selected?.database_name === instance.database_name;
+              const label = instance.display_name || instance.name;
+              return <button key={instance.database_name} className="instance-choice" aria-pressed={active}
+                style={{ '--choice-accent': instance.appearance?.color || instanceColor(instance.database_name) } as CSSProperties}
+                onClick={() => setSelectedId(instance.database_name)} onDoubleClick={() => openInstance(instance.name)}>
+                <span className="instance-choice-avatar" aria-hidden="true"><InstanceIcon icon={instance.appearance?.icon} label={label} size={20} /></span>
+                <span className="instance-choice-label">{label}</span>
+                {active && <Check size={15} className="instance-choice-check" aria-label="Selected" />}
+              </button>;
+            })}
+            {selected && <button className="instance-choice instance-choice-new" onClick={() => setCreateOpen(true)}><span className="instance-choice-avatar"><Plus size={22} strokeWidth={1.5} /></span><span>New instance</span></button>}
+          </div>
+        </div>
+      </>}
+
+      {(createOpen || editing) && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4" onClick={() => { if (!creating && !savingAppearance) { setCreateOpen(false); cancelCustomize(); } }}>
+        <Panel role="dialog" aria-modal="true" aria-label={editing ? 'Customize instance' : 'New instance'} className="relative w-full max-w-md max-h-[90vh] overflow-y-auto bg-(--surface-0) p-7 shadow-2xl">
+          <form onClick={event => event.stopPropagation()} onSubmit={editing ? event => { event.preventDefault(); void saveAppearance(); } : createInstance} className="space-y-5">
+            <div className="flex items-start justify-between gap-4"><div><h3 className="text-sm font-bold uppercase tracking-widest">{editing ? 'Customize instance' : 'New instance'}</h3></div><button type="button" aria-label="Close dialog" disabled={creating || savingAppearance} onClick={() => { setCreateOpen(false); cancelCustomize(); }}><X size={18} /></button></div>
+            <div className="space-y-2"><label htmlFor="instance-name" className="text-sm text-(--text-secondary)">Instance name</label>
+              <input id="instance-name" ref={editing ? nameInputRef : undefined} autoFocus value={editing ? displayName : name} onChange={event => editing ? setDisplayName(event.target.value) : setName(event.target.value)} maxLength={editing ? 120 : 80} onKeyDown={editing ? handleEditorKey : undefined} disabled={creating || savingAppearance} placeholder="e.g. studio, research, side-project" className="h-11 w-full rounded-lg border border-(--border-subtle) bg-(--surface-0) px-3 text-sm outline-hidden focus:border-(--accent-solid)" />
+            </div>
+            {editing && <>
+              <fieldset className="space-y-3">
+                <legend className="text-[10px] font-bold uppercase tracking-widest text-(--text-secondary)">Icon</legend>
+                <div className="flex items-center gap-3 text-sm capitalize">
+                  <span className="instance-choice-avatar"><InstanceIcon icon={draftIcon} label={displayName || 'I'} size={22} /></span>
+                  <span>{iconLabel(draftIcon)}</span>
+                  <button type="button" className="ml-auto text-xs text-(--text-secondary)" onClick={() => setDraftIcon('initial')}>Use initial</button>
+                </div>
+                <input aria-label="Search icons" placeholder="Search icons…" value={iconSearch} onChange={event => { setIconSearch(event.target.value); setIconLimit(60); }} className="h-10 w-full rounded-lg border border-(--border-subtle) bg-(--surface-0) px-3 text-sm outline-hidden focus:border-(--accent-solid)" />
+                <div className="instance-icon-browser">
+                  <div className="instance-icon-options">
+                    {matchingIcons.slice(0, iconLimit).map(icon => <button type="button" key={icon} title={iconLabel(icon)} aria-label={iconLabel(icon)} aria-pressed={draftIcon === icon} onClick={() => setDraftIcon(icon)}><InstanceIcon icon={icon} label={displayName || 'I'} size={20} /></button>)}
+                  </div>
+                  {!matchingIcons.length && <p className="py-6 text-center text-sm text-(--text-secondary)">No icons found.</p>}
+                  {matchingIcons.length > iconLimit && <button type="button" className="w-full py-3 text-xs text-(--text-secondary)" onClick={() => setIconLimit(limit => limit + 60)}>Show more icons</button>}
+                </div>
+              </fieldset>
+              <fieldset className="space-y-3"><legend className="text-[10px] font-bold uppercase tracking-widest text-(--text-secondary)">Glow color</legend><div className="instance-color-options">
+                {instanceColors.map((color, index) => <button type="button" key={color} aria-label={colorNames[index]} aria-pressed={draftColor.toLowerCase() === color} style={{ backgroundColor: color }} onClick={() => setDraftColor(color)}>{draftColor.toLowerCase() === color && <Check size={15} />}</button>)}
+                <label className="instance-custom-color" title="Custom glow color"><Plus size={16} /><input aria-label="Custom glow color" type="color" value={draftColor} onChange={event => setDraftColor(event.target.value)} /></label>
+              </div></fieldset>
+            </>}
+            <button className="btn-primary h-10 px-4 gap-2 text-[10px] font-bold uppercase tracking-widest w-full disabled:opacity-40" disabled={creating || savingAppearance || !(editing ? displayName : name).trim()}>{creating || savingAppearance ? <Loader2 size={16} className="animate-spin" /> : null}{editing ? 'Save changes' : 'Create instance'}<ArrowUpRight size={17} /></button>
           </form>
         </Panel>
-
-        <Panel className="overflow-hidden">
-          <div className="flex items-center justify-between px-5 py-3 border-b border-[color:var(--border-subtle)]">
-            <h2 className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
-              Registered instances
-            </h2>
-            <span className="text-xs text-[color:var(--text-muted)]">
-              {loading
-                ? 'Loading…'
-                : `${instances.length} ${instances.length === 1 ? 'instance' : 'instances'}`}
-            </span>
-          </div>
-
-          {loading ? (
-            <div className="flex items-center gap-2 px-5 py-10 text-sm text-[color:var(--text-muted)]">
-              <Loader2 size={16} className="animate-spin" />
-              Loading instances…
-            </div>
-          ) : instances.length === 0 ? (
-            <div className="px-5 py-12 text-center text-sm text-[color:var(--text-muted)]">
-              No instances registered yet. Create one above to get started.
-            </div>
-          ) : (
-            <ul className="divide-y divide-[color:var(--border-subtle)]">
-              {instances.map((instance) => {
-                const isRenaming = renamingName === instance.name;
-                const primaryLabel = instance.display_name || instance.name;
-                const runtimeTarget = runtimes.find((target) => target.id === instance.runtime_id);
-                return (
-                  <li
-                    key={instance.database_name}
-                    role={isRenaming ? undefined : 'button'}
-                    tabIndex={isRenaming ? -1 : 0}
-                    onClick={isRenaming ? undefined : () => openInstance(instance.name)}
-                    onKeyDown={
-                      isRenaming
-                        ? undefined
-                        : (event) => {
-                            if (event.key === 'Enter' || event.key === ' ') {
-                              event.preventDefault();
-                              openInstance(instance.name);
-                            }
-                          }
-                    }
-                    className={`group grid grid-cols-[auto_1fr_auto] items-center gap-3 px-5 py-4 outline-none ${
-                      isRenaming
-                        ? 'bg-[color:var(--surface-1)]'
-                        : 'cursor-pointer hover:bg-[color:var(--surface-1)] focus-visible:bg-[color:var(--surface-1)]'
-                    }`}
-                  >
-                    <div className="flex h-10 w-10 items-center justify-center rounded-md bg-[color:var(--surface-accent)] text-[color:var(--text-primary)]">
-                      <Database size={18} />
-                    </div>
-
-                    <div className="min-w-0">
-                      {isRenaming ? (
-                        <div className="flex items-center gap-2">
-                          <input
-                            ref={renameInputRef}
-                            value={renameValue}
-                            onChange={(event) => setRenameValue(event.target.value)}
-                            onKeyDown={handleRenameKey}
-                            onClick={(event) => event.stopPropagation()}
-                            disabled={pendingRename}
-                            className="h-9 flex-1 min-w-0 rounded-md border border-[color:var(--accent-solid)] bg-[color:var(--surface-0)] px-3 text-sm outline-none"
-                          />
-                          <button
-                            type="button"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              void submitRename();
-                            }}
-                            disabled={pendingRename || !renameValue.trim()}
-                            className="inline-flex h-9 w-9 items-center justify-center rounded-md text-[color:var(--accent-solid)] hover:bg-[color:var(--surface-accent)] disabled:opacity-40"
-                            title="Save (Enter)"
-                          >
-                            {pendingRename ? (
-                              <Loader2 size={15} className="animate-spin" />
-                            ) : (
-                              <Check size={15} />
-                            )}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              cancelRename();
-                            }}
-                            disabled={pendingRename}
-                            className="inline-flex h-9 w-9 items-center justify-center rounded-md text-[color:var(--text-muted)] hover:bg-[color:var(--surface-accent)] disabled:opacity-40"
-                            title="Cancel (Esc)"
-                          >
-                            <X size={15} />
-                          </button>
-                        </div>
-                      ) : (
-                        <>
-                          <div className="truncate text-sm font-medium text-[color:var(--text-primary)]">
-                            {primaryLabel}
-                          </div>
-                          <div className="mt-0.5 flex items-center gap-2 text-[11px] text-[color:var(--text-muted)]">
-                            <span className="truncate font-mono">{instance.name}</span>
-                            <span>·</span>
-                            <span className="truncate font-mono">{instance.database_name}</span>
-                            <span>·</span>
-                            <span className="truncate">{runtimeTarget ? `Runtime: ${runtimeTarget.name}` : 'No runtime'}</span>
-                          </div>
-                        </>
-                      )}
-                    </div>
-
-                    {!isRenaming && (
-                      <div className="flex items-center gap-2">
-                        <div className="flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
-                          <button
-                            type="button"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              startRename(instance);
-                            }}
-                            className="inline-flex h-8 w-8 items-center justify-center rounded-md text-[color:var(--text-muted)] hover:bg-[color:var(--surface-accent)] hover:text-[color:var(--text-primary)]"
-                            title="Rename"
-                          >
-                            <Pencil size={14} />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              askDelete(instance);
-                            }}
-                            className="inline-flex h-8 w-8 items-center justify-center rounded-md text-[color:var(--text-muted)] hover:bg-red-500/10 hover:text-red-500"
-                            title="Delete"
-                          >
-                            <Trash2 size={14} />
-                          </button>
-                        </div>
-                      </div>
-                    )}
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </Panel>
-
-        <Panel className="overflow-hidden">
-          <div className="flex items-center justify-between px-5 py-3 border-b border-[color:var(--border-subtle)]">
-            <h2 className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] inline-flex items-center gap-2">
-              <Activity size={12} />
-              Recent activity
-            </h2>
-            <span className="text-xs text-[color:var(--text-muted)]">
-              {auditLoading ? 'Loading…' : `${auditEvents.length} event${auditEvents.length === 1 ? '' : 's'}`}
-            </span>
-          </div>
-
-          {auditLoading ? (
-            <div className="flex items-center gap-2 px-5 py-8 text-sm text-[color:var(--text-muted)]">
-              <Loader2 size={16} className="animate-spin" />
-              Loading activity…
-            </div>
-          ) : auditEvents.length === 0 ? (
-            <div className="px-5 py-8 text-center text-sm text-[color:var(--text-muted)]">
-              No manager-scoped events yet.
-            </div>
-          ) : (
-            <ul className="divide-y divide-[color:var(--border-subtle)]">
-              {auditEvents.map((event) => (
-                <li
-                  key={event.id}
-                  className="grid grid-cols-[1fr_auto] items-center gap-3 px-5 py-2.5"
-                >
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2 text-sm">
-                      <span className="font-mono text-[color:var(--text-primary)]">{event.action}</span>
-                      {event.user_id && (
-                        <span className="text-[color:var(--text-muted)]">·</span>
-                      )}
-                      {event.user_id && (
-                        <span className="truncate text-[color:var(--text-secondary)]">{event.user_id}</span>
-                      )}
-                      {event.status_code !== null && event.status_code !== undefined && (
-                        <>
-                          <span className="text-[color:var(--text-muted)]">·</span>
-                          <span
-                            className={`font-mono text-[11px] ${
-                              event.status_code >= 400
-                                ? 'text-red-500'
-                                : 'text-[color:var(--text-muted)]'
-                            }`}
-                          >
-                            {event.status_code}
-                          </span>
-                        </>
-                      )}
-                    </div>
-                    {event.ip_address && (
-                      <div className="mt-0.5 truncate font-mono text-[11px] text-[color:var(--text-muted)]">
-                        {event.ip_address}
-                      </div>
-                    )}
-                  </div>
-                  <div className="font-mono text-[11px] text-[color:var(--text-muted)] whitespace-nowrap">
-                    {new Date(event.timestamp).toLocaleString()}
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
-        </Panel>
-      </div>
+      </div>}
 
       {deleteTarget && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 animate-in fade-in duration-200">
           <div
-            className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+            className="absolute inset-0 bg-black/60 backdrop-blur-xs"
             onClick={pendingDelete ? undefined : cancelDelete}
           />
-          <Panel className="relative w-full max-w-md bg-[color:var(--surface-0)] shadow-2xl overflow-hidden animate-in zoom-in-95 duration-200">
-            <div className="flex items-center justify-between px-6 py-4 border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]">
+          <Panel className="relative w-full max-w-md bg-(--surface-0) shadow-2xl overflow-hidden animate-in zoom-in-95 duration-200">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-(--border-subtle) bg-(--surface-1)">
               <div className="flex items-center gap-3">
                 <div className="p-2 rounded-lg bg-red-500/10 text-red-500">
                   <Trash2 size={18} />
                 </div>
                 <div className="flex flex-col">
                   <h2 className="font-bold text-sm uppercase tracking-widest">Delete instance</h2>
-                  <span className="text-[9px] text-[color:var(--text-muted)] font-mono uppercase tracking-tighter">
+                  <span className="text-[9px] text-(--text-muted) font-mono uppercase tracking-tighter">
                     Permanent action
                   </span>
                 </div>
@@ -507,25 +310,25 @@ export function InstancePickerPage() {
                 type="button"
                 onClick={cancelDelete}
                 disabled={pendingDelete}
-                className="text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)]"
+                className="text-(--text-muted) hover:text-(--text-primary)"
               >
                 <X size={20} />
               </button>
             </div>
 
             <div className="p-6 space-y-4">
-              <p className="text-sm text-[color:var(--text-secondary)] leading-relaxed">
-                This drops the manager-registry row and the per-instance database for{' '}
-                <span className="font-mono text-[color:var(--text-primary)]">{deleteTarget.name}</span>.
+              <p className="text-sm text-(--text-secondary) leading-relaxed">
+                This permanently deletes instance{' '}
+                <span className="font-mono text-(--text-primary)">{deleteTarget.name}</span>.
                 All sessions, memory, and logs for this instance are lost.
               </p>
               <div className="space-y-2">
                 <label
                   htmlFor="delete-confirm"
-                  className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]"
+                  className="text-[10px] font-bold uppercase tracking-widest text-(--text-muted)"
                 >
                   Type{' '}
-                  <span className="font-mono normal-case tracking-normal text-[color:var(--text-primary)]">
+                  <span className="font-mono normal-case tracking-normal text-(--text-primary)">
                     {deleteTarget.name}
                   </span>{' '}
                   to confirm
@@ -543,18 +346,18 @@ export function InstancePickerPage() {
                   }}
                   disabled={pendingDelete}
                   autoFocus
-                  className="h-10 w-full rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] px-3 text-sm outline-none focus:border-red-500"
+                  className="h-10 w-full rounded-md border border-(--border-subtle) bg-(--surface-0) px-3 text-sm outline-hidden focus:border-red-500"
                   placeholder={deleteTarget.name}
                 />
               </div>
             </div>
 
-            <div className="flex items-center justify-end gap-2 px-6 py-4 border-t border-[color:var(--border-subtle)] bg-[color:var(--surface-1)]">
+            <div className="flex items-center justify-end gap-2 px-6 py-4 border-t border-(--border-subtle) bg-(--surface-1)">
               <button
                 type="button"
                 onClick={cancelDelete}
                 disabled={pendingDelete}
-                className="h-9 px-4 rounded-md text-sm text-[color:var(--text-secondary)] hover:bg-[color:var(--surface-0)] disabled:opacity-60"
+                className="h-9 px-4 rounded-md text-sm text-(--text-secondary) hover:bg-(--surface-0) disabled:opacity-60"
               >
                 Cancel
               </button>
@@ -575,6 +378,6 @@ export function InstancePickerPage() {
           </Panel>
         </div>
       )}
-    </AppShell>
+    </section>
   );
 }

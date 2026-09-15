@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 from app.schemas.models import ModelOptionResponse, ModelsResponse
-from app.services.llm import AnthropicProvider, CodexProvider, GeminiProvider, OpenAIProvider
-from app.services.llm.generic.base import LLMProvider
-from app.services.llm.generic.tier import TierConfig, TierModelConfig, TierProvider
-from app.services.llm.generic.types import ReasoningConfig
-from app.services.llm.ids import ProviderChoice, TierName, parse_provider_choice
-from app.services.llm.providers.gemini_oauth import GeminiOAuthProvider
+from sentral.llm.providers.anthropic import AnthropicProvider
+from sentral.llm.providers.codex import CodexProvider
+from sentral.llm.providers.gemini import GeminiProvider
+from sentral.llm.providers.openai import OpenAIProvider
+from sentral.llm.generic.base import LLMProvider
+from app.services.llm.tier import TierConfig, TierModelConfig, TierProvider
+from sentral.llm.generic.types import ReasoningConfig
+from sentral.llm.ids import ProviderChoice, TierName, parse_provider_choice
+from sentral.llm.providers.gemini_oauth import GeminiOAuthProvider
 from app.config import Settings
+from sentral.llm.claude_credentials import renew_claude_access_token
 
 DEFAULT_TIER_NAME = TierName.NORMAL
 
@@ -44,7 +48,7 @@ def build_tier_provider_from_settings(settings: Settings) -> LLMProvider | None:
         gemini_model,
         max_tokens,
         temperature,
-        anthropic_thinking_budget,
+        anthropic_reasoning_effort,
         openai_reasoning_effort,
         gemini_thinking_budget,
     ) in _tier_rows(settings):
@@ -57,9 +61,7 @@ def build_tier_provider_from_settings(settings: Settings) -> LLMProvider | None:
                 model=anthropic_model,
                 reasoning_config=ReasoningConfig(
                     max_tokens=max_tokens,
-                    thinking_budget=(
-                        anthropic_thinking_budget if anthropic_thinking_budget > 0 else None
-                    ),
+                    reasoning_effort=anthropic_reasoning_effort or None,
                 ),
                 temperature=temperature,
             )
@@ -119,7 +121,9 @@ def _build_enabled_providers(settings: Settings) -> tuple[dict[ProviderChoice, L
 
     anthropic_token = settings.anthropic_oauth_token or settings.anthropic_api_key
     if anthropic_token:
-        providers[ProviderChoice.ANTHROPIC] = AnthropicProvider(anthropic_token)
+        providers[ProviderChoice.ANTHROPIC] = AnthropicProvider(
+            anthropic_token, renew_credentials=renew_claude_access_token
+        )
 
     openai_uses_codex = False
     openai_oauth_token = settings.openai_oauth_token
@@ -145,7 +149,7 @@ def _build_enabled_providers(settings: Settings) -> tuple[dict[ProviderChoice, L
 
 def _tier_rows(
     settings: Settings,
-) -> tuple[tuple[TierName, str, str, str, str, int, float, int, str, int], ...]:
+) -> tuple[tuple[TierName, str, str, str, str, int, float, str, str, int], ...]:
     return (
         (
             TierName.FAST,
@@ -155,7 +159,7 @@ def _tier_rows(
             settings.tier_fast_gemini_model,
             settings.tier_fast_max_tokens,
             settings.tier_fast_temperature,
-            settings.tier_fast_anthropic_thinking_budget,
+            settings.tier_fast_anthropic_reasoning_effort,
             settings.tier_fast_openai_reasoning_effort,
             settings.tier_fast_gemini_thinking_budget,
         ),
@@ -167,7 +171,7 @@ def _tier_rows(
             settings.tier_normal_gemini_model,
             settings.tier_normal_max_tokens,
             settings.tier_normal_temperature,
-            settings.tier_normal_anthropic_thinking_budget,
+            settings.tier_normal_anthropic_reasoning_effort,
             settings.tier_normal_openai_reasoning_effort,
             settings.tier_normal_gemini_thinking_budget,
         ),
@@ -179,7 +183,7 @@ def _tier_rows(
             settings.tier_hard_gemini_model,
             settings.tier_hard_max_tokens,
             settings.tier_hard_temperature,
-            settings.tier_hard_anthropic_thinking_budget,
+            settings.tier_hard_anthropic_reasoning_effort,
             settings.tier_hard_openai_reasoning_effort,
             settings.tier_hard_gemini_thinking_budget,
         ),

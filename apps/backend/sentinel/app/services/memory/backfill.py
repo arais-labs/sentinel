@@ -56,7 +56,10 @@ async def run_memory_embedding_backfill(
 
             async with db_factory() as db:
                 rows = await _load_missing_embedding_batch(
-                    db=db, limit=target, excluded_ids=failed_ids
+                    db=db,
+                    limit=target,
+                    excluded_ids=failed_ids,
+                    fingerprint=getattr(embedding_service, "fingerprint", None),
                 )
                 if not rows:
                     break
@@ -77,6 +80,11 @@ async def run_memory_embedding_backfill(
 
                 for memory, vector in assignments:
                     memory.embedding = vector
+                    if getattr(embedding_service, "fingerprint", None):
+                        memory.metadata_json = {
+                            **(memory.metadata_json or {}),
+                            "_embedding_model": embedding_service.fingerprint,
+                        }
                 await db.commit()
 
                 stats.embedded += len(assignments)
@@ -101,12 +109,21 @@ async def _load_missing_embedding_batch(
     db: AsyncSession,
     limit: int,
     excluded_ids: set[UUID],
+    fingerprint: str | None = None,
 ) -> list[Memory]:
-    # Keep query simple/portable and filter exclusions in Python.
-    result = await db.execute(
-        select(Memory).where(Memory.embedding.is_(None)).order_by(Memory.created_at.asc())
-    )
+    # Unknown/old model vectors are rebuilt, never mixed with local vectors.
+    stmt = select(Memory).order_by(Memory.created_at.asc())
+    if fingerprint is None:
+        stmt = stmt.where(Memory.embedding.is_(None))
+    result = await db.execute(stmt)
     rows = result.scalars().all()
+    if fingerprint is not None:
+        rows = [
+            row
+            for row in rows
+            if row.embedding is None
+            or (row.metadata_json or {}).get("_embedding_model") != fingerprint
+        ]
     if excluded_ids:
         rows = [row for row in rows if row.id not in excluded_ids]
     return rows[:limit]

@@ -121,7 +121,7 @@ export function HtmlContent({ content, className = '', ...rest }: HtmlContentPro
           onClick={() => setIsFullscreen(true)}
           title="Expand"
           aria-label="Expand artifact"
-          className="absolute top-2 right-2 z-10 inline-flex items-center justify-center w-7 h-7 rounded-lg bg-[color:var(--surface-0)]/85 hover:bg-[color:var(--surface-0)] border border-[color:var(--border-subtle)] text-[color:var(--text-secondary)] hover:text-[color:var(--text-primary)] backdrop-blur-sm shadow-sm opacity-0 group-hover/htmlartifact:opacity-100 focus-visible:opacity-100 transition-opacity"
+          className="absolute top-2 right-2 z-10 inline-flex items-center justify-center w-7 h-7 rounded-lg bg-(--surface-0)/85 hover:bg-(--surface-0) border border-(--border-subtle) text-(--text-secondary) hover:text-(--text-primary) backdrop-blur-xs shadow-xs opacity-0 group-hover/htmlartifact:opacity-100 focus-visible:opacity-100 transition-opacity"
         >
           <Maximize2 size={13} />
         </button>
@@ -129,11 +129,11 @@ export function HtmlContent({ content, className = '', ...rest }: HtmlContentPro
       {isFullscreen
         ? createPortal(
             <div
-              className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/70 backdrop-blur-sm p-6 animate-in fade-in duration-150"
+              className="fixed inset-0 z-1000 flex items-center justify-center bg-black/70 backdrop-blur-xs p-6 animate-in fade-in duration-150"
               onClick={() => setIsFullscreen(false)}
             >
               <div
-                className="relative w-full h-full max-w-[1600px] rounded-2xl overflow-hidden bg-[color:var(--surface-1)] border border-[color:var(--border-subtle)] shadow-2xl"
+                className="relative w-full h-full max-w-[1600px] rounded-2xl overflow-hidden bg-(--surface-1) border border-(--border-subtle) shadow-2xl"
                 onClick={(e) => e.stopPropagation()}
               >
                 <iframe
@@ -150,7 +150,7 @@ export function HtmlContent({ content, className = '', ...rest }: HtmlContentPro
                   onClick={() => setIsFullscreen(false)}
                   title="Close (Esc)"
                   aria-label="Close fullscreen"
-                  className="absolute top-3 right-3 z-10 inline-flex items-center justify-center w-9 h-9 rounded-full bg-[color:var(--surface-0)]/85 hover:bg-[color:var(--surface-0)] border border-[color:var(--border-subtle)] text-[color:var(--text-secondary)] hover:text-[color:var(--text-primary)] backdrop-blur-sm shadow-md transition-colors"
+                  className="absolute top-3 right-3 z-10 inline-flex items-center justify-center w-9 h-9 rounded-full bg-(--surface-0)/85 hover:bg-(--surface-0) border border-(--border-subtle) text-(--text-secondary) hover:text-(--text-primary) backdrop-blur-xs shadow-md transition-colors"
                 >
                   <X size={16} />
                 </button>

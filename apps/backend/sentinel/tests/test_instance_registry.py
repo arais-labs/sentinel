@@ -8,7 +8,6 @@ from app.services.instances import (
     InstanceAlreadyExistsError,
     InstanceNotFoundError,
     InstanceRegistryService,
-    instance_database_name,
     normalize_instance_name,
 )
 from tests.fake_db import FakeDB
@@ -47,21 +46,13 @@ def test_normalize_instance_name():
     assert normalize_instance_name(" client--a ") == "client-a"
 
 
-def test_instance_database_name_is_stable():
-    first = instance_database_name("main")
-    second = instance_database_name("main")
-
-    assert first == second
-    assert first.startswith("sentinel_main_")
-
-
 @pytest.mark.asyncio
 async def test_instance_session_registry_caches_factory():
     registry = InstanceSessionRegistry()
     try:
-        first = registry.session_factory("sentinel_main_0d6e4079")
-        second = registry.session_factory("sentinel_main_0d6e4079")
-        other = registry.session_factory("sentinel_other_d9298a10")
+        first = registry.session_factory("00000000-0000-4000-8000-000000000001")
+        second = registry.session_factory("00000000-0000-4000-8000-000000000001")
+        other = registry.session_factory("00000000-0000-4000-8000-000000000002")
 
         assert first is second
         assert other is not first
@@ -74,18 +65,18 @@ async def test_instance_session_registry_disposes_one_database():
     registry = InstanceSessionRegistry()
     kept = _DisposableEngine()
     removed = _DisposableEngine()
-    registry._engines["sentinel_main_0d6e4079"] = removed
-    registry._engines["sentinel_other_d9298a10"] = kept
-    registry._factories["sentinel_main_0d6e4079"] = object()
-    registry._factories["sentinel_other_d9298a10"] = object()
+    registry._engines["00000000-0000-4000-8000-000000000001"] = removed
+    registry._engines["00000000-0000-4000-8000-000000000002"] = kept
+    registry._factories["00000000-0000-4000-8000-000000000001"] = object()
+    registry._factories["00000000-0000-4000-8000-000000000002"] = object()
 
-    await registry.dispose("sentinel_main_0d6e4079")
+    await registry.dispose("00000000-0000-4000-8000-000000000001")
 
     assert removed.disposed is True
     assert kept.disposed is False
-    assert "sentinel_main_0d6e4079" not in registry._engines
-    assert "sentinel_main_0d6e4079" not in registry._factories
-    assert "sentinel_other_d9298a10" in registry._engines
+    assert "00000000-0000-4000-8000-000000000001" not in registry._engines
+    assert "00000000-0000-4000-8000-000000000001" not in registry._factories
+    assert "00000000-0000-4000-8000-000000000002" in registry._engines
 
 
 @pytest.mark.asyncio
@@ -96,7 +87,7 @@ async def test_create_instance_creates_registry_row_and_database():
     instance = await service.create_instance(db, name="Main")
 
     assert instance.name == "main"
-    assert instance.database_name == instance_database_name("main")
+    assert instance.database_name == str(instance.id)
     assert service.created == [instance.database_name]
     assert service.initialized == [instance.database_name]
     assert db.storage[SentinelInstance] == [instance]
@@ -153,7 +144,7 @@ async def test_concurrent_create_loser_does_not_drop_winners_database():
     UNIQUE constraint on instances.name fires on the second commit. Before the
     fix, the loser's except-branch ran `_drop_database(...)` and destroyed the
     winner's data. After the fix, the loser raises InstanceAlreadyExistsError
-    without touching Postgres administrative state.
+    without touching the workspace directory.
     """
     db = FakeDB()
     service = _TestRegistryService()

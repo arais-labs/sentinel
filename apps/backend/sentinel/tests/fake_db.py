@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import copy
 import uuid
 from collections import defaultdict
@@ -8,9 +7,16 @@ from datetime import UTC, datetime
 from itertools import product
 
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.sql.elements import BinaryExpression, BooleanClauseList, False_, Null, True_
+from sqlalchemy.sql.elements import (
+    BinaryExpression,
+    BooleanClauseList,
+    False_,
+    Null,
+    True_,
+)
 from sqlalchemy.sql.functions import FunctionElement
-from sqlalchemy.sql.selectable import Select
+from sqlalchemy.sql.dml import Update
+from sqlalchemy.sql.selectable import ScalarSelect, Select
 
 
 class _FakeScalarResult:
@@ -48,22 +54,9 @@ class _FakeResult:
 class FakeDB:
     """Minimal AsyncSession-like in-memory store for router tests."""
 
-    def __init__(self, *, seed_auth: bool = True):
+    def __init__(self):
         self.storage = defaultdict(list)
         self._tx_snapshots: list[dict] = []
-        if seed_auth:
-            self._seed_auth_settings()
-
-    def _seed_auth_settings(self) -> None:
-        # Test-only convenience so login-based tests don't rely on app startup hooks.
-        try:
-            from app.services.auth_service import ensure_default_auth_settings
-        except Exception:
-            return
-        try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            asyncio.run(ensure_default_auth_settings(self))
 
     def add(self, obj):
         now = datetime.now(UTC)
@@ -109,6 +102,9 @@ class FakeDB:
             self._tx_snapshots.clear()
         return None
 
+    async def close(self):
+        return None
+
     async def refresh(self, _obj):
         return None
 
@@ -145,6 +141,21 @@ class FakeDB:
         return None
 
     async def execute(self, stmt: Select):
+        if isinstance(stmt, Update):
+            model = stmt.entity_description["entity"]
+            rows = [
+                row
+                for row in self.storage.get(model, [])
+                if self._row_matches(stmt, primary=model, row=row, related_models=[])
+            ]
+            for row in rows:
+                for key, value in stmt._values.items():
+                    setattr(
+                        row,
+                        key if isinstance(key, str) else key.key,
+                        self._resolve_side({model: row}, value),
+                    )
+            return _FakeResult(rows)
         raw_columns = list(getattr(stmt, "_raw_columns", []))
         if len(raw_columns) == 1 and isinstance(raw_columns[0], FunctionElement):
             function_name = str(getattr(raw_columns[0], "name", "")).lower()
@@ -254,8 +265,18 @@ class FakeDB:
 
         return False
 
-    @staticmethod
-    def _resolve_side(context: dict[type, object], side):
+    def _resolve_side(self, context: dict[type, object], side):
+        if isinstance(side, ScalarSelect):
+            stmt = side.element
+            model = stmt.column_descriptions[0]["entity"]
+            column = stmt.column_descriptions[0]["expr"]
+            values = [
+                self._resolve_side({model: row}, column)
+                for row in self.storage.get(model, [])
+                if all(self._evaluate({model: row}, term) for term in stmt._where_criteria)
+            ]
+            limit = getattr(stmt._limit_clause, "value", None)
+            return values[:limit] if limit is not None else values
         if isinstance(side, True_):
             return True
         if isinstance(side, False_):

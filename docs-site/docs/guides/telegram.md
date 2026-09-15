@@ -55,7 +55,7 @@ The bridge applies deterministic per-channel routing:
 
 | Chat type | Routing | Trust level |
 |---|---|---|
-| Owner private DM | Owner's main session, agent replies inline | Owner channel |
+| Owner private DM | Owner's selected session (main by default), agent replies inline | Owner channel |
 | Non-owner private DM | Dedicated private session per user | Untrusted by default |
 | Group / supergroup | Dedicated channel session per group | Untrusted multi-party |
 
@@ -67,8 +67,9 @@ The owner is the Telegram account bound via the owner-binding flow.
 2. Open the instance's **Telegram** page → bind owner, and pick the connected chat
    (this calls `POST /telegram/owner` with the chat ID).
 
-Owner DMs route to the owner's main session, with the agent replying inline in the
-same Telegram chat under owner-policy defaults and configured guardrails.
+Owner DMs route to the selected owner session, using the main session by default.
+Use `/session` to choose another conversation. Replies use the same Telegram chat
+and the configured owner policies.
 
 ### Group behavior
 
@@ -83,11 +84,24 @@ privileged capabilities restricted unless the owner grants elevated trust.
 
 ## Bridge mechanics
 
-- **Concurrency guard.** A run registry prevents concurrent agent runs on the same
-  session. If a session is busy, the bridge polls for up to ~60 seconds before
-  rejecting the new message and asking the user to retry.
-- **Message length.** Telegram caps messages at 4096 characters; long agent
-  responses are split into multiple messages.
+- **Steering and switching.** A message sent to a busy conversation is persisted
+  as steering for that conversation. `/session` remains responsive during a turn;
+  switching changes the destination of subsequent messages without cancelling the
+  old turn. Different conversations can proceed independently, while the run
+  registry prevents duplicate turns on one conversation.
+- **Rich replies.** Replies and Telegram module sends use native Rich Messages,
+  preserving Markdown headings, lists, tables, quotes, and fenced code blocks.
+  Requires Telegram Bot API 10.1 or newer.
+- **Streaming.** Owner DMs use an ephemeral rich draft, updated at most once per
+  second and refreshed during long tool calls. The final answer is sent once as
+  a persistent rich message. Tool progress replaces the draft status rather than
+  posting individual tool outputs.
+- **Delivery.** Rate-limited sends honor Telegram's retry delay (up to three
+  attempts). Ambiguous network timeouts are surfaced rather than automatically
+  resending a message that Telegram may already have accepted.
+- **Client library.** Rich endpoints use the library's `do_api_request`
+  extension where a typed method is not available. The dependency lockfiles,
+  rather than this guide, define the shipped client version.
 - **Operator audit line.** When a reply is sent to a group or non-owner DM, a
   single-line audit entry is added to the Sentinel UI thread to keep the shared
   operator thread clean while recording what was sent where.

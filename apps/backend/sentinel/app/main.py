@@ -1,73 +1,94 @@
 import asyncio
+from app.services.host_runtime import host_processes
+from sentral.llm.http_pool import close_provider_http_pool
+from sentral.llm.providers.codex import close_codex_connections
+from app.services.runtime.ssh_runtime import close_runtime_terminal_manager
+from app.services.runtime.remote_mac import close_all as close_remote_runtimes
+from app.services.sessions.compaction import CompactionService
+
 import logging
+import os
 from collections import defaultdict, deque
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable
 from contextlib import asynccontextmanager
 from typing import Any
+from uuid import UUID as _UUID
 from uuid import uuid4
 
 from fastapi import FastAPI
-
-from app.logging_context import configure_logging
-
-# Configure logging so our debug/info logs are visible and session-scoped.
-configure_logging()
-logger = logging.getLogger(__name__)
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select
+from sqlalchemy import select as _select
 
-from app.sentral import ConversationItem, GenerationConfig, RunTurnRequest, TextBlock
-from app.config import settings, app_version
-from app.database import AsyncSessionLocal, ensure_database_exists, init_db, init_instance_db
+from app.config import app_version, settings
+from app.database import AsyncSessionLocal
+from app.database.initialization import init_db, init_instance_db
 from app.database.instance_sessions import instance_session_registry
+from app.logging_context import configure_logging
 from app.middleware import (
     RateLimitMiddleware,
     RequestIDMiddleware,
     SecurityHeadersMiddleware,
     register_error_handlers,
 )
+from app.middleware.desktop import DesktopTransportMiddleware
+from app.models import Session as SessionModel
+from app.models.manager import SentinelInstance
 from app.routers import (
     admin,
-    admin_manager,
-    agent_modes as agent_modes_router,
-    approvals as approvals_router,
-    auth,
     backup,
-    git as git_router,
     health,
     instances,
+    machines,
     memory,
     models,
+    module_permissions,
     onboarding,
     runtime,
-    runtimes,
-    settings as settings_router,
     sessions,
     sessions_compaction,
     sub_agents,
     telegram,
     triggers,
-    version as version_router,
-    ws,
     webhooks,
+    workspaces,
+    ws,
 )
-from app.routers.araios import api_router as araios_api_router
-from app.services.agent_runtime_adapters import (
-    SentinelLoopRuntimeAdapter,
-    runtime_event_to_sentinel_event,
+from app.routers import (
+    agent_modes as agent_modes_router,
 )
-from app.services.sessions.agent_run_registry import AgentRunRegistry
-from app.services.araios.runtime_services import configure_runtime_services
-from app.services.memory.embeddings import EmbeddingService
-from app.services.llm.ids import TierName
-from app.services.memory.search import MemorySearchService
-from app.services.sessions.session_naming import SessionNamingService
-from app.services.tools.approval import ApprovalService
-from app.models.manager import SentinelInstance
+from app.routers import (
+    approvals as approvals_router,
+)
+from app.routers import (
+    git as git_router,
+)
+from app.routers import modules as modules_router
+from app.routers import (
+    settings as settings_router,
+)
+from app.routers import (
+    version as version_router,
+)
+from sentral import ConversationItem, GenerationConfig, RunTurnRequest, TextBlock
+import app.services.agent_runtime_adapters.runtime as runtime_adapter_module
+from sentral.llm.runtime_conversions import runtime_event_to_sentinel_event
 from app.services.instance_runtime_context import (
     instance_runtime_context_registry,
 )
+from app.services.memory.local_embeddings import LocalEmbeddingService
+from app.services.memory.search import MemorySearchService
+from app.services.modules.runtime_services import configure_runtime_services
+from app.services.sessions.agent_run_registry import AgentRunRegistry
+from app.services.sessions.session_naming import SessionNamingService
+from app.services.sub_agents.accounting import wakeup_model
+from app.services.sub_agents.completions import deliver_completion
+from app.services.tools.approval import ApprovalService
 from app.services.ws.ws_manager import ConnectionManager
+
+# Configure logging so our debug/info logs are visible and session-scoped.
+configure_logging()
+logger = logging.getLogger(__name__)
 
 _LLM_CREDENTIAL_ENV_VARS = (
     "ANTHROPIC_OAUTH_TOKEN",
@@ -86,7 +107,6 @@ def _warn_if_llm_creds_in_env() -> None:
     These were removed as a supported configuration source; credentials live
     in the per-instance system_settings DB now.
     """
-    import os
 
     leaked = [name for name in _LLM_CREDENTIAL_ENV_VARS if os.environ.get(name)]
     if leaked:
@@ -104,27 +124,10 @@ async def lifespan(app: FastAPI):
     stop_event = asyncio.Event()
     cleanup_task = asyncio.create_task(RateLimitMiddleware.cleanup_loop(stop_event))
     await init_db()
-    async with AsyncSessionLocal() as _auth_db:
-        from app.services.auth_service import ensure_default_auth_settings
-
-        await ensure_default_auth_settings(_auth_db)
-
     # Instance app settings such as provider credentials are loaded from each
     # instance database when that instance runtime context is built.
 
-    # TODO: embedding_api_key / openai_api_key are now DB-only (no env support),
-    # so embedding_key is always None at boot. The embedding service therefore
-    # never initializes at the process-global level. Migrate EmbeddingService
-    # to be built per-instance (like the LLM provider) using DB-hydrated
-    # settings, mirroring _build_instance_runtime_context.
-    embedding_key = settings.embedding_api_key or settings.openai_api_key
-    embedding_service = None
-    if embedding_key:
-        embedding_service = EmbeddingService(
-            embedding_key,
-            model=settings.embedding_model,
-            base_url=settings.embedding_base_url,
-        )
+    embedding_service = LocalEmbeddingService(settings.storage_root / "models" / "embeddings")
     memory_search_service = MemorySearchService(embedding_service)
     ws_manager = ConnectionManager()
     run_registry = AgentRunRegistry()
@@ -156,11 +159,6 @@ async def lifespan(app: FastAPI):
     app.state.agent_run_registry = run_registry
 
     async def _resolve_runtime_context_for_session(session_id: object):
-        from uuid import UUID as _UUID
-
-        from sqlalchemy import select as _select
-
-        from app.models import Session as SessionModel
 
         try:
             sid = session_id if isinstance(session_id, _UUID) else _UUID(str(session_id))
@@ -179,9 +177,6 @@ async def lifespan(app: FastAPI):
         Returns True when one queued wakeup item is consumed, False when it
         should be retried later (for example while another run is active).
         """
-        from sqlalchemy import select as _select
-
-        from app.models import Session as SessionModel
 
         instance_context, sid = await _resolve_runtime_context_for_session(session_id)
         if instance_context is None or sid is None:
@@ -194,6 +189,16 @@ async def lifespan(app: FastAPI):
 
         if await run_registry.is_running(session_key):
             return False
+
+        queued_steering = [
+            item
+            for item in run_registry.peek_interjections(session_key)
+            if item.metadata.get("steering") == "pending"
+        ]
+        if prompt == "__sentinel_steering__" and not queued_steering:
+            return True
+        steering_metadata = queued_steering[0].metadata if queued_steering else {}
+        steering_generation = steering_metadata.get("generation") or {}
 
         async with instance_context.session_factory() as db:
             result = await db.execute(_select(SessionModel).where(SessionModel.id == sid))
@@ -209,35 +214,49 @@ async def lifespan(app: FastAPI):
                     runtime_event_to_sentinel_event(event),
                 )
 
-            runtime = SentinelLoopRuntimeAdapter(loop=agent_runtime_support, db=db, session_id=sid)
-            run_task = asyncio.create_task(
+            runtime = runtime_adapter_module.SentinelLoopRuntimeAdapter(
+                loop=agent_runtime_support, db=db, session_id=sid
+            )
+            run_task = await run_registry.start(
+                session_key,
                 runtime.run_turn(
                     RunTurnRequest(
                         conversation_id=session_key,
-                        new_items=[
-                            ConversationItem(
-                                id=f"server-wakeup-{uuid4().hex}",
-                                role="user",
-                                content=[TextBlock(text=prompt)],
-                            )
-                        ],
+                        new_items=(
+                            []
+                            if queued_steering
+                            else [
+                                ConversationItem(
+                                    id=f"server-wakeup-{uuid4().hex}",
+                                    role="user",
+                                    content=[TextBlock(text=prompt)],
+                                )
+                            ]
+                        ),
                         config=GenerationConfig(
-                            model=TierName.NORMAL.value,
-                            max_iterations=10,
+                            model=await wakeup_model(db, sid, steering_metadata),
+                            max_iterations=(
+                                steering_generation.get("max_iterations", 0)
+                                if queued_steering
+                                else 0
+                            ),
                             stream=True,
-                            provider_metadata={"persist_user_message": False},
+                            provider_metadata={
+                                "persist_user_message": False,
+                                "agent_mode": steering_metadata.get("agent_mode"),
+                            },
                         ),
                         interjection_source=lambda: run_registry.drain_interjections(session_key),
                     ),
                     sink=_on_event,
-                )
+                ),
+                require_interjections=bool(queued_steering),
             )
-            registered = await run_registry.register(session_key, run_task)
-            if not registered:
-                run_task.cancel()
+            if run_task is None:
                 return False
 
             try:
+                await ws_manager.broadcast(session_key, {"type": "run_state", "run_active": True})
                 await run_task
             except asyncio.CancelledError:
                 pass
@@ -246,8 +265,11 @@ async def lifespan(app: FastAPI):
                 await ws_manager.broadcast_done(session_key, "error")
             finally:
                 await run_registry.clear(session_key, run_task)
+                await ws_manager.broadcast(
+                    session_key,
+                    {"type": "run_state", "run_active": await run_registry.is_running(session_key)},
+                )
                 try:
-                    from app.services.sessions.compaction import CompactionService
 
                     await CompactionService(
                         provider=agent_runtime_support.provider
@@ -315,13 +337,17 @@ async def lifespan(app: FastAPI):
         stderr_tail: str,
     ) -> str:
         lines = [
-            "[Runtime Job Report]",
+            "[Machine Job Report]",
             "A background runtime job just finished while you were working.",
             "Finish the current step, then integrate this result on the next loop if relevant. If you are already wrapping up, process it immediately afterward.",
             "",
             f"Job ID: {str(job.get('id') or '').strip()}",
             f"Status: {str(job.get('status') or '').strip() or 'unknown'}",
         ]
+        if job.get("window_id"):
+            lines.append(f"Window: {job['window_id']}")
+        if job.get("pane_id"):
+            lines.append(f"Pane: {job['pane_id']}")
         returncode = job.get("returncode")
         if returncode is not None:
             lines.append(f"Return code: {returncode}")
@@ -357,6 +383,7 @@ async def lifespan(app: FastAPI):
                 ],
                 metadata={
                     "source": "runtime_job_completion",
+                    "notice": {"title": "Background job report"},
                     "job_id": str(job.get("id") or ""),
                     "status": str(job.get("status") or ""),
                 },
@@ -367,16 +394,22 @@ async def lifespan(app: FastAPI):
         await _enqueue_main_agent_wakeup(
             session_id,
             (
-                "A background runtime job just finished. Review the latest [Runtime Job Report] system message(s), "
+                "A background runtime job just finished. Review the latest [Machine Job Report] system message(s), "
                 "integrate useful findings, and continue helping the user immediately."
             ),
         )
 
     async def _resume_pending_runtime_job_updates(session_key: str) -> None:
+        if any(
+            item.metadata.get("steering") == "pending"
+            for item in run_registry.peek_interjections(session_key)
+        ):
+            await _enqueue_main_agent_wakeup(session_key, "__sentinel_steering__")
+            return
         await _enqueue_main_agent_wakeup(
             session_key,
             (
-                "A background runtime job finished while you were busy. Review the latest [Runtime Job Report] "
+                "A background runtime job finished while you were busy. Review the latest [Machine Job Report] "
                 "system message(s), integrate useful findings, and continue helping the user immediately."
             ),
         )
@@ -384,46 +417,19 @@ async def lifespan(app: FastAPI):
     run_registry.configure_idle_interjections_callback(_resume_pending_runtime_job_updates)
 
     async def _broadcast_sub_agent_completed(task) -> None:
-        await ws_manager.broadcast_sub_agent_completed(
-            str(task.session_id),
-            str(task.id),
-            task.status,
-            task.result if isinstance(task.result, dict) else None,
-        )
-        # Persist a system message in the parent session so the main agent sees the result
-        result_data = task.result if isinstance(task.result, dict) else {}
-        summary = (
-            result_data.get("final_text", "") or f"Sub-agent completed with status: {task.status}"
-        )
-        content = (
-            f"[Sub-Agent Report] Task: {task.objective}\n"
-            f"Status: {task.status}\n"
-            f"Result: {summary[:2000]}"
-        )
-        try:
-            from app.models import Message as MsgModel
 
-            instance_context, _sid = await _resolve_runtime_context_for_session(task.session_id)
-            if instance_context is None:
-                return
-            async with instance_context.session_factory() as db:
-                msg = MsgModel(
-                    session_id=task.session_id,
-                    role="system",
-                    content=content,
-                    metadata_json={"source": "sub_agent", "task_id": str(task.id)},
-                )
-                db.add(msg)
-                await db.commit()
-        except Exception:  # noqa: BLE001
-            pass
-        await _enqueue_main_agent_wakeup(
-            task.session_id,
-            (
-                "A delegated sub-agent just finished. Review the latest [Sub-Agent Report] system message(s), "
-                "integrate useful findings, and continue helping the user immediately."
-            ),
-        )
+        instance_context, _sid = await _resolve_runtime_context_for_session(task.session_id)
+        if instance_context is None:
+            return
+        async with instance_context.session_factory() as db:
+            delivered = await deliver_completion(db, task, run_registry)
+        if delivered:
+            await ws_manager.broadcast_sub_agent_completed(
+                str(task.session_id),
+                str(task.id),
+                task.status,
+                task.result if isinstance(task.result, dict) else None,
+            )
 
     app.state.sub_agent_completed_callback = _broadcast_sub_agent_completed
     configure_runtime_services(
@@ -435,7 +441,6 @@ async def lifespan(app: FastAPI):
         result = await manager_db.execute(select(SentinelInstance).order_by(SentinelInstance.name))
         for instance in result.scalars().all():
             try:
-                await ensure_database_exists(instance.database_name)
                 await init_instance_db(instance.database_name)
             except Exception:  # noqa: BLE001
                 logger.warning(
@@ -505,15 +510,22 @@ async def lifespan(app: FastAPI):
             "instance_contexts", instance_runtime_context_registry.stop_all(), timeout=5.0
         )
 
+        await _bounded("host_processes", host_processes.close(), timeout=3.0)
+
         # 4. External resources.
-        from app.services.runtime.ssh_runtime import close_runtime_terminal_manager
+
+        await _bounded("codex_connections", close_codex_connections(), timeout=3.0)
+
+        await _bounded("provider_http", close_provider_http_pool(), timeout=3.0)
 
         await _bounded("runtime_ssh", close_runtime_terminal_manager(), timeout=3.0)
+
+        await _bounded("remote_runtimes", close_remote_runtimes(), timeout=3.0)
         await _bounded("instance_db_engines", instance_session_registry.dispose_all(), timeout=3.0)
 
 
 app = FastAPI(title=settings.app_name, version=app_version(), lifespan=lifespan)
-# Runtime singletons initialized up-front for deterministic app.state shape.
+# Machine singletons initialized up-front for deterministic app.state shape.
 app.state.ws_manager = ConnectionManager()
 app.state.agent_run_registry = AgentRunRegistry()
 app.state.approval_service = ApprovalService()
@@ -527,15 +539,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(DesktopTransportMiddleware, token=settings.sentinel_desktop_token)
 register_error_handlers(app)
 
 app.include_router(health.router, tags=["health"])
 app.include_router(version_router.router, tags=["version"])
-app.include_router(auth.router, prefix="/api/v1/auth", tags=["auth"])
 app.include_router(instances.router, prefix="/api/v1/instances", tags=["instances"])
-app.include_router(runtimes.router, prefix="/api/v1", tags=["runtimes"])
-app.include_router(admin_manager.router, prefix="/api/v1/admin", tags=["admin"])
+app.include_router(machines.router, prefix="/api/v1", tags=["machines"])
 _instance_api_prefix = "/api/v1/instances/{instance_name}"
+app.include_router(workspaces.router, prefix=_instance_api_prefix, tags=["workspaces"])
 app.include_router(sessions.router, prefix=f"{_instance_api_prefix}/sessions", tags=["sessions"])
 app.include_router(
     sessions_compaction.router, prefix=f"{_instance_api_prefix}/sessions", tags=["sessions"]
@@ -565,4 +577,11 @@ app.include_router(runtime.router, prefix=f"{_instance_api_prefix}/runtime", tag
 app.include_router(ws.router, prefix="/ws/instances/{instance_name}/sessions", tags=["ws"])
 
 # Module/control-plane routes used by the Sentinel modules surface.
-app.include_router(araios_api_router, prefix=_instance_api_prefix, tags=["modules"])
+app.include_router(
+    modules_router.router, prefix=f"{_instance_api_prefix}/modules", tags=["modules"]
+)
+app.include_router(
+    module_permissions.router,
+    prefix=f"{_instance_api_prefix}/permissions",
+    tags=["module-permissions"],
+)

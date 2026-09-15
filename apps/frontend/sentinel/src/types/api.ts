@@ -1,20 +1,8 @@
-export type AuthStatus = 'loading' | 'authenticated' | 'unauthenticated';
-
-export interface TokenResponse {
-  access_token: string;
-  refresh_token: string;
-  token_type: string;
-  expires_in: number;
-}
-
-export interface AuthSetupStatus {
-  configured: boolean;
-  bootstrap_available: boolean;
-}
+export interface Workspace { distribution?: "alpine" | "ubuntu" | "debian"; id: string; name: string; machine_id: string; directory: string; development_tools?: string[]; recovery_available?: boolean; recovery_backup?: string | null; container_state?: 'recovering' | 'checking' | 'preparing' | 'running' | 'stopped' | 'stopping' | 'failed' | 'unavailable'; container_error?: string | null; container_message?: string | null; resources?: { cpus: number; memory_gib: number; disk_gib: number } | null; }
 
 export interface Session {
+  workspace_id?: string | null;
   id: string;
-  user_id: string;
   agent_id: string | null;
   parent_session_id?: string | null;
   title: string | null;
@@ -22,8 +10,10 @@ export interface Session {
   latest_system_prompt?: string | null;
   started_at: string;
   is_running: boolean;
-  is_main?: boolean;
   has_unread?: boolean;
+  awaiting_input?: boolean;
+  pending_form_id?: string | null;
+  completion_id?: string | null;
 }
 
 export interface SessionListResponse {
@@ -85,6 +75,7 @@ export interface SessionRuntimeFilePreviewResponse {
 }
 
 export interface SessionRuntimeGitRoot {
+  refs?: string[];
   root_path: string;
   branch: string | null;
   detached_head: boolean;
@@ -140,10 +131,21 @@ export interface SessionRuntimeCleanupResponse {
 }
 
 export interface SessionContextUsage {
+  last_request_usage: {
+    model: string;
+    provider: string;
+    service_tier: string;
+    usage: {
+      input_tokens?: number;
+      output_tokens?: number;
+      input_tokens_details?: { cached_tokens?: number; cache_write_tokens?: number };
+      output_tokens_details?: { reasoning_tokens?: number };
+    };
+    price: { usd: string; rates_as_of: string } | null;
+    price_kind: 'api_equivalent' | 'api_list_price';
+  } | null;
   session_id: string;
   context_token_budget: number;
-  estimated_context_tokens: number | null;
-  estimated_context_percent: number | null;
   snapshot_created_at: string | null;
   source: string;
 }
@@ -184,6 +186,10 @@ export interface ChatResponse {
 }
 
 export interface ModelOption {
+  provider_options?: Array<{ provider_id: string; model: string; reasoning_levels: string[]; supports_fast_mode?: boolean; reasoning_effort?: string; context_token_budget?: number | null }>;
+  context_window_tokens?: number | null;
+  context_token_budget?: number | null;
+  output_reserve_tokens?: number | null;
   label: string;
   description: string;
   tier: 'fast' | 'normal' | 'hard';
@@ -213,17 +219,26 @@ export interface AgentModesResponse {
   default_mode: string;
 }
 
+export interface AgentUsage {
+  requests: number;
+  unreported_requests: number;
+  input_tokens: number;
+  output_tokens: number;
+  history_incomplete: boolean;
+  costs: Record<string, { usd: string; priced_requests: number; unpriced_requests: number }>;
+}
+
 export interface SubAgentTask {
   id: string;
   session_id: string;
   name: string;
   scope: string | null;
-  max_steps: number;
   status: string;
   allowed_tools: string[];
   turns_used: number;
-  grace_turns_used?: number;
   tokens_used: number;
+  model?: string | null;
+  usage?: AgentUsage;
   result: Record<string, unknown> | null;
   created_at: string;
   started_at: string | null;
@@ -293,8 +308,6 @@ export interface TriggerLog {
 export interface FireTriggerResponse {
   log: TriggerLog;
   resolved_session_id: string | null;
-  route_mode: string | null;
-  used_fallback: boolean | null;
 }
 
 export interface TriggerListResponse {
@@ -334,8 +347,9 @@ export interface GitAccount {
   scope_pattern: string;
   author_name: string;
   author_email: string;
-  has_read_token: boolean;
-  has_write_token: boolean;
+  has_token: boolean;
+  github_login: string | null;
+  verified_at: string | null;
   created_at: string | null;
   updated_at: string | null;
 }
@@ -370,11 +384,13 @@ export interface ApprovalListResponse {
 }
 
 export interface RuntimeLiveView {
+  state: string;
   enabled: boolean;
   available: boolean;
   mode?: string;
   url: string | null;
   ws_url: string | null;
+  vnc_update_mode?: 'native' | 'paced';
   display: string | null;
   geometry: string | null;
   reason: string | null;
@@ -417,43 +433,30 @@ export interface RuntimeStatusResponse {
   sandbox: 'bubblewrap' | 'seatbelt' | 'unavailable' | 'unknown';
   runtime: {
     name?: string | null;
-    provider?: 'ssh' | 'lima' | 'docker' | null;
+    provider?: MachineProvider | null;
     host: string | null;
     port: number | null;
     username: string | null;
-    workspaces_dir: string | null;
   };
   checks: RuntimeStatusCheck[];
   capabilities: Record<string, string>;
 }
 
-export type RuntimeProvider = 'ssh' | 'lima' | 'docker';
-export type RuntimeStatus = 'unknown' | 'creating' | 'stopped' | 'running' | 'ready' | 'error' | 'deleted';
+export type MachineProvider = 'ssh' | 'local';
+export type MachineStatus = 'unknown' | 'creating' | 'stopped' | 'running' | 'ready' | 'error' | 'deleted';
 
-export interface Runtime {
+export interface Machine {
   id: string;
   name: string;
-  provider: RuntimeProvider;
-  status: RuntimeStatus;
+  provider: MachineProvider;
+  status: MachineStatus;
   profile: string | null;
   host: string | null;
   port: number | null;
   username: string | null;
-  workspaces_dir: string | null;
   auth_type: 'private_key' | 'password' | null;
-  provider_config: {
-    desktop: string;
-    cpus: number | null;
-    memory: string | null;
-    disk: string | null;
-  };
-  provider_state: {
-    ssh_config?: string | null;
-    lima_name?: string | null;
-    container_name?: string | null;
-    workspace_volume?: string | null;
-    desktop?: string | null;
-  } & Record<string, unknown>;
+  provider_config: Record<string, never>;
+  provider_state: Record<string, unknown>;
   status_detail: string | null;
   last_job_id: string | null;
   last_job_status: 'queued' | 'running' | 'succeeded' | 'failed' | null;
@@ -461,29 +464,30 @@ export interface Runtime {
   updated_at: string | null;
 }
 
-export interface RuntimeTestResponse {
+export interface MachineTestResponse {
   ok: boolean;
   detail: string;
   resolved_home: string | null;
-  resolved_workspaces_dir: string | null;
 }
 
-export interface RuntimeProviderCapability {
-  provider: RuntimeProvider;
+export interface MachineProviderCapability {
+  provider: MachineProvider;
   available: boolean;
   label: string;
   detail: string;
   missing: string[];
+  /** Whether this provider has real start/stop/rebuild actions (ssh + local don't). */
+  has_lifecycle: boolean;
 }
 
-export interface RuntimeCapabilitiesResponse {
-  providers: RuntimeProviderCapability[];
+export interface MachineCapabilitiesResponse {
+  providers: MachineProviderCapability[];
 }
 
-export interface RuntimeJob {
+export interface MachineJob {
   id: string;
-  runtime_id: string | null;
-  provider: RuntimeProvider;
+  machine_id: string | null;
+  provider: MachineProvider;
   action: 'create' | 'start' | 'stop' | 'delete' | 'rebuild';
   status: 'queued' | 'running' | 'succeeded' | 'failed';
   events: Array<{ timestamp: string; level: 'info' | 'error'; message: string }>;
@@ -492,25 +496,14 @@ export interface RuntimeJob {
   finished_at: string | null;
 }
 
-export interface RuntimeLifecycleResponse {
-  runtime: Runtime;
-  job: RuntimeJob;
-}
-
-export interface ConfigResponse {
-  app_name: string;
-  app_env: string;
-  jwt_algorithm: string;
-  access_token_ttl_seconds: number;
-  refresh_token_ttl_seconds: number;
-  context_token_budget: number;
-  jwt_secret_key: string;
+export interface MachineLifecycleResponse {
+  machine: Machine;
+  job: MachineJob;
 }
 
 export interface AuditLog {
   id: string;
   timestamp: string;
-  user_id: string | null;
   action: string;
   resource_type: string | null;
   resource_id: string | null;

@@ -7,7 +7,7 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.services.llm.generic.types import ToolSchema
+from sentral.llm.generic.types import ToolSchema
 
 
 @dataclass(slots=True)

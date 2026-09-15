@@ -3,30 +3,37 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any, Protocol
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import JSON, func, literal, select, type_coerce
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import with_expression
 
-from app.sentral import ConversationItem, GenerationConfig, ImageBlock, RunTurnRequest, TextBlock
 from app.models import Message, Session
-from app.services.agent.agent_modes import AgentMode, normalize_agent_mode_value
-from app.services.agent_runtime_adapters import (
-    SentinelLoopRuntimeAdapter,
-    runtime_event_to_sentinel_event,
+from sentral import (
+    ConversationItem,
+    GenerationConfig,
+    ImageBlock,
+    RunTurnRequest,
+    TextBlock,
 )
-from app.services.sessions.agent_run_registry import AgentRunRegistry
-from app.services.sessions.compaction import CompactionService
-from app.services.llm.generic.types import AgentEvent, ImageContent, TextContent
-from app.services.llm.ids import TierName
+from app.services.agent.agent_modes import AgentMode, normalize_agent_mode_value
+import app.services.agent_runtime_adapters.runtime as runtime_adapter_module
+from sentral.llm.runtime_conversions import runtime_event_to_sentinel_event
+from sentral.llm.generic.types import AgentEvent, ImageContent, TextContent
+from sentral.llm.ids import TierName
+from app.services.llm.session_selection import selection_model
 from app.services.messages import (
     build_generation_metadata,
     normalize_generation_metadata,
     web_ingress_metadata,
     with_generation_metadata,
 )
+from app.services.modules.builtins.form.contract import validate_response
+from app.services.sessions.agent_run_registry import AgentRunRegistry
+from app.services.sessions.compaction import CompactionService
 from app.services.sessions.session_naming import (
     apply_conversation_message_delta,
     conversation_delta_for_role,
@@ -96,17 +103,36 @@ class RuntimeSupportProtocol(Protocol):
     def collect_attachments(self, messages: list[Any]) -> list[dict[str, Any]]: ...
 
 
-async def get_owned_session(db: AsyncSession, session_id: UUID, user_id: str) -> Session | None:
-    result = await db.execute(
-        select(Session).where(Session.id == session_id, Session.user_id == user_id)
-    )
+async def get_session_record(db: AsyncSession, session_id: UUID) -> Session | None:
+    result = await db.execute(select(Session).where(Session.id == session_id))
     return result.scalars().first()
 
 
-async def load_history(db: AsyncSession, session_id: UUID) -> list[dict[str, Any]]:
-    result = await db.execute(
+async def load_history(
+    db: AsyncSession, session_id: UUID, *, tool_state_only: bool = False
+) -> list[dict[str, Any]]:
+    query = (
         select(Message).where(Message.session_id == session_id).order_by(Message.created_at.asc())
     )
+    if tool_state_only:
+        # Reconnecting needs pending tool IDs and arguments, not screenshots or
+        # saved model prompts. Full history remains available to the agent.
+        query = query.options(
+            with_expression(Message.content, literal("")),
+            with_expression(
+                Message.metadata_json,
+                type_coerce(
+                    func.json_object(
+                        "tool_calls",
+                        func.json_extract(Message.metadata_json, "$.tool_calls"),
+                        "generation",
+                        func.json_extract(Message.metadata_json, "$.generation"),
+                    ),
+                    JSON,
+                ),
+            ),
+        )
+    result = await db.execute(query)
     messages = result.scalars().all()
     return [
         {
@@ -122,7 +148,9 @@ async def load_history(db: AsyncSession, session_id: UUID) -> list[dict[str, Any
     ]
 
 
-def unresolved_tool_calls_from_history(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def unresolved_tool_calls_from_history(
+    history: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
     resolved_ids: set[str] = set()
     pending_order: list[str] = []
     pending: dict[str, dict[str, Any]] = {}
@@ -182,8 +210,24 @@ async def persist_user_message(
     temperature: float,
     max_iterations: int,
     agent_mode: AgentMode,
+    form_response: dict | None = None,
+    provider_id: str | None = None,
+    reasoning_level: str | None = None,
+    fast_mode: bool = False,
+    message_id: UUID | None = None,
+    steering: bool = False,
 ) -> Message:
     metadata: dict[str, Any] = web_ingress_metadata()
+    if steering:
+        metadata.update(steering="pending", steering_id=str(message_id))
+    if form_response is not None:
+
+        content, metadata["form_response"] = await validate_response(db, session_id, form_response)
+    metadata["model_selection"] = {
+        "provider_id": provider_id,
+        "reasoning_level": reasoning_level,
+        "fast_mode": fast_mode,
+    }
     metadata["agent_mode"] = normalize_agent_mode_value(agent_mode)
     if attachments:
         metadata["attachments"] = attachments
@@ -200,6 +244,7 @@ async def persist_user_message(
     apply_conversation_message_delta(session, conversation_delta_for_role("user"))
 
     message = Message(
+        **({"id": message_id} if message_id is not None else {}),
         session_id=session_id,
         role="user",
         content=content,
@@ -211,7 +256,9 @@ async def persist_user_message(
     return message
 
 
-def build_user_payload(parsed: ParsedWsMessage) -> str | list[TextContent | ImageContent]:
+def build_user_payload(
+    parsed: ParsedWsMessage,
+) -> str | list[TextContent | ImageContent]:
     if not parsed.attachments:
         return parsed.content
 
@@ -241,16 +288,29 @@ async def run_agent_once(
     max_iterations: int,
     agent_mode: AgentMode,
     persist_user_message: bool,
+    provider_id: str | None = None,
+    reasoning_level: str | None = None,
+    fast_mode: bool = False,
+    user_message: Message | None = None,
 ) -> AgentRunOutcome:
-    runtime = SentinelLoopRuntimeAdapter(
+    runtime = runtime_adapter_module.SentinelLoopRuntimeAdapter(
         loop=agent_runtime_support,
         db=db,
         session_id=session_id,
         persist_incremental=True,
     )
 
+    terminal_events = []
+
     async def _broadcast_event(event: Any) -> None:
         sentinel_event = runtime_event_to_sentinel_event(event)
+        # Final UI events trigger history reloads. Commit the outcome first so
+        # those reloads cannot replace a failure with an apparently sent message.
+        if sentinel_event.type in {"error", "agent_error"} or (
+            sentinel_event.type == "done" and sentinel_event.stop_reason != "tool_use"
+        ):
+            terminal_events.append(sentinel_event)
+            return
         phase = _phase_from_sentinel_event(sentinel_event)
         if phase is not None:
             await run_registry.set_phase(session_key, phase)
@@ -264,7 +324,8 @@ async def run_agent_once(
             await run_registry.set_phase(session_key, None)
         await manager.broadcast_agent_event(session_key, sentinel_event)
 
-    run_task = asyncio.create_task(
+    run_task = await run_registry.start(
+        session_key,
         runtime.run_turn(
             RunTurnRequest(
                 conversation_id=session_key,
@@ -276,7 +337,7 @@ async def run_agent_once(
                     )
                 ],
                 config=GenerationConfig(
-                    model=(tier or TierName.NORMAL).value,
+                    model=selection_model(tier, provider_id, reasoning_level, fast_mode),
                     max_iterations=max_iterations,
                     stream=True,
                     provider_metadata={
@@ -287,11 +348,9 @@ async def run_agent_once(
                 interjection_source=lambda: run_registry.drain_interjections(session_key),
             ),
             sink=_broadcast_event,
-        )
+        ),
     )
-    registered = await run_registry.register(session_key, run_task)
-    if not registered:
-        run_task.cancel()
+    if run_task is None:
         await manager.broadcast_agent_error(
             session_key, "Agent is already processing this session."
         )
@@ -305,10 +364,14 @@ async def run_agent_once(
     cancelled = False
     run_error: str | None = None
     failed = False
+    completed = False
     try:
+        await manager.broadcast(session_key, {"type": "run_state", "run_active": True})
         await run_registry.set_phase(session_key, "thinking")
         run_result = await run_task
         run_error = getattr(run_result, "error", None)
+        failed = getattr(run_result, "status", None) in {"error", "timeout"}
+        completed = getattr(run_result, "status", None) == "completed"
         cancelled = (
             getattr(run_result, "status", None) == "aborted"
             or run_error == "Generation stopped by user"
@@ -318,10 +381,56 @@ async def run_agent_once(
     except Exception as exc:  # noqa: BLE001
         failed = True
         run_error = str(exc)
-        await manager.broadcast_agent_error(session_key, str(exc))
-        await manager.broadcast_done(session_key, "error")
+        terminal_events.extend(
+            [
+                AgentEvent(type="error", error=str(exc)),
+                AgentEvent(type="done", stop_reason="error"),
+            ]
+        )
     finally:
-        await run_registry.clear(session_key, run_task)
+        # Covers both a returned runtime failure and a raised transport error.
+        event_error = next(
+            (
+                event.error
+                for event in terminal_events
+                if event.type in {"error", "agent_error"} and event.error
+            ),
+            None,
+        )
+        run_error = run_error or event_error
+        failed = failed or bool(run_error and not cancelled)
+        try:
+            if user_message is not None:
+                metadata = dict(user_message.metadata_json or {})
+                if failed:
+                    metadata["retryable_error"] = run_error or "Agent failed"
+                elif completed and not cancelled:
+                    metadata.pop("retryable_error", None)
+                if metadata != (user_message.metadata_json or {}):
+                    user_message.metadata_json = metadata
+                    await db.commit()
+            for event in terminal_events:
+                if user_message is not None and event.type in {"error", "agent_error"}:
+                    await manager.broadcast(
+                        session_key,
+                        {
+                            "type": event.type,
+                            "session_id": session_key,
+                            "message_id": str(user_message.id),
+                            "error": event.error,
+                        },
+                    )
+                else:
+                    await manager.broadcast_agent_event(session_key, event)
+        finally:
+            await run_registry.clear(session_key, run_task)
+        await manager.broadcast(
+            session_key,
+            {
+                "type": "run_state",
+                "run_active": await run_registry.is_running(session_key),
+            },
+        )
 
     return AgentRunOutcome(failed=failed, cancelled=cancelled, run_error=run_error)
 
@@ -331,7 +440,7 @@ async def run_agent_once(
 # desired behavior is to pause the loop, compact, reload context, and continue
 # the same run (no separate "resume" prompt). Trigger on TokenUsage.input_tokens
 # from the last turn crossing ~85% of settings.context_token_budget. The hook
-# belongs in app/sentral/engine.py at the iteration boundary, not here.
+# belongs in packages/sentral/src/sentral/engine.py at the iteration boundary, not here.
 async def maybe_auto_compact_after_run(
     *,
     db: AsyncSession,
@@ -362,8 +471,7 @@ async def maybe_auto_compact_after_run(
             {
                 "type": "compaction_completed",
                 "session_id": session_key,
-                "raw_token_count": result.raw_token_count,
-                "compressed_token_count": result.compressed_token_count,
+                "compacted": result.compacted,
                 "summary_preview": result.summary_preview,
             },
         )

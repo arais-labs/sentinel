@@ -7,6 +7,5 @@ from pydantic import BaseModel
 
 class CompactionResponse(BaseModel):
     session_id: UUID
-    raw_token_count: int
-    compressed_token_count: int
+    compacted: bool
     summary_preview: str

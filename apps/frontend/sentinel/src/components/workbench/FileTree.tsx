@@ -112,7 +112,7 @@ export const FileTree: React.FC<FileTreeProps> = ({
               }
               onFileClick(entry);
             }}
-            className="w-full group flex items-center gap-2.5 px-3 py-2 rounded-lg transition-all hover:bg-[color:var(--surface-2)] active:scale-[0.99] text-left"
+            className="w-full group flex items-center gap-2.5 px-3 py-2 rounded-lg transition-all hover:bg-(--surface-2) active:scale-[0.99] text-left"
             style={{ paddingLeft: `${12 + depth * 14}px` }}
           >
             <div className="shrink-0 w-3.5">
@@ -120,12 +120,12 @@ export const FileTree: React.FC<FileTreeProps> = ({
                 isExpanded ? (
                   <ChevronDown
                     size={12}
-                    className="text-[color:var(--text-muted)] opacity-70 transition-transform duration-200"
+                    className="text-(--text-muted) opacity-70 transition-transform duration-200"
                   />
                 ) : (
                   <ChevronRight
                     size={12}
-                    className="text-[color:var(--text-muted)] opacity-70 transition-transform duration-200"
+                    className="text-(--text-muted) opacity-70 transition-transform duration-200"
                   />
                 )
               ) : null}
@@ -135,12 +135,12 @@ export const FileTree: React.FC<FileTreeProps> = ({
               {isDirectory ? (
                 <Folder size={14} className="text-sky-500" />
               ) : (
-                <FileCode2 size={14} className="text-[color:var(--text-muted)] group-hover:text-[color:var(--text-primary)]" />
+                <FileCode2 size={14} className="text-(--text-muted) group-hover:text-(--text-primary)" />
               )}
             </div>
 
             <div className="flex-1 min-w-0 flex flex-col">
-              <span className="text-[11px] font-medium text-[color:var(--text-primary)] truncate">
+              <span className="text-[11px] font-medium text-(--text-primary) truncate">
                 {entry.name}
               </span>
               {isDirectory && entry.is_git_root ? (
@@ -149,7 +149,7 @@ export const FileTree: React.FC<FileTreeProps> = ({
                     className={`inline-flex items-center gap-1 rounded-full border px-1.5 py-0.2 text-[8px] font-bold uppercase tracking-wider ${
                       entry.git_detached_head
                         ? 'border-amber-500/30 bg-amber-500/5 text-amber-400'
-                        : 'border-[color:var(--border-subtle)] bg-[color:var(--surface-2)] text-[color:var(--text-muted)]'
+                        : 'border-(--border-subtle) bg-(--surface-2) text-(--text-muted)'
                     }`}
                   >
                     <GitBranch size={9} />
@@ -166,7 +166,7 @@ export const FileTree: React.FC<FileTreeProps> = ({
                   event.stopPropagation();
                   onEntryDownload(entry);
                 }}
-                className="shrink-0 p-1 rounded-md text-[color:var(--text-muted)] opacity-0 group-hover:opacity-100 hover:bg-[color:var(--surface-3)] hover:text-[color:var(--text-primary)] transition-all"
+                className="shrink-0 p-1 rounded-md text-(--text-muted) opacity-0 group-hover:opacity-100 hover:bg-(--surface-3) hover:text-(--text-primary) transition-all"
                 title={isDirectory ? 'Download folder as zip' : 'Download file'}
                 aria-label={isDirectory ? `Download folder ${entry.name} as zip` : `Download file ${entry.name}`}
               >
@@ -185,7 +185,7 @@ export const FileTree: React.FC<FileTreeProps> = ({
                 <div className="space-y-0.5 pt-0.5">
                   {isChildLoading ? (
                     <div
-                      className="flex items-center gap-2 px-3 py-1.5 text-[10px] text-[color:var(--text-muted)] animate-in fade-in duration-150"
+                      className="flex items-center gap-2 px-3 py-1.5 text-[10px] text-(--text-muted) animate-in fade-in duration-150"
                       style={{ paddingLeft: `${28 + depth * 14}px` }}
                     >
                       <Loader2 size={11} className="animate-spin" />
@@ -195,7 +195,7 @@ export const FileTree: React.FC<FileTreeProps> = ({
                     renderEntries(childEntries, depth + 1)
                   ) : (
                     <div
-                      className="px-3 py-1.5 text-[10px] text-[color:var(--text-muted)] opacity-60 animate-in fade-in duration-150"
+                      className="px-3 py-1.5 text-[10px] text-(--text-muted) opacity-60 animate-in fade-in duration-150"
                       style={{ paddingLeft: `${28 + depth * 14}px` }}
                     >
                       Empty folder
@@ -212,7 +212,7 @@ export const FileTree: React.FC<FileTreeProps> = ({
 
   if (loading && entries.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center py-12 text-[color:var(--text-muted)] animate-pulse">
+      <div className="flex flex-col items-center justify-center py-12 text-(--text-muted) animate-pulse">
         <Loader2 size={20} className="animate-spin mb-3" />
         <p className="text-[10px] font-bold uppercase tracking-widest">Loading Workspace...</p>
       </div>
@@ -221,11 +221,11 @@ export const FileTree: React.FC<FileTreeProps> = ({
 
   if (entries.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center py-12 text-[color:var(--text-muted)] opacity-40">
-        <div className="p-3 rounded-2xl bg-[color:var(--surface-2)] mb-3">
+      <div className="flex flex-col items-center justify-center py-12 text-(--text-muted) opacity-40">
+        <div className="p-3 rounded-2xl bg-(--surface-2) mb-3">
           <FileCode2 size={20} strokeWidth={1.5} />
         </div>
-        <p className="text-[10px] font-bold uppercase tracking-[0.1em]">Workspace is empty</p>
+        <p className="text-[10px] font-bold uppercase tracking-widest">Workspace is empty</p>
       </div>
     );
   }

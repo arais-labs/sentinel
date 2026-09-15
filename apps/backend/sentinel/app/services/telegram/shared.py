@@ -3,16 +3,28 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Protocol
+from typing import Any, Protocol, TYPE_CHECKING
+from collections.abc import Coroutine
+from contextlib import AbstractAsyncContextManager
 from uuid import UUID
 
+if TYPE_CHECKING:
+    from sentral.llm.generic.types import AgentEvent
+
+
 TELEGRAM_MAX_MSG_LEN = 4096
-TELEGRAM_BUSY_POLL_ATTEMPTS = 12
-TELEGRAM_BUSY_POLL_INTERVAL_SECONDS = 5
 
 
 class _RunRegistryProtocol(Protocol):
-    async def register(self, session_id: str, task: asyncio.Task[object]) -> bool: ...
+    async def start(
+        self, session_id: str, run: Coroutine[Any, Any, Any]
+    ) -> asyncio.Task | None: ...
+
+    def idle_guard(self, session_id: str) -> AbstractAsyncContextManager[bool]: ...
+
+    def enqueue_interjection(self, session_id: str, item: Any) -> None: ...
+
+    async def notify_idle_interjections(self, session_id: str) -> None: ...
 
     async def clear(self, session_id: str, task: asyncio.Task[object] | None = None) -> None: ...
 
@@ -94,8 +106,6 @@ class _ToolDeliveryState:
 
 
 __all__ = [
-    "TELEGRAM_BUSY_POLL_ATTEMPTS",
-    "TELEGRAM_BUSY_POLL_INTERVAL_SECONDS",
     "TELEGRAM_MAX_MSG_LEN",
     "_RuntimeSupportProtocol",
     "_PersistedInboundMessage",

@@ -1,4 +1,5 @@
-export type ServiceName = 'postgres' | 'backend' | 'frontend';
+import type { AppNotification, NotificationInput, NotificationPublication } from './notifications.js';
+export type ServiceName = 'backend' | 'frontend';
 
 export type ServiceState = 'stopped' | 'starting' | 'running' | 'stopping' | 'failed';
 
@@ -6,7 +7,6 @@ export interface ManagedServiceStatus {
   name: ServiceName;
   state: ServiceState;
   pid?: number;
-  port?: number;
   message?: string;
   startedAt?: string;
   exitedAt?: string;
@@ -15,8 +15,7 @@ export interface ManagedServiceStatus {
 
 export type ReleaseChannel = 'stable' | 'beta';
 
-// Describes the app payload currently installed in userData. The shell DMG
-// ships no payload, so a fresh install reports installed=false until one is
+// Describes the app payload currently installed in userData. The shell DMG includes the React UI but no backend payload, so a fresh install reports installed=false until one is
 // loaded from file or downloaded.
 export interface PayloadInfo {
   installed: boolean;
@@ -28,6 +27,10 @@ export interface PayloadInfo {
 
 export interface DesktopStatus {
   appUrl?: string;
+  ready: boolean;
+  development: boolean;
+  operation?: 'starting' | 'stopping';
+  error?: string;
   appSupportPath: string;
   payload: PayloadInfo;
   services: ManagedServiceStatus[];
@@ -37,13 +40,6 @@ export interface LogEntry {
   service: ServiceName | 'manager';
   line: string;
   at: string;
-}
-
-export interface FactoryResetScopes {
-  db: boolean;
-  runState: boolean;
-  appPayload: boolean;
-  logs: boolean;
 }
 
 // A newer payload available on a release channel, discovered by comparing the
@@ -77,13 +73,44 @@ export interface PayloadFailure {
   reason: string;
 }
 
+export type SocketEvent = { id: string } & (
+  | { type: 'open' }
+  | { type: 'message'; data: string | Uint8Array }
+  | { type: 'close'; code: number; reason: string }
+  | { type: 'error' }
+);
+
+export type CompletionSound = 'soft' | 'chime' | 'glass';
+export interface NotificationSettings { forms: boolean; completionSounds: boolean; sound: CompletionSound; banners: boolean; inAppBanners: boolean; alertSounds: boolean; }
+export interface SessionCompletion { sessionId: string; completionId: string | null; running: boolean; awaitingInput: boolean; }
+
+export interface PendingFormWindow { sessionId: string; formId: string; title: string; }
+
 export interface DesktopApi {
+  getNotifications(): Promise<AppNotification[]>;
+  publishNotification(input: NotificationInput): Promise<AppNotification>;
+  onNotificationPublished(listener: (publication: NotificationPublication) => void): () => void;
+  updateNotification(id: string | null, action: 'read' | 'dismiss'): Promise<void>;
+  onNotifications(listener: (items: AppNotification[]) => void): () => void;
+  openPreview(href: string): Promise<void>;
+  syncForms(instanceName: string, forms: PendingFormWindow[], viewedSessionId: string | null): Promise<void>;
+  onCompletionSound(listener: (sound: CompletionSound) => void): () => void;
+  onNotificationSettings(listener: (settings: NotificationSettings) => void): () => void;
+  getNotificationSettings(): Promise<NotificationSettings>;
+  setNotificationSettings(settings: NotificationSettings): Promise<NotificationSettings>;
+  syncCompletions(instanceName: string, sessions: SessionCompletion[]): Promise<void>;
+  resizeFormWindow(height: number): Promise<void>;
+  finishFormWindow(waitForTurn: boolean): Promise<void>;
+  onFormCloseRequested(listener: () => void): () => void;
+  socketOpen(id: string, url: string): Promise<void>;
+  socketSend(id: string, data: string | Uint8Array): void;
+  socketClose(id: string, code?: number, reason?: string): void;
+  onSocketEvent(listener: (event: SocketEvent) => void): () => void;
   getStatus(): Promise<DesktopStatus>;
   stopServices(): Promise<DesktopStatus>;
-  resetAuth(): Promise<DesktopStatus>;
-  factoryReset(scopes: FactoryResetScopes): Promise<DesktopStatus>;
-  openSentinel(): Promise<DesktopStatus>;
-  showControlCenter(): Promise<void>;
+  startServices(): Promise<DesktopStatus>;
+  onGuidedTour?(listener: () => void): () => void;
+  onNavigate(listener: (path: string) => void): () => void;
   revealAppSupport(): Promise<void>;
   openLogFolder(): Promise<void>;
   getLogs(): Promise<LogEntry[]>;
@@ -101,12 +128,30 @@ export interface DesktopApi {
 }
 
 export const IPC = {
+  getNotifications: 'desktop:getNotifications',
+  publishNotification: 'desktop:publishNotification',
+  notificationPublished: 'desktop:notificationPublished',
+  updateNotification: 'desktop:updateNotification',
+  notificationsChanged: 'desktop:notificationsChanged',
+  openPreview: 'desktop:openPreview',
+  syncForms: 'desktop:syncForms',
+  notificationSettingsChanged: 'desktop:notificationSettingsChanged',
+  getNotificationSettings: 'desktop:getNotificationSettings',
+  setNotificationSettings: 'desktop:setNotificationSettings',
+  syncCompletions: 'desktop:syncCompletions',
+  completionSound: 'desktop:completionSound',
+  finishFormWindow: 'desktop:finishFormWindow',
+  resizeFormWindow: 'desktop:resizeFormWindow',
+  formCloseRequested: 'desktop:formCloseRequested',
+  socketOpen: 'desktop:socketOpen',
+  socketSend: 'desktop:socketSend',
+  socketClose: 'desktop:socketClose',
+  socketEvent: 'desktop:socketEvent',
   getStatus: 'desktop:getStatus',
   stopServices: 'desktop:stopServices',
-  resetAuth: 'desktop:resetAuth',
-  factoryReset: 'desktop:factoryReset',
-  openSentinel: 'desktop:openSentinel',
-  showControlCenter: 'desktop:showControlCenter',
+  startServices: 'desktop:startServices',
+  navigate: 'desktop:navigate',
+  guidedTour: 'desktop:guided-tour',
   revealAppSupport: 'desktop:revealAppSupport',
   openLogFolder: 'desktop:openLogFolder',
   getLogs: 'desktop:getLogs',

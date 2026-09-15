@@ -1,1 +1,0 @@
-"""Packaged runtime provisioning assets."""

@@ -1,12 +1,15 @@
-from app.services.llm.generic.credential_scrubber import scrub
+from sentral.llm.generic.credential_scrubber import scrub
 
 
 def test_scrub_redacts_common_secret_patterns_with_6_plus_4_shape():
+    # Build synthetic credentials so fixtures cannot be mistaken for real secrets.
     token = "sk-proj-abc123def456ghi789jkl"
+    aws = "AKIA" + "ABCDEFGHIJKLMNOP"
+    github = "ghp_" + "abcdefghijklmnopqrstuvwxyz1234567890"
     text = (
         f"token {token} and "
-        "aws AKIAABCDEFGHIJKLMNOP and "
-        "github ghp_abcdefghijklmnopqrstuvwxyz1234567890 "
+        f"aws {aws} and "
+        f"github {github} "
         "and bearer Bearer abcdefghijklmnopqrstuvwxyz123456"
     )
     redacted = scrub(text)
@@ -19,11 +22,11 @@ def test_scrub_redacts_common_secret_patterns_with_6_plus_4_shape():
     assert "Bearer abcdef" in redacted
 
 
-def test_scrub_redacts_postgres_password_only_with_partial_preservation():
-    text = "postgresql+asyncpg://sentinel:SuperSecretPassword@localhost:5432/sentinel"
+def test_scrub_redacts_url_password_only_with_partial_preservation():
+    text = "https://sentinel:SuperSecretPassword@example.test/service"
     redacted = scrub(text)
     assert "sentinel:" in redacted
-    assert "@localhost" in redacted
+    assert "@example.test/service" in redacted
     assert "SuperSecretPassword" not in redacted
     assert "SuperS" in redacted
     assert "word" in redacted
@@ -31,8 +34,8 @@ def test_scrub_redacts_postgres_password_only_with_partial_preservation():
 
 def test_scrub_redacts_extended_provider_patterns():
     github_pat = "github_pat_" + "a" * 82
-    slack_bot = "xoxb-1234567890-abcdefghijklmn-opqrstuvwxyz"
-    slack_user = "xoxp-1234567890-abcdefghijklmn-opqrstuvwxyz"
+    slack_bot = "xoxb-" + "1234567890-abcdefghijklmn-opqrstuvwxyz"
+    slack_user = "xoxp-" + "1234567890-abcdefghijklmn-opqrstuvwxyz"
     google = "AIza" + "A" * 35
     npm = "npm_" + "a" * 36
 

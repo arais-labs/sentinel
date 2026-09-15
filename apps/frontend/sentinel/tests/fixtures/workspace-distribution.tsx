@@ -1,0 +1,3 @@
+import { createRoot } from 'react-dom/client';
+import { WorkspaceEditor } from '../../src/components/runtime/WorkspaceEditor';
+createRoot(document.getElementById('root')!).render(<WorkspaceEditor workspace={new URLSearchParams(location.search).has("edit") ? { id: "workspace-a", name: "Existing", machine_id: "mac", directory: "/projects/test", distribution: "ubuntu", development_tools: ["git"], resources: { cpus: 2, memory_gib: 2, disk_gib: 32 } } as any : "new"} machines={[{ id: 'mac', name: 'Mac' } as any]} saving={false} onClose={() => {}} onSave={async value => { Object.assign(window, { savedWorkspace: value }); }} />);

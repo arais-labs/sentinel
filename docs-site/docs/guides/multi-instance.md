@@ -5,22 +5,23 @@ title: Multi-Instance
 
 # Multi-Instance
 
-Sentinel runs as **one shared stack** (Postgres + backend + frontend) that hosts
-**multiple logical instances**. There is a single manager database
-(`sentinel_manager`) that tracks instance metadata, plus one auto-created app
-database per instance for its sessions, memory, modules, triggers, and settings.
+Sentinel runs one local Python backend for multiple instances. SQLite runs
+inside that process; there is no database service.
 
-This is true for both deployment modes:
+`app.sqlite` holds the instance registry, shared machine configurations, and app
+settings. Each instance stores its own data in
+`instances/<stable-UUID>/instance.sqlite`, with an adjacent `attachments/` directory.
+Databases use WAL mode, foreign keys, and short transactions.
 
-- **Docker Compose / server** — the stack is published on one port
-  (`STACK_PORT`, default `4747`).
-- **Desktop app** (macOS Apple Silicon) — the bundled Electron app runs the same
-  backend as a managed child process against a bundled Postgres. The
-  multi-instance model is identical; the desktop control center manages
-  instances locally.
+An **instance** isolates chats, memories, settings, and accounts. A **session** is
+a conversation inside that instance. A **machine** runs commands locally or over SSH. A **workspace** is a named directory on one machine, registered in an
+instance and reusable across sessions. New chats start without a workspace; use
+**Attach** in the session toolbar when files or tools are needed.
 
-There is no longer a one-deployment-per-instance model: you do **not** spin up a
-separate Compose project, port, or container per instance.
+Shared project files stay in the chosen machine directory. Guest home, tools,
+and session control state live in the workspace's private Linux filesystem.
+Deleting a conversation preserves shared project files. See
+[Workspaces](./workspaces.md) for persistence and execution boundaries.
 
 ---
 
@@ -29,29 +30,20 @@ separate Compose project, port, or container per instance.
 - Separate agents for different clients or projects
 - Isolated dev vs. staging data
 - Running different LLM providers/keys side by side (credentials are per-instance)
-- Running one logical workspace per team member
+- Keeping personal projects independent
 
 ---
 
 ## Setup
 
-Create instances through the manager API, either from the CLI or from the
-**Instance Picker** page in the UI.
-
-```bash
-bash ./sentinel-cli.sh
-# Select: Instances
-# Select: Create Instance
-# Enter instance name: project-alpha
-```
+Create instances through the **Instance Picker** in the UI.
 
 Instance names are normalized to lowercase letters, numbers, and dashes
 (1–80 characters). Each instance gets:
 
 - a manager registry row,
-- its own Postgres database, named `sentinel_{safe-name}_{hash}` (the `hash` is
-  derived from the original name, so it is stable),
-- a runtime workspace root under the shared runtime workspace area.
+- its own SQLite file in a UUID-named directory,
+- independent settings, credentials, and workspace registrations.
 
 Creating an instance bootstraps its database on demand: the database is created,
 the instance schema migrations are run, and defaults are initialized. If
@@ -70,39 +62,20 @@ configured, that instance's agent runtime cannot run.
 
 ## Managing instances
 
-```bash
-./sentinel-cli.sh instances list
-./sentinel-cli.sh instances create project-alpha "Project Alpha"
-./sentinel-cli.sh instances rename project-alpha alpha
-./sentinel-cli.sh instances delete alpha
-```
-
-The stack lifecycle remains shared across all instances:
-
-```bash
-./sentinel-cli.sh up
-./sentinel-cli.sh status
-./sentinel-cli.sh logs
-./sentinel-cli.sh down
-```
-
-Equivalent admin-only API endpoints exist under `/api/v1/instances`
-(`GET` list, `POST` create, `GET`/`PATCH`/`DELETE` by name, and
-`POST /instances/{name}/rename`). See the
-[CLI reference](./cli-reference.md) for command details.
+Use the instance picker to create and select instances. API endpoints under
+`/api/v1/instances` also support listing, creation, renaming, and deletion.
 
 **Rename caveat:** renaming an instance changes its name and URL routing but
-**does not rename its underlying database**. The database name is derived from
-the original name and stays fixed.
+**does not rename its underlying database**. The directory uses a stable UUID that stays fixed.
 
-Deleting an instance drops its app database and removes its manager row.
+Deleting an instance closes its database connections, deletes its directory, and removes its registry row.
 
 ---
 
 ## How requests are scoped
 
 All instances share the same URL origin. The instance is selected in the route
-path, not through separate ports or generated Compose files:
+path, not through separate ports:
 
 ```
 /api/v1/instances/{instance_name}/sessions
@@ -126,29 +99,25 @@ context so credential and module changes take effect.
 
 | Isolated per logical instance | Shared by the stack |
 |---|---|
-| App database | Compose services / desktop processes |
-| Sessions and history | Published HTTP port / origin |
-| Memory tree | Manager (auth + instance metadata) database |
-| Modules and permissions | Docker default network / host Docker daemon |
-| LLM provider credentials | `DATA_ENCRYPTION_KEY` / `JWT_SECRET_KEY` (apply to all instances) |
-| Runtime workspace root | Process-global embedding service |
+| App database | Desktop processes |
+| Sessions and history | Private backend socket |
+| Memory tree | Manager (instance metadata) database |
+| Modules and permissions | Local service lifecycle |
+| LLM provider credentials | `DATA_ENCRYPTION_KEY` (apply to all instances) |
+| Workspaces and session attachments | Machines and their connection credentials |
 
-Secrets stored in an instance's database (such as runtime SSH credentials) are
+Secrets stored in an instance's database (such as provider credentials) are
 encrypted with the stack-wide `DATA_ENCRYPTION_KEY`. See
 [Backup & restore](../reference/api.md) for how per-instance data is exported.
 
 ---
 
-## Current limitations
+## Shared services and workspace boundaries
 
-Known constraints:
+The local embedding model is loaded once per backend process to avoid duplicate
+model memory. Embedding storage and retrieval still use each instance's database;
+there is no external embedding API key to configure.
 
-- **Embedding service is process-global**, not per-instance. Because the
-  embedding API key is database-only, the embedding service may not initialize
-  from per-instance settings as expected.
-- **No automatic database-engine eviction.** Each active instance keeps its own
-  Postgres engine/pool; there is no LRU/idle eviction yet, so creating many
-  instances and leaving them idle can pressure the connection pool (TODO in
-  code targets ~30 instances).
-- **Sub-agents share the parent session's workspace and approval context** —
-  isolation between a sub-agent and its parent is limited.
+Sub-agents share their parent's attached workspace. Files and processes in that
+workspace are not isolated per conversation. Session action grants are scoped to
+the conversation and are not inherited by forks or child sessions.

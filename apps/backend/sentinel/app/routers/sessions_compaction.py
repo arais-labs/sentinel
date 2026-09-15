@@ -2,11 +2,10 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies import get_db, get_request_instance_runtime_context
-from app.middleware.auth import TokenPayload, require_auth
 from app.schemas.compaction import CompactionResponse
 from app.services.instance_runtime_context import InstanceRuntimeContext
 from app.services.sessions.compaction import CompactionService
@@ -14,12 +13,11 @@ from app.services.sessions.compaction import CompactionService
 router = APIRouter()
 
 
-@router.post("/{id}/compact", response_model=CompactionResponse)
+@router.post("/{id:uuid}/compact", response_model=CompactionResponse)
 async def compact_session(
     id: UUID,
     db: AsyncSession = Depends(get_db),
     context: InstanceRuntimeContext = Depends(get_request_instance_runtime_context),
-    user: TokenPayload = Depends(require_auth),
 ) -> CompactionResponse:
     provider = (
         context.agent_runtime_support.provider
@@ -27,10 +25,12 @@ async def compact_session(
         else None
     )
     compaction = CompactionService(provider=provider)
-    result = await compaction.compact_session(db, session_id=id, user_id=user.sub)
+    try:
+        result = await compaction.compact_session(db, session_id=id, user_id="local")
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
     return CompactionResponse(
         session_id=result.session_id,
-        raw_token_count=result.raw_token_count,
-        compressed_token_count=result.compressed_token_count,
+        compacted=result.compacted,
         summary_preview=result.summary_preview,
     )

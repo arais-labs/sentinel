@@ -1,10 +1,7 @@
 import asyncio
-from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
-from types import SimpleNamespace
 
 import pytest
-from sqlalchemy.exc import IntegrityError
 
 from app.models import Session, SessionBinding
 from app.services.sessions import session_bindings
@@ -15,73 +12,24 @@ def _run(coro):
     return asyncio.run(coro)
 
 
-class _FakeSession:
-    def add(self, _value):
-        return None
-
-    async def flush(self):
-        return None
-
-    @asynccontextmanager
-    async def begin_nested(self):
-        yield
-
-
-def test_resolve_or_create_main_session_recovers_from_concurrent_create(monkeypatch):
-    winner = SimpleNamespace(id="winner")
-    calls = {"get_active": 0}
-
-    async def fake_get_active_binding_session(*_args, **_kwargs):
-        calls["get_active"] += 1
-        return None if calls["get_active"] == 1 else winner
-
-    async def fake_root_sessions(*_args, **_kwargs):
-        return []
-
-    async def fake_bind_session(*_args, **_kwargs):
-        raise IntegrityError("insert session binding", {}, Exception("duplicate"))
-
-    monkeypatch.setattr(
-        session_bindings, "get_active_binding_session", fake_get_active_binding_session
-    )
-    monkeypatch.setattr(session_bindings, "_root_sessions", fake_root_sessions)
-    monkeypatch.setattr(session_bindings, "bind_session", fake_bind_session)
-
-    async def exercise():
-        return await session_bindings.resolve_or_create_main_session(
-            _FakeSession(),
-            user_id="admin",
-            agent_id=None,
-        )
-
-    assert asyncio.run(exercise()) is winner
-
-
-def test_resolve_owner_active_session_defaults_to_main():
+def test_resolve_owner_active_session_returns_none_without_explicit_binding():
     db = FakeDB()
-    main = Session(user_id="admin", title="Main")
-    db.add(main)
-    _run(session_bindings.set_main_session(db, user_id="admin", session_id=main.id))
 
     resolved = _run(
         session_bindings.resolve_owner_active_session(db, user_id="admin", agent_id="dev-agent")
     )
 
-    # No owner_active binding exists yet -> defaults to the main session.
-    assert resolved.id == main.id
+    assert resolved is None
     assert not any(
         b.binding_type == session_bindings.OWNER_ACTIVE_BINDING_TYPE
         for b in db.storage[SessionBinding]
     )
 
 
-def test_set_owner_active_session_points_owner_active_and_leaves_main_isolated():
+def test_set_owner_active_session_points_owner_active():
     db = FakeDB()
-    main = Session(user_id="admin", title="Main")
     other = Session(user_id="admin", title="Project")
-    db.add(main)
     db.add(other)
-    _run(session_bindings.set_main_session(db, user_id="admin", session_id=main.id))
 
     switched = _run(
         session_bindings.set_owner_active_session(db, user_id="admin", session_id=other.id)
@@ -94,17 +42,13 @@ def test_set_owner_active_session_points_owner_active_and_leaves_main_isolated()
     )
     assert resolved.id == other.id
 
-    # Isolation: the main binding is untouched and still points at the original main.
-    main_id = _run(session_bindings.resolve_main_session_id(db, user_id="admin"))
-    assert main_id == main.id
-
     active_owner = [
         b
         for b in db.storage[SessionBinding]
         if b.binding_type == session_bindings.OWNER_ACTIVE_BINDING_TYPE and b.is_active
     ]
     assert len(active_owner) == 1
-    assert active_owner[0].binding_key == session_bindings.MAIN_BINDING_KEY
+    assert active_owner[0].binding_key == session_bindings.OWNER_ACTIVE_BINDING_KEY
     assert active_owner[0].session_id == other.id
     assert active_owner[0].metadata_json == {"source": "telegram_session_switch"}
 

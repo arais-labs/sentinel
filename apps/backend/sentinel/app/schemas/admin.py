@@ -26,8 +26,4 @@ class AuditLogListResponse(BaseModel):
 class ConfigResponse(BaseModel):
     app_name: str
     app_env: str
-    jwt_algorithm: str
-    access_token_ttl_seconds: int
-    refresh_token_ttl_seconds: int
     context_token_budget: int
-    jwt_secret_key: str = "***"

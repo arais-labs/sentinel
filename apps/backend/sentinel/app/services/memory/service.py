@@ -188,6 +188,12 @@ class MemoryService:
             metadata_json=metadata,
             embedding=resolved_embedding,
         )
+        if (
+            resolved_embedding is not None
+            and embedding is None
+            and getattr(embedding_service, "fingerprint", None)
+        ):
+            memory.metadata_json = {**metadata, "_embedding_model": embedding_service.fingerprint}
         return await self._repo.create(db, memory, commit=commit)
 
     async def upsert_system_memory(
@@ -447,6 +453,12 @@ class MemoryService:
                 embedding_service=embedding_service,
                 ignore_errors=ignore_embedding_errors,
             )
+
+            metadata = dict(memory.metadata_json or {})
+            metadata.pop("_embedding_model", None)
+            if memory.embedding is not None and getattr(embedding_service, "fingerprint", None):
+                metadata["_embedding_model"] = embedding_service.fingerprint
+            memory.metadata_json = metadata
 
         return await self._repo.save(db, memory, commit=commit)
 

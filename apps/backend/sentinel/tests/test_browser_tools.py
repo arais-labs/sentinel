@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import shlex
 import base64
 import json
 from uuid import UUID
 
 import app.services.browser.pool as browser_pool_module
 from app.schemas.runtime import RuntimeExecResult
-from app.services.araios.runtime_services import configure_runtime_services, reset_runtime_services
 from app.services.browser.manager import BrowserManager
-from app.services.tools.executor import ToolExecutor, ToolValidationError
+from app.services.modules.runtime_services import configure_runtime_services, reset_runtime_services
+from sentral.errors import ToolValidationError
+from app.services.tools.executor import ToolExecutor
 from app.services.tools.registry import ToolRuntimeContext
 from app.services.tools.registry_builder import build_default_registry
 
@@ -246,8 +248,11 @@ class _FakeSSH:
         self.script_args: list[list[str]] = []
         self.listeners: list[_FakeListener] = []
 
-    async def run_script(self, script: str, *, args: list[str] | None = None, timeout: int = 300):
+    async def run(self, command: str, *, timeout: int = 300):
         _ = timeout
+        parts = shlex.split(command)
+        assert parts[:2] == ["python3", "-c"]
+        script, args = parts[2], parts[3:]
         self.scripts.append(script)
         self.script_args.append(args or [])
         if (
@@ -255,7 +260,9 @@ class _FakeSSH:
             and "shutil.rmtree(profile_dir)" in script
         ):
             return RuntimeExecResult(
-                exit_status=0, stdout='{"ok":true,"profile_dir":"/tmp/profile"}', stderr=""
+                exit_status=0,
+                stdout='{"ok":true,"profile_dir":"/tmp/profile"}',
+                stderr="",
             )
         if (
             'metadata_path = Path(request["runtime"])' in script
@@ -279,9 +286,13 @@ class _FakeSSH:
 
 
 class _FakeTerminalManager:
-    def __init__(self, workspaces_root: str | None = "/runtime/workspaces"):
+    def __init__(self, workspace_location: str | None = "/workspace"):
         self.ssh = _FakeSSH()
-        self.workspaces_root = workspaces_root
+        from app.services.runtime.workspace import WorkspaceLocation
+
+        self.workspace_location = (
+            WorkspaceLocation("/workspace", "/var/lib/sentinel") if workspace_location else None
+        )
         self.prepared: list[str] = []
 
     async def prepare_workspace(self, session_id: str):
@@ -289,6 +300,8 @@ class _FakeTerminalManager:
 
 
 class _FakeDesktopManager:
+    enabled = True
+
     async def ensure_session_desktop(self, session_id: str):
         _ = session_id
         return type("Desktop", (), {"display": ":75", "geometry": "1920x1200"})()
@@ -450,7 +463,7 @@ def test_browser_pool_restarts_remote_browser_when_cdp_is_unavailable():
     assert len(terminal_manager.ssh.listeners) == 2
     assert terminal_manager.ssh.listeners[0].closed is True
     request = json.loads(terminal_manager.ssh.script_args[-1][0])
-    assert request["browser"] == f"/runtime/workspaces/{_SID}/state/browser"
+    assert request["browser"] == f"/var/lib/sentinel/control/{_SID}/browser"
 
 
 def test_browser_pool_recreates_unhealthy_cached_manager():
@@ -598,7 +611,7 @@ def test_browser_click_passes_optional_tab_id_to_manager():
     result, _ = _run(
         executor.execute(
             "browser",
-            {"command": "click", "selector": "button: Continue", "tab_id": "t7"},
+            {"action": "click", "selector": "button: Continue", "tab_id": "t7"},
             runtime=_RUNTIME,
         )
     )
@@ -612,7 +625,7 @@ def test_browser_snapshot_rejects_unexpected_payload_fields():
     try:
         _run(
             executor.execute(
-                "browser", {"command": "snapshot", "unexpected": True}, runtime=_RUNTIME
+                "browser", {"action": "snapshot", "unexpected": True}, runtime=_RUNTIME
             )
         )
         raised = False
@@ -627,7 +640,7 @@ def test_browser_reset_tool_executes():
     configure_runtime_services(browser_pool=pool)
     registry = build_default_registry()
     executor = ToolExecutor(registry)
-    result, _ = _run(executor.execute("browser", {"command": "reset"}, runtime=_RUNTIME))
+    result, _ = _run(executor.execute("browser", {"action": "reset"}, runtime=_RUNTIME))
     assert result["reset"] is True
     assert result["url"] == "about:blank"
     assert pool.reset_called is True
@@ -664,7 +677,7 @@ def test_browser_pool_reset_restarts_remote_browser():
     assert result["reset"] is True
     assert result["url"] == "about:blank"
     assert result["cdp_endpoint"].startswith("http://127.0.0.1:")
-    assert result["profile_dir"] == f"/runtime/workspaces/{_SID}/state/browser/chromium"
+    assert result["profile_dir"] == f"/var/lib/sentinel/control/{_SID}/browser/chromium"
     assert any("shutil.rmtree(profile_dir)" in script for script in terminal_manager.ssh.scripts)
 
 
@@ -699,7 +712,7 @@ def test_browser_pool_keeps_handles_separate_by_instance():
 def test_browser_tabs_tool_executes():
     registry = _browser_registry()
     executor = ToolExecutor(registry)
-    result, _ = _run(executor.execute("browser", {"command": "tabs"}, runtime=_RUNTIME))
+    result, _ = _run(executor.execute("browser", {"action": "tabs"}, runtime=_RUNTIME))
     assert result["active_tab_id"] == "t1"
     assert result["tabs"][0]["tab_id"] == "t1"
 
@@ -707,7 +720,7 @@ def test_browser_tabs_tool_executes():
 def test_browser_tab_open_defaults_to_blank():
     registry = _browser_registry()
     executor = ToolExecutor(registry)
-    result, _ = _run(executor.execute("browser", {"command": "tab_open"}, runtime=_RUNTIME))
+    result, _ = _run(executor.execute("browser", {"action": "tab_open"}, runtime=_RUNTIME))
     assert result["opened"] is True
     assert result["url"] == "about:blank"
 
@@ -716,14 +729,14 @@ def test_browser_tab_focus_requires_tab_id():
     registry = _browser_registry()
     executor = ToolExecutor(registry)
     try:
-        _run(executor.execute("browser", {"command": "tab_focus"}, runtime=_RUNTIME))
+        _run(executor.execute("browser", {"action": "tab_focus"}, runtime=_RUNTIME))
         raised = False
     except ToolValidationError:
         raised = True
     assert raised is True
 
     result, _ = _run(
-        executor.execute("browser", {"command": "tab_focus", "tab_id": "t1"}, runtime=_RUNTIME)
+        executor.execute("browser", {"action": "tab_focus", "tab_id": "t1"}, runtime=_RUNTIME)
     )
     assert result["focused"] is True
     assert result["tab_id"] == "t1"
@@ -733,14 +746,14 @@ def test_browser_tab_close_requires_tab_id():
     registry = _browser_registry()
     executor = ToolExecutor(registry)
     try:
-        _run(executor.execute("browser", {"command": "tab_close"}, runtime=_RUNTIME))
+        _run(executor.execute("browser", {"action": "tab_close"}, runtime=_RUNTIME))
         raised = False
     except ToolValidationError:
         raised = True
     assert raised is True
 
     result, _ = _run(
-        executor.execute("browser", {"command": "tab_close", "tab_id": "t2"}, runtime=_RUNTIME)
+        executor.execute("browser", {"action": "tab_close", "tab_id": "t2"}, runtime=_RUNTIME)
     )
     assert result["closed"] is True
     assert result["tab_id"] == "t2"
@@ -751,7 +764,7 @@ def test_browser_select_requires_selector_and_choice():
     executor = ToolExecutor(registry)
 
     try:
-        _run(executor.execute("browser", {"command": "select"}, runtime=_RUNTIME))
+        _run(executor.execute("browser", {"action": "select"}, runtime=_RUNTIME))
         raised = False
     except ToolValidationError:
         raised = True
@@ -761,7 +774,7 @@ def test_browser_select_requires_selector_and_choice():
         _run(
             executor.execute(
                 "browser",
-                {"command": "select", "selector": "combobox: Month"},
+                {"action": "select", "selector": "combobox: Month"},
                 runtime=_RUNTIME,
             )
         )
@@ -773,7 +786,7 @@ def test_browser_select_requires_selector_and_choice():
     result, _ = _run(
         executor.execute(
             "browser",
-            {"command": "select", "selector": "combobox: Month", "value": "1"},
+            {"action": "select", "selector": "combobox: Month", "value": "1"},
             runtime=_RUNTIME,
         )
     )
@@ -788,7 +801,7 @@ def test_browser_wait_for_accepts_conditions():
         executor.execute(
             "browser",
             {
-                "command": "wait_for",
+                "action": "wait_for",
                 "selector": "button: Next",
                 "condition": "enabled",
                 "timeout_ms": 4000,
@@ -804,7 +817,7 @@ def test_browser_get_value_requires_selector():
     registry = _browser_registry()
     executor = ToolExecutor(registry)
     try:
-        _run(executor.execute("browser", {"command": "get_value"}, runtime=_RUNTIME))
+        _run(executor.execute("browser", {"action": "get_value"}, runtime=_RUNTIME))
         raised = False
     except ToolValidationError:
         raised = True
@@ -816,7 +829,7 @@ def test_browser_fill_form_requires_non_empty_steps():
     executor = ToolExecutor(registry)
 
     try:
-        _run(executor.execute("browser", {"command": "fill_form"}, runtime=_RUNTIME))
+        _run(executor.execute("browser", {"action": "fill_form"}, runtime=_RUNTIME))
         raised = False
     except ToolValidationError:
         raised = True
@@ -826,7 +839,7 @@ def test_browser_fill_form_requires_non_empty_steps():
         executor.execute(
             "browser",
             {
-                "command": "fill_form",
+                "action": "fill_form",
                 "steps": [
                     {"selector": "textbox: Email", "text": "qa@example.com"},
                     {"selector": "button: Continue", "click": True},
@@ -1202,3 +1215,33 @@ def test_browser_fill_form_can_continue_after_step_error():
     assert result["completed"] == 1
     assert result["steps"][0]["ok"] is False
     assert result["steps"][1]["ok"] is True
+
+
+def test_browser_pool_without_desktop_uses_headless_browser():
+    class HeadlessDesktop:
+        enabled = False
+
+        async def ensure_session_desktop(self, session_id):
+            raise AssertionError("Headless browser must not start a desktop")
+
+    class Manager:
+        def __init__(self, **kwargs):
+            pass
+
+        async def ensure_connected(self):
+            pass
+
+        async def close(self):
+            pass
+
+    terminal = _FakeTerminalManager()
+    pool = browser_pool_module.BrowserPool(
+        terminal_manager=terminal,
+        desktop_manager=HeadlessDesktop(),
+        manager_cls=Manager,
+    )
+    _run(pool.get(_SID))
+    request = json.loads(terminal.ssh.script_args[-1][0])
+    assert request["display"] == ""
+    assert terminal.prepared == [_SID]
+    _run(pool.close_all())

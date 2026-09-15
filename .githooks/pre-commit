@@ -37,11 +37,21 @@ if [[ "${#staged_python_files[@]}" -gt 0 ]]; then
     exit 1
   fi
 
-  if ! "${black_cmd[@]}" --check "${staged_python_files[@]}"; then
+  if ! "${black_cmd[@]}" --config apps/backend/sentinel/pyproject.toml --check "${staged_python_files[@]}"; then
     echo
     echo "Pre-commit failed: run 'black <files>' and re-stage changes."
     exit 1
   fi
+
+  if [[ -x apps/backend/sentinel/.venv/bin/ruff ]]; then
+    ruff_cmd=(apps/backend/sentinel/.venv/bin/ruff)
+  elif command -v ruff >/dev/null 2>&1; then
+    ruff_cmd=(ruff)
+  else
+    echo "Pre-commit failed: run 'make setup' to install Ruff."
+    exit 1
+  fi
+  "${ruff_cmd[@]}" check --config apps/backend/sentinel/pyproject.toml "${staged_python_files[@]}"
 fi
 
 # 3) Block common secret-bearing file names. Committed templates such as

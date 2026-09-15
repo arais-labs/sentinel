@@ -105,3 +105,28 @@ def test_memory_embedding_backfill_falls_back_to_single_embed_and_skips_failures
     assert stats.failed >= 1
     assert bad.embedding is None
     assert good.embedding == [1.0]
+
+
+def test_backfill_rebuilds_unknown_model_vectors_and_keeps_current():
+    db = FakeDB()
+    old = Memory(
+        content="old model", category="project", metadata_json={"source": "test"}, embedding=[9.0]
+    )
+    current = Memory(
+        content="current model",
+        category="project",
+        metadata_json={"_embedding_model": "local-test"},
+        embedding=[8.0],
+    )
+    db.add(old)
+    db.add(current)
+    service = _BatchEmbeddingService()
+    service.fingerprint = "local-test"
+    stats = _run(
+        run_memory_embedding_backfill(
+            stop_event=asyncio.Event(), db_factory=_SessionFactory(db), embedding_service=service
+        )
+    )
+    assert stats.embedded == 1
+    assert old.metadata_json == {"source": "test", "_embedding_model": "local-test"}
+    assert current.embedding == [8.0]

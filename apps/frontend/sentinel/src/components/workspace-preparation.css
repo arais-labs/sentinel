@@ -1,0 +1,11 @@
+.workspace-preparation-frame { background: var(--app-bg); }
+.workspace-preparation { position: relative; min-height: 0; display: grid; place-items: center; overflow: auto; padding: 48px 24px 90px; }
+.workspace-preparation-content { position: relative; width: 100%; max-width: 540px; text-align: center; display: flex; flex-direction: column; align-items: center; }
+.workspace-preparation-logo { display: grid; place-items: center; width: 96px; height: 96px; margin-bottom: 24px; color: var(--text-primary); }
+.workspace-preparation-brand { margin: 0 0 18px; font-size: 11px; font-weight: 600; letter-spacing: .24em; text-transform: uppercase; color: var(--text-secondary); }
+.workspace-preparation h1 { margin: 0; font-size: clamp(26px, 3vw, 34px); line-height: 1.2; font-weight: 700; letter-spacing: -.035em; }
+.workspace-preparation-description { max-width: 360px; margin: 18px 0 0; font-size: 15px; line-height: 1.65; color: var(--text-secondary); }
+.workspace-preparation-progress { display: flex; justify-content: center; align-items: center; gap: 10px; margin-top: 44px; font-size: 12px; line-height: 1.6; color: var(--text-primary); }
+.workspace-preparation-progress svg { flex-shrink: 0; color: var(--accent-solid); }
+.workspace-preparation-note { max-width: 320px; margin: 14px 0 0; font-size: 12px; line-height: 1.7; color: var(--text-muted); }
+@media (prefers-reduced-motion: reduce) { .workspace-preparation .animate-spin { animation: none; } }

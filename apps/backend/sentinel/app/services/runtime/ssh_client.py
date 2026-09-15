@@ -17,11 +17,12 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True, slots=True)
 class SSHCredentials:
     host: str
+    username: str
     port: int = 22
-    username: str = "lima"
     key_path: Path | None = None
     private_key: str | None = None
     password: str | None = None
+    host_key: str | None = None
 
 
 class SSHClient:
@@ -180,6 +181,12 @@ class SSHClient:
             "username": self._credentials.username,
             "known_hosts": None,
         }
+        if self._credentials.host_key:
+            kwargs["known_hosts"] = (
+                [asyncssh.import_public_key(self._credentials.host_key)],
+                [],
+                [],
+            )
         if self._credentials.private_key is not None:
             kwargs["client_keys"] = [asyncssh.import_private_key(self._credentials.private_key)]
         elif self._credentials.key_path is not None:

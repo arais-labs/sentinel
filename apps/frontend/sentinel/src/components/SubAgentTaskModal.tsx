@@ -1,14 +1,19 @@
+import { SESSION_PERMISSIONS_CHANGED, type ApprovalScope } from '../lib/approvals';
 import { X, Terminal, Clock, Activity, Hash, Target, Wrench, Trash2, MessageSquare, Loader2 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { toast } from 'sonner';
+import { notificationPublisher } from '../lib/notifications';
 
+import { messageNotice } from '../lib/message-notice';
 import { SessionMessageCard, buildToolArgumentsByCallId } from './session/SessionMessageCard';
 import { Panel } from './ui/Panel';
 import { StatusChip } from './ui/StatusChip';
 import { approvalKey, type ApprovalRef } from '../lib/approvals';
 import { formatCompactDate } from '../lib/format';
 import { api } from '../lib/api';
+import { formatAgentCost } from '../lib/agent-usage';
 import type { Message, MessageListResponse, SubAgentTask } from '../types/api';
+
+const notify = notificationPublisher('Sub-agents');
 
 interface SubAgentTaskModalProps {
   task: SubAgentTask;
@@ -25,12 +30,6 @@ export function SubAgentTaskModal({ task, onClose, onTerminate, isTerminating }:
   const [liveTask, setLiveTask] = useState<SubAgentTask>(task);
   const isRunning = liveTask.status === 'running' || liveTask.status === 'pending';
   const childSessionId = (liveTask.result?.child_session_id as string) ?? null;
-  const graceTurnsUsed = Math.max(
-    Number(liveTask.grace_turns_used ?? 0),
-    Math.max(liveTask.turns_used - liveTask.max_steps, 0)
-  );
-  const budgetTurnsUsed = Math.max(liveTask.turns_used - graceTurnsUsed, 0);
-  const progressPercent = Math.min((budgetTurnsUsed / Math.max(liveTask.max_steps, 1)) * 100, 100);
   const toolAccessLabel = liveTask.allowed_tools.length > 0 ? `Scoped (${liveTask.allowed_tools.length})` : 'Full access';
 
   const [messages, setMessages] = useState<Message[]>([]);
@@ -67,8 +66,8 @@ export function SubAgentTaskModal({ task, onClose, onTerminate, isTerminating }:
   const toolArgumentsByCallId = useMemo(() => buildToolArgumentsByCallId(messages), [messages]);
   const displayMessages = useMemo(
     () => messages
-      .filter((m) => m.role !== 'system')
-      .filter((m) => !(m.role === 'assistant' && !m.content?.trim() && !m.tool_name)),
+      .filter((m) => m.role !== 'system' || messageNotice(m))
+      ,
     [messages],
   );
 
@@ -101,13 +100,14 @@ export function SubAgentTaskModal({ task, onClose, onTerminate, isTerminating }:
     } catch { /* ignore */ }
   }
 
-  const resolveApprovalInline = useCallback(async (approval: ApprovalRef, decision: 'approve' | 'reject') => {
+  const resolveApprovalInline = useCallback(async (approval: ApprovalRef, decision: 'approve' | 'reject', scope: ApprovalScope = 'once') => {
     const targetKey = approvalKey(approval);
     setResolvingApprovalKey(targetKey);
     try {
       await api.post(
         `/approvals/${encodeURIComponent(approval.provider)}/${encodeURIComponent(approval.approvalId)}/${decision}`,
         {
+          scope,
           note: decision === 'approve'
             ? 'User approved action.'
             : 'User rejected action.',
@@ -116,9 +116,10 @@ export function SubAgentTaskModal({ task, onClose, onTerminate, isTerminating }:
       if (childSessionId) {
         await fetchMessages(childSessionId);
       }
-      toast.success(decision === 'approve' ? 'Approval approved' : 'Approval rejected');
+      if (scope === 'session') window.dispatchEvent(new Event(SESSION_PERMISSIONS_CHANGED));
+      notify.success(scope === 'session' ? 'Action allowed for this session' : decision === 'approve' ? 'Approved once' : 'Denied');
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Failed to resolve approval');
+      notify.error(error instanceof Error ? error.message : 'Failed to resolve approval');
     } finally {
       setResolvingApprovalKey(null);
     }
@@ -155,19 +156,19 @@ export function SubAgentTaskModal({ task, onClose, onTerminate, isTerminating }:
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 animate-in fade-in duration-200">
-      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
-      <Panel className="relative w-full max-w-4xl bg-[color:var(--surface-0)] shadow-2xl overflow-hidden animate-in zoom-in-95 duration-200 flex flex-col" style={{ height: '80vh' }}>
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-xs" onClick={onClose} />
+      <Panel className="relative w-full max-w-4xl bg-(--surface-0) shadow-2xl overflow-hidden animate-in zoom-in-95 duration-200 flex flex-col" style={{ height: '80vh' }}>
 
         {/* Header */}
-        <div className="px-6 py-4 border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] flex-shrink-0 space-y-3">
+        <div className="px-6 py-4 border-b border-(--border-subtle) bg-(--surface-1) shrink-0 space-y-3">
           <div className="flex items-center justify-between gap-4">
             <div className="flex min-w-0 flex-1 items-start gap-3">
-            <div className="p-2 rounded-lg bg-[color:var(--surface-2)] text-[color:var(--accent-solid)]">
+            <div className="p-2 rounded-lg bg-(--surface-2) text-(--accent-solid)">
               <Terminal size={18} />
             </div>
               <div className="min-w-0 flex-1">
-                <p className="text-[9px] text-[color:var(--text-muted)] font-mono uppercase tracking-widest">Sub-Agent Run</p>
-                <p className="mt-0.5 text-[10px] text-[color:var(--text-muted)] font-mono">
+                <p className="text-[9px] text-(--text-muted) font-mono uppercase tracking-widest">Sub-Agent Run</p>
+                <p className="mt-0.5 text-[10px] text-(--text-muted) font-mono">
                   task:{liveTask.id.slice(0, 8)} · parent:{liveTask.session_id.slice(0, 8)}
                 </p>
               </div>
@@ -177,31 +178,31 @@ export function SubAgentTaskModal({ task, onClose, onTerminate, isTerminating }:
                 label={liveTask.status}
                 tone={liveTask.status === 'completed' ? 'good' : liveTask.status === 'running' ? 'warn' : liveTask.status === 'failed' ? 'danger' : 'default'}
               />
-              <button type="button" onClick={onClose} className="text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] transition-colors">
+              <button type="button" onClick={onClose} className="text-(--text-muted) hover:text-(--text-primary) transition-colors">
                 <X size={20} />
               </button>
             </div>
           </div>
 
-          <div className="rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)] p-3">
+          <div className="rounded-lg border border-(--border-subtle) bg-(--surface-0) p-3">
             <div className="flex items-center gap-1.5">
-              <Target size={12} className="text-[color:var(--text-muted)]" />
-              <span className="text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Objective</span>
+              <Target size={12} className="text-(--text-muted)" />
+              <span className="text-[9px] font-bold uppercase tracking-widest text-(--text-muted)">Objective</span>
             </div>
-            <p className="mt-2 text-sm leading-relaxed text-[color:var(--text-primary)] break-words">{liveTask.name || '—'}</p>
+            <p className="mt-2 text-sm leading-relaxed text-(--text-primary) wrap-break-word">{liveTask.name || '—'}</p>
           </div>
         </div>
 
         <div className="flex flex-1 min-h-0">
           {/* Left: telemetry sidebar */}
-          <div className="w-72 flex-shrink-0 border-r border-[color:var(--border-subtle)] bg-[color:var(--surface-1)] overflow-y-auto p-4 space-y-5">
+          <div className="w-72 shrink-0 border-r border-(--border-subtle) bg-(--surface-1) overflow-y-auto p-4 space-y-5">
             {/* Scope */}
             <section className="space-y-2">
               <div className="flex items-center gap-1.5">
-                <Target size={12} className="text-[color:var(--text-muted)]" />
-                <span className="text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Scope</span>
+                <Target size={12} className="text-(--text-muted)" />
+                <span className="text-[9px] font-bold uppercase tracking-widest text-(--text-muted)">Scope</span>
               </div>
-              <p className="text-xs leading-relaxed text-[color:var(--text-secondary)]">
+              <p className="text-xs leading-relaxed text-(--text-secondary)">
                 {liveTask.scope || 'No additional scope constraints.'}
               </p>
             </section>
@@ -209,26 +210,26 @@ export function SubAgentTaskModal({ task, onClose, onTerminate, isTerminating }:
             {/* Steps */}
             <section className="space-y-2">
               <div className="flex items-center gap-1.5">
-                <Activity size={12} className="text-[color:var(--text-muted)]" />
-                <span className="text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Telemetry</span>
+                <Activity size={12} className="text-(--text-muted)" />
+                <span className="text-[9px] font-bold uppercase tracking-widest text-(--text-muted)">Telemetry</span>
               </div>
               <div className="space-y-2">
                 <div className="flex justify-between text-[10px]">
-                  <span className="text-[color:var(--text-muted)] font-bold uppercase">Steps</span>
+                  <span className="text-(--text-muted) font-bold uppercase">Steps</span>
                   <span className="font-mono font-bold">
-                    {budgetTurnsUsed} / {liveTask.max_steps}
-                    {graceTurnsUsed > 0 ? ` (+${graceTurnsUsed} grace)` : ''}
+                    {liveTask.turns_used}
                   </span>
                 </div>
-                <div className="w-full bg-[color:var(--surface-2)] h-1 rounded-full overflow-hidden">
-                  <div className="bg-[color:var(--accent-solid)] h-full transition-all duration-500" style={{ width: `${progressPercent}%` }} />
+                <div className="flex justify-between gap-3 text-[10px]">
+                  <span className="text-(--text-muted) font-bold uppercase">Cost</span>
+                  <span className="text-amber-500 tabular-nums">{formatAgentCost(liveTask.usage)}</span>
                 </div>
                 <div className="flex justify-between text-[10px]">
-                  <span className="text-[color:var(--text-muted)] font-bold uppercase">Tokens</span>
+                  <span className="text-(--text-muted) font-bold uppercase">Tokens</span>
                   <span className="font-mono font-bold">{liveTask.tokens_used.toLocaleString()}</span>
                 </div>
                 <div className="flex justify-between text-[10px]">
-                  <span className="text-[color:var(--text-muted)] font-bold uppercase">Tool Access</span>
+                  <span className="text-(--text-muted) font-bold uppercase">Tool Access</span>
                   <span className="font-mono font-bold">{toolAccessLabel}</span>
                 </div>
               </div>
@@ -237,24 +238,24 @@ export function SubAgentTaskModal({ task, onClose, onTerminate, isTerminating }:
             {/* Timeline */}
             <section className="space-y-2">
               <div className="flex items-center gap-1.5">
-                <Clock size={12} className="text-[color:var(--text-muted)]" />
-                <span className="text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Timeline</span>
+                <Clock size={12} className="text-(--text-muted)" />
+                <span className="text-[9px] font-bold uppercase tracking-widest text-(--text-muted)">Timeline</span>
               </div>
               <div className="space-y-2 text-[10px]">
                 <div>
-                  <span className="text-[color:var(--text-muted)] font-bold uppercase block">Created</span>
+                  <span className="text-(--text-muted) font-bold uppercase block">Created</span>
                   <span className="font-mono">{formatCompactDate(liveTask.created_at)}</span>
                 </div>
                 <div>
-                  <span className="text-[color:var(--text-muted)] font-bold uppercase block">Started</span>
+                  <span className="text-(--text-muted) font-bold uppercase block">Started</span>
                   <span className="font-mono">{liveTask.started_at ? formatCompactDate(liveTask.started_at) : '—'}</span>
                 </div>
                 <div>
-                  <span className="text-[color:var(--text-muted)] font-bold uppercase block">Finished</span>
+                  <span className="text-(--text-muted) font-bold uppercase block">Finished</span>
                   <span className="font-mono">{liveTask.completed_at ? formatCompactDate(liveTask.completed_at) : '—'}</span>
                 </div>
                 <div>
-                  <span className="text-[color:var(--text-muted)] font-bold uppercase block">Child Session</span>
+                  <span className="text-(--text-muted) font-bold uppercase block">Child Session</span>
                   <span className="font-mono">{childSessionId ? childSessionId.slice(0, 12) : '—'}</span>
                 </div>
               </div>
@@ -263,41 +264,41 @@ export function SubAgentTaskModal({ task, onClose, onTerminate, isTerminating }:
             {/* Allowed Tools */}
             <section className="space-y-2">
               <div className="flex items-center gap-1.5">
-                <Wrench size={12} className="text-[color:var(--text-muted)]" />
-                <span className="text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Tools</span>
+                <Wrench size={12} className="text-(--text-muted)" />
+                <span className="text-[9px] font-bold uppercase tracking-widest text-(--text-muted)">Tools</span>
               </div>
               {liveTask.allowed_tools.length > 0 ? (
                 <div className="flex flex-wrap gap-1">
                   {liveTask.allowed_tools.map(tool => (
-                    <span key={tool} className="px-1.5 py-0.5 rounded bg-[color:var(--surface-2)] text-[9px] font-mono font-bold border border-[color:var(--border-subtle)]">{tool}</span>
+                    <span key={tool} className="px-1.5 py-0.5 rounded bg-(--surface-2) text-[9px] font-mono font-bold border border-(--border-subtle)">{tool}</span>
                   ))}
                 </div>
               ) : (
-                <p className="text-xs leading-relaxed text-[color:var(--text-secondary)]">All tools available for this run.</p>
+                <p className="text-xs leading-relaxed text-(--text-secondary)">All tools available for this run.</p>
               )}
             </section>
           </div>
 
           {/* Right: session transcript */}
           <div className="flex-1 flex flex-col min-w-0">
-            <div className="px-4 py-2.5 border-b border-[color:var(--border-subtle)] flex items-center gap-2 bg-[color:var(--surface-0)] flex-shrink-0">
-              <MessageSquare size={13} className="text-[color:var(--text-muted)]" />
-              <span className="text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Session Transcript</span>
-              {isRunning && <Loader2 size={11} className="animate-spin text-[color:var(--text-muted)] ml-auto" />}
+            <div className="px-4 py-2.5 border-b border-(--border-subtle) flex items-center gap-2 bg-(--surface-0) shrink-0">
+              <MessageSquare size={13} className="text-(--text-muted)" />
+              <span className="text-[9px] font-bold uppercase tracking-widest text-(--text-muted)">Session Transcript</span>
+              {isRunning && <Loader2 size={11} className="animate-spin text-(--text-muted) ml-auto" />}
             </div>
 
             <div ref={scrollRef} onScroll={onTranscriptScroll} className="flex-1 overflow-y-auto p-4 md:p-6 space-y-6">
               {loadingMsgs && displayMessages.length === 0 ? (
-                <div className="flex items-center justify-center h-full text-[color:var(--text-muted)]">
+                <div className="flex items-center justify-center h-full text-(--text-muted)">
                   <Loader2 size={20} className="animate-spin" />
                 </div>
               ) : !childSessionId ? (
                 <div className="flex items-center justify-center h-full">
-                  <p className="text-[11px] text-[color:var(--text-muted)] font-bold uppercase tracking-wider">Waiting for agent to start...</p>
+                  <p className="text-[11px] text-(--text-muted) font-bold uppercase tracking-wider">Waiting for agent to start...</p>
                 </div>
               ) : displayMessages.length === 0 ? (
                 <div className="flex items-center justify-center h-full">
-                  <p className="text-[11px] text-[color:var(--text-muted)] font-bold uppercase tracking-wider">No messages yet...</p>
+                  <p className="text-[11px] text-(--text-muted) font-bold uppercase tracking-wider">No messages yet...</p>
                 </div>
               ) : (
                 displayMessages.map((m) => (
@@ -315,7 +316,7 @@ export function SubAgentTaskModal({ task, onClose, onTerminate, isTerminating }:
         </div>
 
         {/* Footer */}
-        <div className="px-6 py-4 bg-[color:var(--surface-1)] border-t border-[color:var(--border-subtle)] flex items-center justify-between gap-3 flex-shrink-0">
+        <div className="px-6 py-4 bg-(--surface-1) border-t border-(--border-subtle) flex items-center justify-between gap-3 shrink-0">
           <div>
             {isRunning && onTerminate && (
               <button onClick={() => onTerminate(liveTask.id)} disabled={isTerminating}

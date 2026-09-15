@@ -28,13 +28,22 @@ const sidebars = {
       collapsed: false,
       items: [
         'guides/installation',
-        'guides/cli-reference',
+        'guides/providers',
+        'guides/workspaces',
+        'guides/runtime-updates',
+        'guides/computer-use',
+        'guides/standalone-tui',
         'guides/creating-modules',
         'guides/permissions',
         'guides/runtime-exec-security',
         'guides/multi-instance',
         'guides/telegram',
       ],
+    },
+    {
+      type: 'category',
+      label: 'Architecture',
+      items: ['architecture/sentral', 'architecture/workspace-runtime', 'architecture/notifications'],
     },
     {
       type: 'category',

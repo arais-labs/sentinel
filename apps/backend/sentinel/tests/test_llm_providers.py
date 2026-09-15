@@ -1,25 +1,22 @@
 from __future__ import annotations
-
 import asyncio
 import json
 from dataclasses import asdict
-
 import httpx
 import pytest
-
-from app.services.llm.providers.anthropic import AnthropicProvider
-from app.services.llm.generic.base import LLMProvider
-from app.services.llm.generic.errors import TransientProviderError
-from app.services.llm.providers.codex import CodexProvider
-from app.services.llm.providers.gemini import GeminiProvider
-from app.services.llm.providers.gemini_oauth import GeminiOAuthCredentials, GeminiOAuthProvider
-from app.services.llm.providers.gemini_schema_cleaner import clean_schema_for_gemini
-from app.services.llm.providers.openai import OpenAIProvider
-from app.services.llm.generic.reliable import ReliableProvider
-from app.services.llm.generic.router import RouterProvider
-from app.services.llm.generic.tier import TierConfig, TierModelConfig, TierProvider
-from app.services.llm.ids import ProviderId, TierName
-from app.services.llm.generic.types import (
+from sentral.llm.providers.anthropic import AnthropicProvider
+from sentral.llm.generic.base import LLMProvider
+from sentral.llm.generic.errors import TransientProviderError
+from sentral.llm.providers.codex import CodexProvider
+from sentral.llm.providers.gemini import GeminiProvider
+from sentral.llm.providers.gemini_oauth import GeminiOAuthCredentials, GeminiOAuthProvider
+from sentral.llm.providers.gemini_schema_cleaner import clean_schema_for_gemini
+from sentral.llm.providers.openai import OpenAIProvider
+from sentral.llm.generic.reliable import ReliableProvider
+from sentral.llm.generic.router import RouterProvider
+from app.services.llm.tier import TierConfig, TierModelConfig, TierProvider
+from sentral.llm.ids import ProviderId, TierName
+from sentral.llm.generic.types import (
     AgentEvent,
     AssistantMessage,
     ImageContent,
@@ -32,6 +29,7 @@ from app.services.llm.generic.types import (
     ToolSchema,
     UserMessage,
 )
+import copy
 
 
 def _run(coro):
@@ -156,7 +154,7 @@ def test_anthropic_chat_formats_and_parses_tool_calls():
     fake_client = _FakeAsyncClient(
         post_response=_FakeResponse(
             {
-                "model": "claude-sonnet-4-20250514",
+                "model": "claude-sonnet-5",
                 "content": [
                     {"type": "text", "text": "Done"},
                     {
@@ -183,7 +181,7 @@ def test_anthropic_chat_formats_and_parses_tool_calls():
                 {"role": "system", "content": "You are a helpful assistant."},
                 UserMessage(content="find info"),
             ],
-            model="claude-sonnet-4-20250514",
+            model="claude-sonnet-5",
             tools=tools,
         )
     )
@@ -210,6 +208,7 @@ def test_anthropic_stream_emits_all_event_types():
         'data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\\"a\\":1}"}}',
         'data: {"type":"content_block_stop","index":2,"content_block":{"type":"tool_use"}}',
         'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}',
+        'data: {"type":"message_stop"}',
     ]
     fake_client = _FakeAsyncClient(stream_response=_FakeStreamResponse(stream_lines))
     provider = AnthropicProvider(
@@ -220,9 +219,7 @@ def test_anthropic_stream_emits_all_event_types():
 
     async def _collect():
         events: list[AgentEvent] = []
-        async for event in provider.stream(
-            [UserMessage(content="hello")], model="claude-sonnet-4-20250514"
-        ):
+        async for event in provider.stream([UserMessage(content="hello")], model="claude-sonnet-5"):
             events.append(event)
         return events
 
@@ -259,7 +256,7 @@ def test_anthropic_stream_raises_on_sse_error_event():
         events: list[AgentEvent] = []
         async for event in provider.stream(
             [UserMessage(content="hello")],
-            model="claude-sonnet-4-20250514",
+            model="claude-sonnet-5",
         ):
             events.append(event)
         return events
@@ -556,7 +553,7 @@ def test_router_provider_stream_attaches_resolved_generation_metadata():
     reasoning = _CaptureProvider("anthropic")
     default = _CaptureProvider("openai")
     router = RouterProvider(
-        {"reasoning": (reasoning, "claude-sonnet-4-20250514")},
+        {"reasoning": (reasoning, "claude-sonnet-5")},
         default=(default, "gpt-4.1-mini"),
     )
 
@@ -570,7 +567,7 @@ def test_router_provider_stream_attaches_resolved_generation_metadata():
     assert events
     assert events[0].message is not None
     assert events[0].message.provider == "anthropic"
-    assert events[0].message.model == "claude-sonnet-4-20250514"
+    assert events[0].message.model == "claude-sonnet-5"
 
 
 # --- OAuth Detection & Header Tests ---
@@ -602,7 +599,7 @@ def test_anthropic_oauth_headers_use_bearer_and_beta():
     fake_client = _FakeAsyncClient(
         post_response=_FakeResponse(
             {
-                "model": "claude-sonnet-4-20250514",
+                "model": "claude-sonnet-5",
                 "content": [{"type": "text", "text": "ok"}],
                 "stop_reason": "end_turn",
                 "usage": {"input_tokens": 5, "output_tokens": 3},
@@ -614,7 +611,7 @@ def test_anthropic_oauth_headers_use_bearer_and_beta():
         base_url="https://anthropic.example",
         client_factory=lambda: fake_client,
     )
-    _run(provider.chat([UserMessage(content="hi")], model="claude-sonnet-4-20250514"))
+    _run(provider.chat([UserMessage(content="hi")], model="claude-sonnet-5"))
 
     headers = fake_client.post_calls[0]["headers"]
     assert headers["authorization"] == "Bearer sk-ant-oat01-zF7_HH03KyFWn7D8yZqOWNW7_test"
@@ -627,7 +624,7 @@ def test_anthropic_regular_key_headers_use_x_api_key():
     fake_client = _FakeAsyncClient(
         post_response=_FakeResponse(
             {
-                "model": "claude-sonnet-4-20250514",
+                "model": "claude-sonnet-5",
                 "content": [{"type": "text", "text": "ok"}],
                 "stop_reason": "end_turn",
                 "usage": {"input_tokens": 5, "output_tokens": 3},
@@ -639,7 +636,7 @@ def test_anthropic_regular_key_headers_use_x_api_key():
         base_url="https://anthropic.example",
         client_factory=lambda: fake_client,
     )
-    _run(provider.chat([UserMessage(content="hi")], model="claude-sonnet-4-20250514"))
+    _run(provider.chat([UserMessage(content="hi")], model="claude-sonnet-5"))
 
     headers = fake_client.post_calls[0]["headers"]
     assert headers["x-api-key"] == "sk-ant-api03-regular-key-not-oauth"
@@ -652,6 +649,7 @@ def test_anthropic_oauth_stream_headers():
     stream_lines = [
         'data: {"type":"message_start"}',
         'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}',
+        'data: {"type":"message_stop"}',
     ]
     fake_client = _FakeAsyncClient(stream_response=_FakeStreamResponse(stream_lines))
     provider = AnthropicProvider(
@@ -662,9 +660,7 @@ def test_anthropic_oauth_stream_headers():
 
     async def _collect():
         events = []
-        async for event in provider.stream(
-            [UserMessage(content="hi")], model="claude-sonnet-4-20250514"
-        ):
+        async for event in provider.stream([UserMessage(content="hi")], model="claude-sonnet-5"):
             events.append(event)
         return events
 
@@ -686,7 +682,9 @@ def test_openai_message_format_supports_tool_result_message():
             }
         )
     )
-    provider = OpenAIProvider(api_key="k", client_factory=lambda: fake_client)
+    provider = OpenAIProvider(
+        api_key="k", base_url="https://compatible.test/v1", client_factory=lambda: fake_client
+    )
     _run(
         provider.chat(
             [
@@ -704,83 +702,12 @@ def test_openai_message_format_supports_tool_result_message():
 # --- Anthropic Thinking Payload Tests ---
 
 
-def test_anthropic_chat_sends_thinking_payload_when_budget_set():
-    """Extended thinking should add thinking block and force temperature=1.0."""
-    fake_client = _FakeAsyncClient(
-        post_response=_FakeResponse(
-            {
-                "model": "claude-sonnet-4-20250514",
-                "content": [{"type": "text", "text": "thought"}],
-                "stop_reason": "end_turn",
-                "usage": {"input_tokens": 5, "output_tokens": 3},
-            }
-        )
-    )
-    provider = AnthropicProvider(
-        api_key="test-key",
-        base_url="https://anthropic.example",
-        client_factory=lambda: fake_client,
-    )
-    rc = ReasoningConfig(max_tokens=16384, thinking_budget=32000)
-    _run(
-        provider.chat(
-            [UserMessage(content="think hard")],
-            model="claude-sonnet-4-20250514",
-            reasoning_config=rc,
-        )
-    )
-
-    payload = fake_client.post_calls[0]["json"]
-    assert payload["max_tokens"] == 40192
-    assert payload["temperature"] == 1.0
-    assert payload["thinking"] == {"type": "enabled", "budget_tokens": 32000}
-
-    headers = fake_client.post_calls[0]["headers"]
-    assert "interleaved-thinking-2025-05-14" in headers["anthropic-beta"]
-
-
-def test_anthropic_chat_no_thinking_when_budget_zero():
-    """No thinking block or beta header when budget is 0."""
-    fake_client = _FakeAsyncClient(
-        post_response=_FakeResponse(
-            {
-                "model": "claude-haiku-4-5-20251001",
-                "content": [{"type": "text", "text": "fast"}],
-                "stop_reason": "end_turn",
-                "usage": {"input_tokens": 2, "output_tokens": 1},
-            }
-        )
-    )
-    provider = AnthropicProvider(
-        api_key="test-key",
-        base_url="https://anthropic.example",
-        client_factory=lambda: fake_client,
-    )
-    rc = ReasoningConfig(max_tokens=4096, thinking_budget=None)
-    _run(
-        provider.chat(
-            [UserMessage(content="be fast")],
-            model="claude-haiku-4-5-20251001",
-            reasoning_config=rc,
-            temperature=0.3,
-        )
-    )
-
-    payload = fake_client.post_calls[0]["json"]
-    assert payload["max_tokens"] == 4096
-    assert payload["temperature"] == 0.3
-    assert "thinking" not in payload
-
-    headers = fake_client.post_calls[0]["headers"]
-    assert "anthropic-beta" not in headers
-
-
 def test_anthropic_oauth_with_thinking_combines_betas():
     """OAuth + thinking should produce both betas comma-separated."""
     fake_client = _FakeAsyncClient(
         post_response=_FakeResponse(
             {
-                "model": "claude-sonnet-4-20250514",
+                "model": "claude-sonnet-5",
                 "content": [{"type": "text", "text": "ok"}],
                 "stop_reason": "end_turn",
                 "usage": {"input_tokens": 5, "output_tokens": 3},
@@ -793,11 +720,7 @@ def test_anthropic_oauth_with_thinking_combines_betas():
         client_factory=lambda: fake_client,
     )
     rc = ReasoningConfig(max_tokens=8192, thinking_budget=5000)
-    _run(
-        provider.chat(
-            [UserMessage(content="hi")], model="claude-sonnet-4-20250514", reasoning_config=rc
-        )
-    )
+    _run(provider.chat([UserMessage(content="hi")], model="claude-sonnet-5", reasoning_config=rc))
 
     headers = fake_client.post_calls[0]["headers"]
     beta = headers["anthropic-beta"]
@@ -845,6 +768,7 @@ def test_openai_chat_no_reasoning_effort_when_none():
     )
     provider = OpenAIProvider(
         api_key="test-key",
+        base_url="https://compatible.test/v1",
         client_factory=lambda: fake_client,
     )
     rc = ReasoningConfig(max_tokens=4096)
@@ -1377,7 +1301,7 @@ def test_gemini_chat_parses_tool_calls():
     assert result.usage.output_tokens == 20
 
 
-def test_gemini_oauth_credentials_parse_gemini_cli_json():
+def test_gemini_oauth_credentials_parse_explicit_client_json():
     credentials = GeminiOAuthCredentials.parse_input(
         json.dumps(
             {
@@ -1400,9 +1324,20 @@ def test_gemini_oauth_credentials_parse_gemini_cli_json():
     assert credentials.mask_secret() == "refr...sh-1"
 
 
-def test_gemini_oauth_credentials_require_client_fields():
+def test_gemini_oauth_credentials_accept_antigravity_tokens():
+    credentials = GeminiOAuthCredentials.parse_input(
+        {"refresh_token": "refresh-1", "access_token": "access-1", "expiry_date": 12345}
+    )
+    assert credentials.resolved_client_id().endswith(".apps.googleusercontent.com")
+    assert credentials.resolved_client_secret()
+    assert GeminiOAuthCredentials.parse_input(credentials.as_json()) == credentials
+
+
+def test_gemini_oauth_credentials_require_complete_custom_client():
     with pytest.raises(ValueError, match="client_id"):
-        GeminiOAuthCredentials.parse_input(json.dumps({"refresh_token": "refresh-1"}))
+        GeminiOAuthCredentials.parse_input(
+            {"refresh_token": "refresh-1", "client_secret": "custom-secret"}
+        )
 
     with pytest.raises(ValueError, match="client_secret"):
         GeminiOAuthCredentials.parse_input(
@@ -1487,7 +1422,7 @@ def test_gemini_oauth_provider_rejects_missing_code_assist_scope():
     assert "cloud-platform" in str(exc.value)
 
 
-def test_gemini_oauth_provider_resolves_cli_alias_models():
+def test_gemini_oauth_provider_resolves_antigravity_alias_models():
     provider = GeminiOAuthProvider(
         credentials={
             "refresh_token": "refresh-token",
@@ -1501,11 +1436,11 @@ def test_gemini_oauth_provider_resolves_cli_alias_models():
 
     assert provider.resolve_generation_hint("pro") == (
         ProviderId.GEMINI,
-        "gemini-3-pro-preview",
+        "gemini-pro-agent",
     )
     assert provider._iter_candidate_models("pro") == [
-        "gemini-3-pro-preview",
-        "gemini-3-flash-preview",
+        "gemini-pro-agent",
+        "gemini-3.8-flash-tiered",
     ]
     assert provider._iter_candidate_models("auto-gemini-2.5") == [
         "gemini-2.5-pro",
@@ -1525,16 +1460,16 @@ def test_gemini_oauth_provider_skips_recently_exhausted_model():
         client_factory=lambda: _FakeAsyncClient(),
     )
 
-    provider._record_model_capacity("gemini-3.1-pro-preview")
+    provider._record_model_capacity("gemini-pro-agent")
 
-    assert provider._iter_candidate_models("gemini-3.1-pro-preview") == [
-        "gemini-3-pro-preview",
-        "gemini-3-flash-preview",
-        "gemini-3.1-pro-preview",
+    assert provider._iter_candidate_models("gemini-pro-agent") == [
+        "gemini-3.8-flash-tiered",
+        "gemini-pro-agent",
     ]
 
 
-def test_gemini_oauth_stream_uses_code_assist_sse_wrapper():
+@pytest.mark.parametrize("trailing_blank", [True, False])
+def test_gemini_oauth_stream_uses_code_assist_sse_wrapper(trailing_blank):
     fake_client = _FakeAsyncClient(
         post_responses=[
             _FakeResponse({"access_token": "fresh-access", "expires_in": 3600}),
@@ -1543,8 +1478,8 @@ def test_gemini_oauth_stream_uses_code_assist_sse_wrapper():
         stream_response=_FakeStreamResponse(
             [
                 'data: {"response":{"candidates":[{"content":{"parts":[{"text":"hello"}]},"finishReason":"STOP"}]}}',
-                "",
             ]
+            + ([""] if trailing_blank else [])
         ),
     )
     provider = GeminiOAuthProvider(
@@ -1593,7 +1528,7 @@ def test_gemini_oauth_stream_falls_back_on_capacity_429():
                 status_code=429,
                 body=(
                     b'{"error":{"code":429,"message":"No capacity available for model '
-                    b'gemini-3.1-pro-preview on the server","status":"RESOURCE_EXHAUSTED"}}'
+                    b'gemini-3.1-pro-high on the server","status":"RESOURCE_EXHAUSTED"}}'
                 ),
             ),
             _FakeStreamResponse(
@@ -1618,7 +1553,7 @@ def test_gemini_oauth_stream_falls_back_on_capacity_429():
     async def _collect():
         events: list[AgentEvent] = []
         async for event in provider.stream(
-            [UserMessage(content="hello")], model="gemini-3.1-pro-preview"
+            [UserMessage(content="hello")], model="gemini-pro-agent"
         ):
             events.append(event)
         return events
@@ -1632,8 +1567,8 @@ def test_gemini_oauth_stream_falls_back_on_capacity_429():
         "text_end",
         "done",
     ]
-    assert fake_client.stream_calls[0]["json"]["model"] == "gemini-3.1-pro-preview"
-    assert fake_client.stream_calls[1]["json"]["model"] == "gemini-3-pro-preview"
+    assert fake_client.stream_calls[0]["json"]["model"] == "gemini-pro-agent"
+    assert fake_client.stream_calls[1]["json"]["model"] == "gemini-3.8-flash-tiered"
 
 
 def test_gemini_oauth_stream_empty_stop_chunk_closes_turn():
@@ -2184,7 +2119,7 @@ def test_gemini_schema_cleaner_applied_to_tool_parameters():
 
 def test_codex_formats_user_image_blocks():
     provider = CodexProvider(oauth_token="test-token")
-    _, input_items = provider._to_codex_input(  # type: ignore[attr-defined]
+    _, input_items = provider._to_responses_input(  # type: ignore[attr-defined]
         [
             UserMessage(
                 content=[
@@ -2204,13 +2139,19 @@ def test_codex_formats_user_image_blocks():
 
 def test_codex_input_skips_empty_tool_call_ids() -> None:
     provider = CodexProvider(oauth_token="test-token")
-    _, input_items = provider._to_codex_input(  # type: ignore[attr-defined]
+    _, input_items = provider._to_responses_input(  # type: ignore[attr-defined]
         [
             AssistantMessage(
                 content=[
                     TextContent(text="Working on it"),
-                    ToolCallContent(id="", name="runtime", arguments={"command": "pwd"}),
-                    ToolCallContent(id="call_1", name="runtime", arguments={"command": "pwd"}),
+                    ToolCallContent(
+                        id="", name="runtime", arguments={"action": "exec", "shell_command": "pwd"}
+                    ),
+                    ToolCallContent(
+                        id="call_1",
+                        name="runtime",
+                        arguments={"action": "exec", "shell_command": "pwd"},
+                    ),
                 ],
                 model="gpt-5.3-codex",
                 provider="openai-codex",
@@ -2238,7 +2179,9 @@ def test_codex_stream_emits_text_from_output_item_done_when_no_delta():
         'data: {"type":"response.completed","response":{"status":"completed","output":[]}}',
     ]
     fake_client = _FakeAsyncClient(stream_response=_FakeStreamResponse(stream_lines))
-    provider = CodexProvider(oauth_token="test-token", client_factory=lambda: fake_client)
+    provider = CodexProvider(
+        oauth_token="test-token", client_factory=lambda: fake_client, transport="sse"
+    )
 
     async def _collect():
         events: list[AgentEvent] = []
@@ -2265,7 +2208,9 @@ def test_codex_stream_does_not_duplicate_text_when_delta_and_output_item_done_bo
         'data: {"type":"response.completed","response":{"status":"completed","output":[]}}',
     ]
     fake_client = _FakeAsyncClient(stream_response=_FakeStreamResponse(stream_lines))
-    provider = CodexProvider(oauth_token="test-token", client_factory=lambda: fake_client)
+    provider = CodexProvider(
+        oauth_token="test-token", client_factory=lambda: fake_client, transport="sse"
+    )
 
     async def _collect():
         events: list[AgentEvent] = []
@@ -2287,12 +2232,14 @@ def test_codex_stream_emits_tool_arguments_from_function_call_done():
     stream_lines = [
         'data: {"type":"response.created"}',
         'data: {"type":"response.output_item.added","output_index":1,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"runtime","arguments":""}}',
-        'data: {"type":"response.function_call_arguments.done","output_index":1,"item_id":"fc_1","arguments":"{\\"command\\":\\"user\\",\\"shell_command\\":\\"echo hello\\"}"}',
-        'data: {"type":"response.output_item.done","output_index":1,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"runtime","arguments":"{\\"command\\":\\"user\\",\\"shell_command\\":\\"echo hello\\"}"}}',
+        'data: {"type":"response.function_call_arguments.done","output_index":1,"item_id":"fc_1","arguments":"{\\"action\\":\\"exec\\",\\"shell_command\\":\\"echo hello\\"}"}',
+        'data: {"type":"response.output_item.done","output_index":1,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"runtime","arguments":"{\\"action\\":\\"exec\\",\\"shell_command\\":\\"echo hello\\"}"}}',
         'data: {"type":"response.completed","response":{"output":[{"type":"function_call"}]}}',
     ]
     fake_client = _FakeAsyncClient(stream_response=_FakeStreamResponse(stream_lines))
-    provider = CodexProvider(oauth_token="test-token", client_factory=lambda: fake_client)
+    provider = CodexProvider(
+        oauth_token="test-token", client_factory=lambda: fake_client, transport="sse"
+    )
 
     async def _collect():
         events: list[AgentEvent] = []
@@ -2308,7 +2255,7 @@ def test_codex_stream_emits_tool_arguments_from_function_call_done():
 
     events = _run(_collect())
     deltas = [event.delta for event in events if event.type == "toolcall_delta"]
-    assert deltas == ['{"command":"user","shell_command":"echo hello"}']
+    assert deltas == ['{"action":"exec","shell_command":"echo hello"}']
     assert events[-1].type == "done"
     assert events[-1].stop_reason == "tool_use"
 
@@ -2318,11 +2265,13 @@ def test_codex_stream_emits_tool_arguments_from_output_item_done_when_no_delta()
         'data: {"type":"response.created"}',
         'data: {"type":"response.output_item.added","output_index":2,"item":{"type":"function_call","id":"fc_2","call_id":"call_2","name":"runtime","arguments":""}}',
         'data: {"type":"response.function_call_arguments.done","output_index":2,"item_id":"fc_2"}',
-        'data: {"type":"response.output_item.done","output_index":2,"item":{"type":"function_call","id":"fc_2","call_id":"call_2","name":"runtime","arguments":"{\\"command\\":\\"user\\",\\"shell_command\\":\\"pwd\\"}"}}',
+        'data: {"type":"response.output_item.done","output_index":2,"item":{"type":"function_call","id":"fc_2","call_id":"call_2","name":"runtime","arguments":"{\\"action\\":\\"exec\\",\\"shell_command\\":\\"pwd\\"}"}}',
         'data: {"type":"response.completed","response":{"output":[{"type":"function_call"}]}}',
     ]
     fake_client = _FakeAsyncClient(stream_response=_FakeStreamResponse(stream_lines))
-    provider = CodexProvider(oauth_token="test-token", client_factory=lambda: fake_client)
+    provider = CodexProvider(
+        oauth_token="test-token", client_factory=lambda: fake_client, transport="sse"
+    )
 
     async def _collect():
         events: list[AgentEvent] = []
@@ -2338,7 +2287,7 @@ def test_codex_stream_emits_tool_arguments_from_output_item_done_when_no_delta()
 
     events = _run(_collect())
     deltas = [event.delta for event in events if event.type == "toolcall_delta"]
-    assert deltas == ['{"command":"user","shell_command":"pwd"}']
+    assert deltas == ['{"action":"exec","shell_command":"pwd"}']
     assert events[-1].type == "done"
     assert events[-1].stop_reason == "tool_use"
 
@@ -2346,12 +2295,14 @@ def test_codex_stream_emits_tool_arguments_from_output_item_done_when_no_delta()
 def test_codex_stream_emits_tool_arguments_when_present_on_output_item_added():
     stream_lines = [
         'data: {"type":"response.created"}',
-        'data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_3","call_id":"call_3","name":"runtime","arguments":"{\\"command\\":\\"user\\",\\"shell_command\\":\\"ls\\"}"}}',
-        'data: {"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"fc_3","call_id":"call_3","name":"runtime","arguments":"{\\"command\\":\\"user\\",\\"shell_command\\":\\"ls\\"}"}}',
+        'data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_3","call_id":"call_3","name":"runtime","arguments":"{\\"action\\":\\"exec\\",\\"shell_command\\":\\"ls\\"}"}}',
+        'data: {"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"fc_3","call_id":"call_3","name":"runtime","arguments":"{\\"action\\":\\"exec\\",\\"shell_command\\":\\"ls\\"}"}}',
         'data: {"type":"response.completed","response":{"output":[{"type":"function_call"}]}}',
     ]
     fake_client = _FakeAsyncClient(stream_response=_FakeStreamResponse(stream_lines))
-    provider = CodexProvider(oauth_token="test-token", client_factory=lambda: fake_client)
+    provider = CodexProvider(
+        oauth_token="test-token", client_factory=lambda: fake_client, transport="sse"
+    )
 
     async def _collect():
         events: list[AgentEvent] = []
@@ -2367,7 +2318,7 @@ def test_codex_stream_emits_tool_arguments_when_present_on_output_item_added():
 
     events = _run(_collect())
     deltas = [event.delta for event in events if event.type == "toolcall_delta"]
-    assert deltas == ['{"command":"user","shell_command":"ls"}']
+    assert deltas == ['{"action":"exec","shell_command":"ls"}']
     assert events[-1].type == "done"
     assert events[-1].stop_reason == "tool_use"
 
@@ -2387,7 +2338,9 @@ def test_codex_stream_payload_includes_parity_fields_and_prompt_cache_key():
             }
         ),
     )
-    provider = CodexProvider(oauth_token="test-token", client_factory=lambda: fake_client)
+    provider = CodexProvider(
+        oauth_token="test-token", client_factory=lambda: fake_client, transport="sse"
+    )
     tools = [ToolSchema(name="runtime", description="Run shell", parameters={"type": "object"})]
     rc = ReasoningConfig(reasoning_effort="high")
 
@@ -2425,7 +2378,9 @@ def test_codex_stream_sanitizes_nested_object_tool_schemas():
         'data: {"type":"response.completed","response":{"status":"completed","output":[]}}',
     ]
     fake_client = _FakeAsyncClient(stream_response=_FakeStreamResponse(stream_lines))
-    provider = CodexProvider(oauth_token="test-token", client_factory=lambda: fake_client)
+    provider = CodexProvider(
+        oauth_token="test-token", client_factory=lambda: fake_client, transport="sse"
+    )
     raw_parameters = {
         "type": "object",
         "additionalProperties": False,
@@ -2472,7 +2427,9 @@ def test_codex_stream_keeps_additional_properties_boolean_in_nested_object_schem
         'data: {"type":"response.completed","response":{"status":"completed","output":[]}}',
     ]
     fake_client = _FakeAsyncClient(stream_response=_FakeStreamResponse(stream_lines))
-    provider = CodexProvider(oauth_token="test-token", client_factory=lambda: fake_client)
+    provider = CodexProvider(
+        oauth_token="test-token", client_factory=lambda: fake_client, transport="sse"
+    )
     tools = [
         ToolSchema(
             name="custom_tool",
@@ -2512,7 +2469,9 @@ def test_codex_stream_raises_on_sse_error_event():
         'data: {"error":{"message":"Overloaded"}}',
     ]
     fake_client = _FakeAsyncClient(stream_response=_FakeStreamResponse(stream_lines))
-    provider = CodexProvider(oauth_token="test-token", client_factory=lambda: fake_client)
+    provider = CodexProvider(
+        oauth_token="test-token", client_factory=lambda: fake_client, transport="sse"
+    )
 
     async def _collect():
         events: list[AgentEvent] = []
@@ -2546,7 +2505,9 @@ def test_codex_stream_keeps_requested_model_when_catalog_does_not_include_it():
             }
         ),
     )
-    provider = CodexProvider(oauth_token="test-token", client_factory=lambda: fake_client)
+    provider = CodexProvider(
+        oauth_token="test-token", client_factory=lambda: fake_client, transport="sse"
+    )
 
     async def _collect():
         events: list[AgentEvent] = []
@@ -2575,3 +2536,602 @@ def test_codex_execution_prelude_not_duplicated_when_already_present():
     )
     rendered = provider._with_codex_execution_prelude(instructions)  # type: ignore[attr-defined]
     assert rendered == instructions
+
+
+"""Wire-level regression tests for current native OpenAI models."""
+
+
+def provider_for(events, captured):
+    def handler(request):
+        captured.append((request.url.path, json.loads(request.content)))
+        return httpx.Response(
+            200, text="\n\n".join("data: " + json.dumps(event) for event in events)
+        )
+
+    return OpenAIProvider(
+        "test-key", client_factory=lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    )
+
+
+def test_current_models_use_responses_without_temperature():
+    for model in ("gpt-5.6-sol", "gpt-5.6", "gpt-6-astra"):
+        captured = []
+        item = {
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "hello"}],
+        }
+        provider = provider_for(
+            [
+                {"type": "response.output_text.delta", "output_index": 0, "delta": "hel"},
+                {"type": "response.output_text.delta", "output_index": 0, "delta": "lo"},
+                {
+                    "type": "response.completed",
+                    "response": {
+                        "output": [item],
+                        "usage": {"input_tokens": 2, "output_tokens": 1},
+                    },
+                },
+            ],
+            captured,
+        )
+
+        async def run():
+            return [
+                event
+                async for event in provider.stream(
+                    [UserMessage(content="hello")],
+                    model,
+                    reasoning_config=ReasoningConfig(reasoning_effort="none"),
+                )
+            ]
+
+        events = asyncio.run(run())
+        assert [e.delta for e in events if e.type == "text_delta"] == ["hel", "lo"]
+        assert sum(e.type == "done" for e in events) == 1
+        assert events[-1].message.usage.input_tokens == 2
+        assert events[-1].message.responses_output == [item]
+        path, payload = captured[0]
+        assert path == "/v1/responses"
+        assert "temperature" not in payload
+        assert payload["reasoning"]["effort"] == ("low" if model == "gpt-6-astra" else "none")
+        assert payload["store"] is False
+        assert payload["include"] == ["reasoning.encrypted_content"]
+
+
+def test_tool_arguments_and_opaque_history_survive_next_turn():
+    reasoning = {"type": "reasoning", "id": "r1", "encrypted_content": "opaque", "summary": []}
+    tool = {
+        "type": "function_call",
+        "id": "fc1",
+        "call_id": "call1",
+        "name": "echo",
+        "arguments": '{"value":"ok"}',
+    }
+    captured = []
+    provider = provider_for(
+        [
+            {
+                "type": "response.output_item.added",
+                "output_index": 1,
+                "item": dict(tool, arguments=""),
+            },
+            {
+                "type": "response.function_call_arguments.delta",
+                "output_index": 1,
+                "delta": '{"value":',
+            },
+            {"type": "response.function_call_arguments.delta", "output_index": 1, "delta": '"ok"}'},
+            {"type": "response.output_item.done", "output_index": 1, "item": tool},
+            {"type": "response.completed", "response": {"output": [reasoning, tool]}},
+        ],
+        captured,
+    )
+    result = asyncio.run(
+        provider.chat(
+            [UserMessage(content="echo")],
+            "gpt-6-astra",
+            tools=[ToolSchema("echo", "Echo", {"type": "object"})],
+            tool_choice="required",
+        )
+    )
+    assert result.stop_reason == "tool_use"
+    assert result.content[0].arguments == {"value": "ok"}
+    assert result.responses_output == [reasoning, tool]
+    asyncio.run(
+        provider.chat(
+            [result, ToolResultMessage(tool_call_id="call1", content="ok")], "gpt-6-astra"
+        )
+    )
+    assert captured[-1][1]["input"][:2] == [reasoning, tool]
+    assert captured[-1][1]["input"][2]["type"] == "function_call_output"
+    assert captured[0][1]["tool_choice"] == "required"
+    assert captured[0][1]["tools"][0]["strict"] is False
+
+
+def test_stream_failure_and_truncation_are_not_success():
+    for events in ([], [{"type": "response.failed", "response": {"error": {"message": "failed"}}}]):
+        provider = provider_for(events, [])
+        with pytest.raises(RuntimeError):
+            asyncio.run(provider.chat([], "gpt-5.6-sol"))
+
+
+def test_native_uses_responses_and_generic_keeps_chat_completions():
+    provider = OpenAIProvider("test")
+    assert provider._uses_responses("gpt-4.1")
+    assert not OpenAIProvider("test", base_url="https://compatible.test/v1")._uses_responses(
+        "gpt-6-astra"
+    )
+
+
+def test_text_is_yielded_before_server_completes():
+    async def run():
+        consumed = asyncio.Event()
+
+        class Stream(httpx.AsyncByteStream):
+            async def __aiter__(self):
+                yield b'data: {"type":"response.output_text.delta","delta":"live"}\n\n'
+                await asyncio.wait_for(consumed.wait(), timeout=1)
+                yield b'data: {"type":"response.completed","response":{"output":[{"type":"message","content":[{"type":"output_text","text":"live"}]}]}}\n\n'
+
+        provider = OpenAIProvider(
+            "test",
+            client_factory=lambda: httpx.AsyncClient(
+                transport=httpx.MockTransport(lambda request: httpx.Response(200, stream=Stream()))
+            ),
+        )
+        async for event in provider.stream([], "gpt-5.6-sol"):
+            if event.type == "text_delta":
+                assert event.delta == "live"
+                consumed.set()
+        assert consumed.is_set()
+
+    asyncio.run(run())
+
+
+def catalog(request):
+    assert request.url.params["client_version"] == "0.153.4"
+    return httpx.Response(
+        200,
+        json={
+            "models": [
+                {
+                    "slug": "gpt-6-astra",
+                    "use_responses_lite": True,
+                    "default_reasoning_level": "medium",
+                    "support_verbosity": True,
+                    "default_verbosity": "medium",
+                }
+            ]
+        },
+    )
+
+
+def test_lite_format_preserves_history():
+    raw = [
+        {"type": "reasoning", "encrypted_content": "opaque"},
+        {
+            "type": "message",
+            "role": "assistant",
+            "phase": "commentary",
+            "content": [{"type": "output_text", "text": "Checking"}],
+        },
+    ]
+    provider = CodexProvider("test")
+    message = AssistantMessage(provider=provider.name, responses_output=copy.deepcopy(raw))
+    _, items = provider._to_responses_input([message])
+    payload = {
+        "model": "gpt-6-astra",
+        "instructions": "System",
+        "input": items,
+        "tools": [{"type": "function", "name": "echo"}],
+        "reasoning": {"effort": "low"},
+    }
+    provider._normalize_model_payload(payload, {"use_responses_lite": True})
+    assert payload["reasoning"] == {"effort": "low", "context": "all_turns"}
+    assert payload["input"][0]["type"] == "additional_tools"
+    assert payload["input"][1]["role"] == "developer"
+    assert payload["input"][2:] == raw
+    assert payload["instructions"] == "" and "tools" not in payload
+    assert message.responses_output == raw
+    message.provider = "other"
+    assert provider._to_responses_input([message])[1] == []
+
+
+@pytest.mark.asyncio
+async def test_websocket_default_yields_before_completion_and_closes(monkeypatch):
+    sent = []
+    closed = []
+    output = [
+        {"type": "reasoning", "encrypted_content": "opaque"},
+        {
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "Hello world"}],
+        },
+    ]
+    frames = [
+        {"type": "response.output_text.delta", "output_index": 1, "delta": "Hello"},
+        {"type": "response.output_text.delta", "output_index": 1, "delta": " world"},
+        {
+            "type": "response.completed",
+            "response": {
+                "status": "completed",
+                "model": "gpt-6-astra",
+                "output": output,
+                "usage": {"input_tokens": 12, "output_tokens": 3},
+            },
+        },
+    ]
+
+    class Socket:
+        async def send(self, raw):
+            sent.append(json.loads(raw))
+
+        async def recv(self):
+            return json.dumps(frames.pop(0))
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            closed.append(True)
+
+    def connect(url, **kwargs):
+        assert url == "wss://chatgpt.com/backend-api/codex/responses"
+        assert kwargs["additional_headers"]["x-openai-internal-codex-responses-lite"] == "true"
+        assert kwargs["additional_headers"]["OpenAI-Beta"] == "responses_websockets=2026-02-06"
+        return Socket()
+
+    monkeypatch.setattr("sentral.llm.providers.codex.connect", connect)
+    provider = CodexProvider(
+        "test", client_factory=lambda: httpx.AsyncClient(transport=httpx.MockTransport(catalog))
+    )
+    stream = provider.stream(
+        [UserMessage(content="Hello")],
+        "gpt-6-astra",
+        reasoning_config=ReasoningConfig(reasoning_effort="none"),
+    )
+    assert (await anext(stream)).type == "start"
+    assert (await anext(stream)).type == "text_start"
+    assert (await anext(stream)).delta == "Hello"
+    assert len(frames) == 2  # Completion has not even been read yet.
+    events = [event async for event in stream]
+    assert events[-1].message.responses_output == output
+    assert events[-1].message.usage.input_tokens == 12
+    assert sent[0]["type"] == "response.create"
+    assert sent[0]["reasoning"]["effort"] == "low"
+    assert closed == []
+    await provider.aclose()
+    assert closed == [True]
+
+
+@pytest.mark.asyncio
+async def test_sse_truncation_is_not_success():
+    def route(request):
+        if request.method == "GET":
+            return catalog(request)
+        return httpx.Response(
+            200,
+            text='data: {"type":"response.output_text.delta","delta":"partial"}\n\ndata: [DONE]\n\n',
+        )
+
+    provider = CodexProvider(
+        "test",
+        transport="sse",
+        client_factory=lambda: httpx.AsyncClient(transport=httpx.MockTransport(route)),
+    )
+    with pytest.raises(RuntimeError, match="before response completion"):
+        async for event in provider.stream([UserMessage(content="Hello")], "gpt-6-astra"):
+            pass
+
+
+@pytest.mark.asyncio
+async def test_item_done_history_survives_empty_completion_and_argument_id_changes():
+    item = {
+        "type": "function_call",
+        "id": "fc1",
+        "call_id": "call1",
+        "name": "echo",
+        "arguments": '{"word":"hello"}',
+    }
+    frames = [
+        {
+            "type": "response.output_item.added",
+            "output_index": 2,
+            "item": {**item, "arguments": ""},
+        },
+        {"type": "response.function_call_arguments.delta", "output_index": 2, "delta": '{"word":'},
+        {
+            "type": "response.function_call_arguments.done",
+            "output_index": 2,
+            "item_id": "fc1",
+            "arguments": item["arguments"],
+        },
+        {"type": "response.output_item.done", "output_index": 2, "item": item},
+        {"type": "response.completed", "response": {"status": "completed", "output": []}},
+    ]
+
+    def route(request):
+        if request.method == "GET":
+            return catalog(request)
+        return httpx.Response(200, text="".join("data: " + json.dumps(e) + "\n\n" for e in frames))
+
+    provider = CodexProvider(
+        "test",
+        transport="sse",
+        client_factory=lambda: httpx.AsyncClient(transport=httpx.MockTransport(route)),
+    )
+    message = await provider.chat([UserMessage(content="Hello")], "gpt-6-astra")
+    assert message.content[0].arguments == {"word": "hello"}
+    assert message.responses_output == [item]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("oauth", [False, True], ids=["public", "codex"])
+async def test_responses_cancellation_closes_transport(oauth):
+    closed = []
+
+    class Stream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b'data: {"type":"response.output_text.delta","output_index":0,"delta":"live"}\n\n'
+            await asyncio.Event().wait()
+
+        async def aclose(self):
+            closed.append(True)
+
+    def factory():
+        return httpx.AsyncClient(
+            transport=httpx.MockTransport(
+                lambda request: (
+                    catalog(request)
+                    if request.method == "GET"
+                    else httpx.Response(200, stream=Stream())
+                )
+            )
+        )
+
+    provider = (
+        CodexProvider("test", transport="sse", client_factory=factory)
+        if oauth
+        else OpenAIProvider("test", client_factory=factory)
+    )
+    stream = provider.stream([UserMessage(content="hello")], "gpt-6-astra")
+    while (await anext(stream)).type != "text_delta":
+        pass
+    await stream.aclose()
+    assert closed == [True]
+
+
+@pytest.mark.parametrize("model", ["claude-sonnet-5", "claude-opus-5", "claude-fable-5-1"])
+@pytest.mark.parametrize("streaming", [False, True])
+def test_current_claude_uses_adaptive_thinking(model, streaming):
+    client = _FakeAsyncClient(
+        post_response=_FakeResponse({"content": []}),
+        stream_response=_FakeStreamResponse(['data: {"type":"message_stop"}']),
+    )
+    provider = AnthropicProvider(api_key="test-key", client_factory=lambda: client)
+
+    async def request():
+        kwargs = dict(
+            model=model,
+            temperature=0.7,
+            reasoning_config=ReasoningConfig(max_tokens=8192, thinking_budget=32000),
+        )
+        if streaming:
+            async for _ in provider.stream([UserMessage(content="hello")], **kwargs):
+                pass
+        else:
+            await provider.chat([UserMessage(content="hello")], **kwargs)
+
+    _run(request())
+    payload = (client.stream_calls if streaming else client.post_calls)[0]["json"]
+    assert payload["max_tokens"] == 8192
+    assert payload["thinking"] == {"type": "adaptive"}
+    assert payload["output_config"] == {"effort": "high"}
+    assert "temperature" not in payload
+
+
+@pytest.mark.parametrize("oauth", [False, True])
+def test_claude_stream_usage_matches_final_response_with_cache(oauth):
+    raw = {
+        "input_tokens": 100,
+        "cache_read_input_tokens": 200,
+        "cache_creation_input_tokens": 30,
+        "output_tokens": 1,
+        "cache_creation": {"ephemeral_5m_input_tokens": 10, "ephemeral_1h_input_tokens": 20},
+    }
+    data = {"id": "msg_usage", "model": "claude-sonnet-5", "usage": raw, "content": []}
+    events = [
+        {"type": "message_start", "message": data},
+        {"type": "message_delta", "usage": {"output_tokens": 7}},
+        {
+            "type": "message_delta",
+            "usage": {"output_tokens": 12},
+            "delta": {"stop_reason": "end_turn"},
+        },
+        {"type": "message_stop"},
+    ]
+    client = _FakeAsyncClient(
+        stream_response=_FakeStreamResponse(["data: " + json.dumps(e) for e in events])
+    )
+    provider = AnthropicProvider(
+        "sk-ant-oat-test" if oauth else "test-key", client_factory=lambda: client
+    )
+
+    async def request():
+        return [e async for e in provider.stream([UserMessage(content="Hello")], "claude-sonnet-5")]
+
+    done = [e for e in _run(request()) if e.type == "done"]
+    assert len(done) == 1
+    result = done[0].message
+    assert result.usage.input_tokens == 330
+    assert result.usage.output_tokens == 12
+    assert result.provider_usage["usage"]["total_tokens"] == 342
+    assert "output_tokens_details" not in result.provider_usage["usage"]
+    assert result.provider_usage["price_kind"] == ("api_equivalent" if oauth else "api_list_price")
+    assert result.provider_usage["price"]["usd"] == "0.000465"
+    final = copy.deepcopy(data)
+    final["usage"]["output_tokens"] = 12
+    assert provider._message(final, "claude-sonnet-5").provider_usage == result.provider_usage
+
+
+def test_claude_count_uses_same_input_as_generation():
+    client = _FakeAsyncClient(post_response=_FakeResponse({"input_tokens": 321}))
+    provider = AnthropicProvider("test-key", client_factory=lambda: client)
+    messages = [SystemMessage(content="System rules"), UserMessage(content="Hello")]
+    tools = [ToolSchema(name="lookup", description="Find details", parameters={"type": "object"})]
+    assert _run(provider.count_input_tokens(messages, "claude-sonnet-5", tools)) == 321
+    call = client.post_calls[0]
+    assert call["url"].endswith("/v1/messages/count_tokens")
+    payload = provider._payload(messages, "claude-sonnet-5", tools, None)
+    payload.pop("max_tokens")
+    payload.pop("output_config")
+    payload.pop("cache_control")
+    assert call["json"] == payload
+
+
+def test_claude_truncated_stream_does_not_claim_final_usage():
+    client = _FakeAsyncClient(
+        stream_response=_FakeStreamResponse(
+            ['data: {"type":"message_delta","usage":{"output_tokens":12}}']
+        )
+    )
+    provider = AnthropicProvider("test-key", client_factory=lambda: client)
+
+    async def request():
+        return [e async for e in provider.stream([UserMessage(content="Hello")], "claude-sonnet-5")]
+
+    with pytest.raises(RuntimeError, match="before message_stop"):
+        _run(request())
+
+
+@pytest.mark.parametrize(
+    "fragments,closed,error",
+    [
+        (['{"action":', '"status"}'], True, None),
+        ([], True, None),
+        (['{"action":'], False, "before tool content_block_stop"),
+        (["{}"], False, "before tool content_block_stop"),
+        (['{"action":'], True, "invalid JSON"),
+        (["[]"], True, "must be an object"),
+    ],
+)
+def test_claude_tool_stream_requires_completed_arguments(fragments, closed, error):
+    events = [
+        {"type": "message_start", "message": {"content": []}},
+        {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {"type": "tool_use", "id": "call_1", "name": "runtime", "input": {}},
+        },
+    ]
+    events.extend(
+        {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "input_json_delta", "partial_json": fragment},
+        }
+        for fragment in fragments
+    )
+    if closed:
+        events.append({"type": "content_block_stop", "index": 0})
+    events.extend(
+        [
+            {"type": "message_delta", "delta": {"stop_reason": "tool_use"}},
+            {"type": "message_stop"},
+        ]
+    )
+    client = _FakeAsyncClient(
+        stream_response=_FakeStreamResponse(["data: " + json.dumps(e) for e in events])
+    )
+    provider = AnthropicProvider("test-key", client_factory=lambda: client)
+    received = []
+
+    async def request():
+        async for event in provider.stream([UserMessage(content="Hello")]):
+            received.append(event)
+
+    if error:
+        with pytest.raises(RuntimeError, match=error):
+            _run(request())
+        assert not any(event.type == "done" for event in received)
+    else:
+        _run(request())
+        message = next(event.message for event in received if event.type == "done")
+        assert message.responses_output == [
+            {
+                "type": "tool_use",
+                "id": "call_1",
+                "name": "runtime",
+                "input": {"action": "status"} if fragments else {},
+            }
+        ]
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_gemini_oauth_reports_account_ineligibility(stream):
+    client = _FakeAsyncClient(
+        post_response=_FakeResponse(
+            {
+                "allowedTiers": [{"id": "standard-tier", "isDefault": True}],
+                "ineligibleTiers": [
+                    {
+                        "reasonCode": "UNSUPPORTED_CLIENT",
+                        "reasonMessage": "This client is no longer supported. Migrate to Antigravity.",
+                    }
+                ],
+            }
+        )
+    )
+    provider = GeminiOAuthProvider(
+        {"access_token": "access", "refresh_token": "refresh"},
+        client_factory=lambda: client,
+    )
+
+    async def run():
+        if stream:
+            return [event async for event in provider.stream([UserMessage(content="hi")])]
+        return await provider.chat([UserMessage(content="hi")])
+
+    with pytest.raises(RuntimeError, match="no longer supported.*Antigravity"):
+        _run(run())
+    assert len(client.post_calls) == 1
+    assert not client.stream_calls
+
+
+def test_gemini_oauth_alias_builds_reasoning_for_resolved_model():
+    client = _FakeAsyncClient(
+        post_responses=[
+            _FakeResponse({"cloudaicompanionProject": "test-project"}),
+            _FakeResponse(
+                {
+                    "response": {
+                        "candidates": [
+                            {
+                                "content": {"parts": [{"text": "ok"}]},
+                                "finishReason": "STOP",
+                            }
+                        ]
+                    }
+                }
+            ),
+        ]
+    )
+    provider = GeminiOAuthProvider(
+        {"access_token": "access", "refresh_token": "refresh"},
+        client_factory=lambda: client,
+    )
+    _run(
+        provider.chat(
+            [UserMessage(content="hi")],
+            model="pro",
+            reasoning_config=ReasoningConfig(reasoning_effort="high"),
+        )
+    )
+    request = client.post_calls[-1]["json"]
+    assert request["model"] == "gemini-pro-agent"
+    assert request["request"]["generationConfig"]["thinkingConfig"] == {
+        "thinkingBudget": 10001,
+        "includeThoughts": True,
+    }

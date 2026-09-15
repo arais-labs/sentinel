@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from contextlib import asynccontextmanager
+from collections.abc import Awaitable, Callable, Coroutine
+from typing import Any
 
-from app.sentral import ConversationItem
+from sentral import ConversationItem
 
 
 class AgentRunRegistry:
@@ -15,6 +17,7 @@ class AgentRunRegistry:
         self._interjections: dict[str, list[ConversationItem]] = {}
         self._on_idle_interjections: Callable[[str], Awaitable[None]] | None = None
         self._phases: dict[str, str] = {}
+        self._shutting_down = False
 
     def configure_idle_interjections_callback(
         self,
@@ -33,9 +36,40 @@ class AgentRunRegistry:
         self._interjections.pop(session_id, None)
         return list(queued)
 
+    def peek_interjections(self, session_id: str) -> list[ConversationItem]:
+        return list(self._interjections.get(session_id, []))
+
+    def discard_steering(self, session_id: str) -> None:
+        self._interjections[session_id] = [
+            item
+            for item in self._interjections.get(session_id, [])
+            if not item.metadata.get("steering")
+        ]
+
+    async def notify_idle_interjections(self, session_id: str) -> None:
+        if (
+            not self._shutting_down
+            and self.has_interjections(session_id)
+            and not await self.is_running(session_id)
+        ):
+            if self._on_idle_interjections is not None:
+                await self._on_idle_interjections(session_id)
+
     def has_interjections(self, session_id: str) -> bool:
         queued = self._interjections.get(session_id)
         return bool(queued)
+
+    @asynccontextmanager
+    async def workspace_change_guard(self):
+        """Hold run registration and attachment changes while inspecting bindings."""
+        async with self._lock:
+            yield {key for key, task in self._tasks.items() if not task.done()}
+
+    @asynccontextmanager
+    async def idle_guard(self, session_id: str):
+        """Serialize workspace changes with new agent-run registration."""
+        async with self.workspace_change_guard() as running:
+            yield session_id not in running
 
     async def register(self, session_id: str, task: asyncio.Task[object]) -> bool:
         async with self._lock:
@@ -45,6 +79,29 @@ class AgentRunRegistry:
             self._tasks[session_id] = task
             self._phases[session_id] = "thinking"
             return True
+
+    async def start(
+        self, session_id: str, run: Coroutine[Any, Any, Any], *, require_interjections: bool = False
+    ) -> asyncio.Task | None:
+        """Create the task only after workspace changes and other starts finish."""
+        try:
+            async with self._lock:
+                current = self._tasks.get(session_id)
+                if self._shutting_down or (
+                    require_interjections and not self.has_interjections(session_id)
+                ):
+                    run.close()
+                    return None
+                if current is not None and not current.done():
+                    run.close()
+                    return None
+                task = asyncio.create_task(run)
+                self._tasks[session_id] = task
+                self._phases[session_id] = "thinking"
+                return task
+        except BaseException:
+            run.close()
+            raise
 
     async def clear(self, session_id: str, task: asyncio.Task[object] | None = None) -> None:
         notify_idle = False
@@ -58,7 +115,7 @@ class AgentRunRegistry:
             self._tasks.pop(session_id, None)
             self._phases.pop(session_id, None)
             notify_idle = bool(self._interjections.get(session_id))
-        if notify_idle and callback is not None:
+        if notify_idle and callback is not None and not self._shutting_down:
             await callback(session_id)
 
     async def cancel(self, session_id: str) -> bool:
@@ -98,6 +155,7 @@ class AgentRunRegistry:
         on a clean turn boundary, and the next process owns a fresh registry.
         """
         async with self._lock:
+            self._shutting_down = True
             live = [task for task in self._tasks.values() if not task.done()]
         if not live:
             return 0

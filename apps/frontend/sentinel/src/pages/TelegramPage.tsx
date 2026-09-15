@@ -1,14 +1,18 @@
 import { useState, useEffect, useCallback } from 'react';
-import { toast } from 'sonner';
+import { notificationPublisher } from '../lib/notifications';
 import {
   Send, Eye, EyeOff, Check, Loader2, RefreshCw, Play, Square,
-  Trash2, MessageCircle, User, Users, Info,
+  MessageCircle, User, Users, Info,
 } from 'lucide-react';
 
+import { SettingsIntegrationFrame } from '../components/SettingsIntegrationFrame';
 import { AppShell } from '../components/AppShell';
-import { Panel } from '../components/ui/Panel';
 import { StatusChip } from '../components/ui/StatusChip';
 import { api } from '../lib/api';
+import '../components/session/chat-header.css';
+import './telegram-page.css';
+
+const notify = notificationPublisher('Telegram');
 
 // ── types ───────────────────────────────────────────────────────────────────
 
@@ -30,12 +34,12 @@ interface TelegramStatus {
   owner_user_id?: string | null;
   owner_chat_id?: string | null;
   owner_telegram_user_id?: string | null;
-  main_session_id?: string | null;
 }
 
 // ── main page ───────────────────────────────────────────────────────────────
 
-export function TelegramPage() {
+export function TelegramPage({ embedded = false }: { embedded?: boolean } = {}) {
+  const Shell = embedded ? SettingsIntegrationFrame : AppShell;
   const [status, setStatus] = useState<TelegramStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [token, setToken] = useState('');
@@ -77,11 +81,11 @@ export function TelegramPage() {
     setSaving(true);
     try {
       await api.post('/telegram/configure', { bot_token: token.trim() });
-      toast.success('Telegram bot configured and started');
+      notify.success('Telegram bot configured and started');
       setToken('');
       await fetchStatus();
     } catch {
-      toast.error('Failed to configure Telegram bot');
+      notify.error('Failed to configure Telegram bot');
     } finally {
       setSaving(false);
     }
@@ -91,10 +95,10 @@ export function TelegramPage() {
     setStarting(true);
     try {
       await api.post('/telegram/start');
-      toast.success('Telegram bot started');
+      notify.success('Telegram bot started');
       await fetchStatus();
     } catch {
-      toast.error('Failed to start Telegram bot');
+      notify.error('Failed to start Telegram bot');
     } finally {
       setStarting(false);
     }
@@ -104,10 +108,10 @@ export function TelegramPage() {
     setStopping(true);
     try {
       await api.post('/telegram/stop');
-      toast.success('Telegram bot stopped');
+      notify.success('Telegram bot stopped');
       await fetchStatus();
     } catch {
-      toast.error('Failed to stop Telegram bot');
+      notify.error('Failed to stop Telegram bot');
     } finally {
       setStopping(false);
     }
@@ -117,11 +121,11 @@ export function TelegramPage() {
     setDeleting(true);
     try {
       await api.delete('/telegram/configure');
-      toast.success('Telegram bot token removed');
+      notify.success('Telegram bot token removed');
       setConfirmDelete(false);
       await fetchStatus();
     } catch {
-      toast.error('Failed to remove Telegram bot');
+      notify.error('Failed to remove Telegram bot');
     } finally {
       setDeleting(false);
     }
@@ -132,10 +136,10 @@ export function TelegramPage() {
     setBindingOwner(true);
     try {
       await api.post('/telegram/owner', { chat_id: Number(selectedOwnerChatId) });
-      toast.success('Owner Telegram identity linked');
+      notify.success('Owner Telegram identity linked');
       await fetchStatus();
     } catch {
-      toast.error('Failed to bind owner Telegram identity');
+      notify.error('Failed to bind owner Telegram identity');
     } finally {
       setBindingOwner(false);
     }
@@ -145,11 +149,11 @@ export function TelegramPage() {
     setClearingOwner(true);
     try {
       await api.delete('/telegram/owner');
-      toast.success('Owner Telegram identity removed');
+      notify.success('Owner Telegram identity removed');
       setSelectedOwnerChatId('');
       await fetchStatus();
     } catch {
-      toast.error('Failed to remove owner Telegram identity');
+      notify.error('Failed to remove owner Telegram identity');
     } finally {
       setClearingOwner(false);
     }
@@ -158,271 +162,79 @@ export function TelegramPage() {
   const chats = status?.connected_chats ? Object.values(status.connected_chats) : [];
   const privateChats = chats.filter(chat => chat.chat_type === 'private');
 
+  const connectionLabel = loading && !status ? 'Connecting' : status?.running ? 'Running' : status?.token_configured ? 'Stopped' : 'Not configured';
+
   return (
-    <AppShell
-      title="Telegram Integration"
-      subtitle="Bridge Telegram chats to Sentinel"
-    >
-      <div className="max-w-3xl mx-auto space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
-
-        {/* Status Panel */}
-        <Panel className="p-6 space-y-4">
-          <div className="flex items-center gap-3 border-b border-[color:var(--border-subtle)] pb-4">
-            <div className="p-2 rounded-lg bg-[color:var(--surface-2)] text-[color:var(--accent-solid)]">
-              <Send size={20} />
-            </div>
-            <div className="flex-1">
-              <h2 className="text-sm font-bold uppercase tracking-widest">Bot Status</h2>
-              <p className="text-[10px] text-[color:var(--text-muted)] font-medium uppercase tracking-tighter">Telegram bridge connection</p>
-            </div>
-            <button
-              onClick={() => { setLoading(true); fetchStatus(); }}
-              className="text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] transition-colors p-1"
-            >
-              <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
-            </button>
-          </div>
-
-          {loading && !status ? (
-            <div className="flex items-center justify-center py-8 text-[color:var(--text-muted)]">
-              <Loader2 size={20} className="animate-spin" />
-            </div>
-          ) : (
-            <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] font-bold text-[color:var(--text-muted)] uppercase tracking-wider">Status</span>
-                <StatusChip
-                  label={status?.running ? 'Running' : 'Stopped'}
-                  tone={status?.running ? 'good' : 'danger'}
-                />
-              </div>
-
-              {status?.bot_username && (
-                <div className="flex items-center justify-between">
-                  <span className="text-[11px] font-bold text-[color:var(--text-muted)] uppercase tracking-wider">Bot Username</span>
-                  <span className="text-xs font-mono font-bold">@{status.bot_username}</span>
-                </div>
-              )}
-
-              {status?.masked_token && (
-                <div className="flex items-center justify-between">
-                  <span className="text-[11px] font-bold text-[color:var(--text-muted)] uppercase tracking-wider">Token</span>
-                  <span className="text-[10px] font-mono text-[color:var(--text-muted)]">{status.masked_token}</span>
-                </div>
-              )}
-
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] font-bold text-[color:var(--text-muted)] uppercase tracking-wider">Owner Main Session</span>
-                <span className="text-[10px] font-mono text-[color:var(--text-muted)]">
-                  {status?.main_session_id || 'not set'}
-                </span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] font-bold text-[color:var(--text-muted)] uppercase tracking-wider">Owner Telegram Chat</span>
-                <span className="text-[10px] font-mono text-[color:var(--text-muted)]">
-                  {status?.owner_chat_id || 'not set'}
-                </span>
-              </div>
-            </div>
-          )}
-        </Panel>
-
-        {/* Controls Panel */}
-        <Panel className="p-6 space-y-4">
-          <div className="flex items-center gap-3 border-b border-[color:var(--border-subtle)] pb-4">
-            <div className="p-2 rounded-lg bg-[color:var(--surface-2)] text-[color:var(--text-primary)]">
-              <MessageCircle size={20} />
-            </div>
-            <div>
-              <h2 className="text-sm font-bold uppercase tracking-widest">Configuration</h2>
-              <p className="text-[10px] text-[color:var(--text-muted)] font-medium uppercase tracking-tighter">Manage bot token &amp; connection</p>
-            </div>
-          </div>
-
-          {/* Token Input */}
-          <div className="space-y-2">
-            <label className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
-              Bot Token (from @BotFather)
-            </label>
-            <div className="flex gap-2">
-              <div className="relative flex-1">
-                <input
-                  type={showToken ? 'text' : 'password'}
-                  value={token}
-                  onChange={e => setToken(e.target.value)}
-                  placeholder={status?.token_configured ? 'Enter new token to update...' : 'Paste your Telegram bot token...'}
-                  className="input-field h-10 pr-10 font-mono text-xs w-full"
-                  onKeyDown={e => e.key === 'Enter' && handleSave()}
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowToken(v => !v)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)]"
-                >
-                  {showToken ? <EyeOff size={14} /> : <Eye size={14} />}
-                </button>
-              </div>
-              <button
-                onClick={handleSave}
-                disabled={!token.trim() || saving}
-                className="btn-primary h-10 px-4 text-[10px] font-bold uppercase tracking-widest shrink-0"
-              >
-                {saving ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
-                Save
-              </button>
-            </div>
-          </div>
-
-          {/* Start / Stop / Delete */}
-          {status?.token_configured && (
-            <div className="flex items-center gap-2 pt-2">
-              {!status.running ? (
-                <button
-                  onClick={handleStart}
-                  disabled={starting}
-                  className="btn-primary h-9 px-4 text-xs gap-2"
-                >
-                  {starting ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
-                  Start Bot
-                </button>
-              ) : (
-                <button
-                  onClick={handleStop}
-                  disabled={stopping}
-                  className="btn-secondary h-9 px-4 text-xs gap-2 text-rose-500 hover:bg-rose-500/10"
-                >
-                  {stopping ? <Loader2 size={14} className="animate-spin" /> : <Square size={14} />}
-                  Stop Bot
-                </button>
-              )}
-
-              <div className="flex-1" />
-
-              {!confirmDelete ? (
-                <button
-                  onClick={() => setConfirmDelete(true)}
-                  className="text-[10px] font-bold uppercase tracking-widest text-rose-500/60 hover:text-rose-500 transition-colors"
-                >
-                  Remove Token
-                </button>
-              ) : (
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={handleDelete}
-                    disabled={deleting}
-                    className="text-[10px] font-bold uppercase tracking-widest text-rose-500 hover:opacity-70 transition-opacity"
-                  >
-                    {deleting ? 'Removing...' : 'Confirm Remove'}
-                  </button>
-                  <button
-                    onClick={() => setConfirmDelete(false)}
-                    className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] transition-colors"
-                  >
-                    Cancel
-                  </button>
-                </div>
-              )}
-            </div>
-          )}
-
-          <div className="space-y-2 pt-2 border-t border-[color:var(--border-subtle)]">
-            <label className="text-[10px] font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
-              Owner Telegram Identity
-            </label>
-            <div className="flex gap-2">
-              <select
-                value={selectedOwnerChatId}
-                onChange={(e) => setSelectedOwnerChatId(e.target.value)}
-                className="input-field h-9 text-[11px] w-full"
-              >
-                <option value="">Select owner private DM chat</option>
-                {privateChats.map((chat) => (
-                  <option key={chat.chat_id} value={String(chat.chat_id)}>
-                    {chat.title} ({chat.chat_id})
-                  </option>
-                ))}
-              </select>
-              <button
-                onClick={handleBindOwner}
-                disabled={!selectedOwnerChatId.trim() || bindingOwner}
-                className="btn-secondary h-9 px-3 text-[10px] font-bold uppercase tracking-widest"
-              >
-                {bindingOwner ? <Loader2 size={12} className="animate-spin" /> : 'Set Owner'}
-              </button>
-              <button
-                onClick={handleClearOwner}
-                disabled={!status?.owner_chat_id || clearingOwner}
-                className="btn-secondary h-9 px-3 text-[10px] font-bold uppercase tracking-widest text-rose-500 disabled:opacity-50"
-              >
-                {clearingOwner ? <Loader2 size={12} className="animate-spin" /> : 'Remove Owner'}
-              </button>
-            </div>
-            <p className="text-[10px] text-[color:var(--text-muted)]">
-              Owner DM always routes to main session. Choose which private Telegram chat identity is treated as owner.
-            </p>
-          </div>
-        </Panel>
-
-        {/* Connected Chats */}
-        <Panel className="p-6 space-y-4">
-          <div className="flex items-center gap-3 border-b border-[color:var(--border-subtle)] pb-4">
-            <div className="p-2 rounded-lg bg-[color:var(--surface-2)] text-emerald-500">
-              <Users size={20} />
-            </div>
-            <div className="flex-1">
-              <h2 className="text-sm font-bold uppercase tracking-widest">Connected Chats</h2>
-              <p className="text-[10px] text-[color:var(--text-muted)] font-medium uppercase tracking-tighter">Chats that have sent /start to the bot</p>
-            </div>
-            <span className="text-[10px] bg-emerald-500/10 text-emerald-600 px-1.5 py-0.5 rounded font-bold">
-              {chats.length}
-            </span>
-          </div>
-
-          {chats.length === 0 ? (
-            <div className="py-8 flex flex-col items-center justify-center text-[color:var(--text-muted)] gap-2 opacity-50">
-              <MessageCircle size={24} strokeWidth={1} />
-              <p className="text-[10px] font-medium uppercase tracking-widest">No chats connected yet</p>
-              {status?.bot_username && (
-                <p className="text-[10px] text-[color:var(--text-muted)]">
-                  Send <span className="font-mono font-bold">/start</span> to <span className="font-mono font-bold">@{status.bot_username}</span> in Telegram
-                </p>
-              )}
-            </div>
-          ) : (
-            <div className="space-y-2">
-              {chats.map(chat => (
-                <div
-                  key={chat.chat_id}
-                  className="flex items-center gap-3 p-3 rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-0)]"
-                >
-                  {chat.chat_type === 'private' ? (
-                    <User size={16} className="text-sky-500 shrink-0" />
-                  ) : (
-                    <Users size={16} className="text-emerald-500 shrink-0" />
-                  )}
-                  <div className="flex-1 min-w-0">
-                    <p className="text-xs font-bold truncate">{chat.title}</p>
-                    <p className="text-[10px] text-[color:var(--text-muted)] font-mono">{chat.chat_id}</p>
-                  </div>
-                  <StatusChip
-                    label={chat.chat_type === 'private' ? 'DM' : 'Group'}
-                    tone={chat.chat_type === 'private' ? 'info' : 'good'}
-                    className="scale-90"
-                  />
-                </div>
-              ))}
-            </div>
-          )}
-        </Panel>
-
-        {/* Info */}
-        <div className="bg-[color:var(--surface-1)] p-4 rounded-xl border border-[color:var(--border-subtle)] flex items-start gap-3">
-          <Info size={16} className="text-[color:var(--accent-solid)] shrink-0 mt-0.5" />
-          <p className="text-[11px] text-[color:var(--text-secondary)] leading-relaxed font-medium">
-            Owner DM always routes to your main session. Each Telegram group and each non-owner DM gets its own persistent channel session for stable context and safer isolation. Create a bot via <span className="font-mono">@BotFather</span> in Telegram to get a token.
-          </p>
-        </div>
+    <Shell title="Telegram" contentClassName="telegram-pane" actions={
+      <div className="chat-header-actions telegram-header-actions">
+        <span className="chat-header-pill telegram-connection"><i data-running={status?.running || undefined} />{connectionLabel}</span>
+        {status?.token_configured && (
+          <button className="chat-header-pill" onClick={status.running ? handleStop : handleStart} disabled={starting || stopping}>
+            {starting || stopping ? <Loader2 size={14} className="animate-spin" /> : status.running ? <Square size={14} /> : <Play size={14} />}
+            {status.running ? 'Stop bot' : 'Start bot'}
+          </button>
+        )}
+        <button className="chat-header-pill" aria-label="Refresh Telegram status" title="Refresh status" disabled={loading} onClick={() => { setLoading(true); void fetchStatus(); }}>
+          <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
+        </button>
       </div>
-    </AppShell>
+    }>
+      <div className="telegram-content">
+        <section className="telegram-card" aria-labelledby="telegram-status-title">
+          <div className="telegram-section-heading"><Send size={18} /><div><h2 id="telegram-status-title">Telegram bridge</h2><p>Connect your conversations to Sentinel.</p></div></div>
+          {loading && !status ? <div className="telegram-empty" role="status"><Loader2 size={20} className="animate-spin" /><span>Loading connection…</span></div> : (
+            <dl className="telegram-status-grid">
+              <div><dt>Connection</dt><dd><StatusChip label={connectionLabel} tone={status?.running ? 'good' : 'default'} /></dd></div>
+              {status?.bot_username && <div><dt>Bot</dt><dd>@{status.bot_username}</dd></div>}
+              {status?.masked_token && <div><dt>Saved token</dt><dd className="telegram-mono">{status.masked_token}</dd></div>}
+              <div><dt>Owner chat</dt><dd className="telegram-mono">{status?.owner_chat_id || 'Not linked'}</dd></div>
+            </dl>
+          )}
+        </section>
+
+        <section className="telegram-card" aria-labelledby="telegram-config-title">
+          <div className="telegram-section-heading"><MessageCircle size={18} /><div><h2 id="telegram-config-title">Bot configuration</h2><p>Use a token from @BotFather to connect your bot.</p></div></div>
+          <div className="telegram-field">
+            <label htmlFor="telegram-token">Bot token</label>
+            <div className="telegram-field-row">
+              <div className="telegram-token-input">
+                <input id="telegram-token" type={showToken ? 'text' : 'password'} value={token} onChange={e => setToken(e.target.value)} placeholder={status?.token_configured ? 'Enter a replacement token…' : 'Paste your bot token…'} className="input-field" autoComplete="off" onKeyDown={e => e.key === 'Enter' && !saving && handleSave()} />
+                <button type="button" aria-label={showToken ? 'Hide bot token' : 'Show bot token'} aria-pressed={showToken} onClick={() => setShowToken(v => !v)}>{showToken ? <EyeOff size={15} /> : <Eye size={15} />}</button>
+              </div>
+              <button className="telegram-button" onClick={handleSave} disabled={!token.trim() || saving}>{saving ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}Save token</button>
+            </div>
+            {status?.token_configured && <div className="telegram-remove-token">
+              {!confirmDelete ? <button className="telegram-text-button telegram-danger" onClick={() => setConfirmDelete(true)}>Remove token</button> : <div className="telegram-confirm" role="group" aria-label="Confirm token removal"><span>Remove the saved bot token?</span><button className="telegram-text-button telegram-danger" onClick={handleDelete} disabled={deleting}>{deleting ? 'Removing…' : 'Confirm remove'}</button><button className="telegram-text-button" onClick={() => setConfirmDelete(false)}>Cancel</button></div>}
+            </div>}
+          </div>
+
+          <div className="telegram-field telegram-owner">
+            <label htmlFor="telegram-owner">Owner identity</label>
+            <p>Link a private chat to the owner. Its messages go to the session selected with <code>/session</code> in Telegram.</p>
+            <div className="telegram-field-row">
+              <select id="telegram-owner" value={selectedOwnerChatId} onChange={e => setSelectedOwnerChatId(e.target.value)} className="input-field">
+                <option value="">Select an owner private chat</option>
+                {privateChats.map(chat => <option key={chat.chat_id} value={String(chat.chat_id)}>{chat.title} ({chat.chat_id})</option>)}
+              </select>
+              <button className="telegram-button" onClick={handleBindOwner} disabled={!selectedOwnerChatId.trim() || bindingOwner}>{bindingOwner ? <Loader2 size={14} className="animate-spin" /> : <User size={14} />}Set owner</button>
+              <button className="telegram-button telegram-danger" onClick={handleClearOwner} disabled={!status?.owner_chat_id || clearingOwner}>{clearingOwner ? <Loader2 size={14} className="animate-spin" /> : null}Remove owner</button>
+            </div>
+            {privateChats.length === 0 && <p>Send <code>/start</code> to your bot in a private chat first.</p>}
+          </div>
+        </section>
+
+        <section className="telegram-card" aria-labelledby="telegram-chats-title">
+          <div className="telegram-section-heading"><Users size={18} /><div><h2 id="telegram-chats-title">Connected chats <span className="telegram-count">{chats.length}</span></h2><p>Conversations that have sent /start to the bot.</p></div></div>
+          {chats.length === 0 ? <div className="telegram-empty"><MessageCircle size={24} strokeWidth={1.5} /><span>No chats connected yet</span>{status?.bot_username && <p>Send <code>/start</code> to @{status.bot_username} in Telegram.</p>}</div> : <div className="telegram-chats">
+            {chats.map(chat => <div key={chat.chat_id} className="telegram-chat-row">
+              {chat.chat_type === 'private' ? <User size={17} /> : <Users size={17} />}
+              <div className="telegram-chat-identity"><p title={chat.title}>{chat.title}</p><span>{chat.chat_id}</span></div>
+              <StatusChip label={chat.chat_type === 'private' ? 'DM' : 'Group'} tone={chat.chat_type === 'private' ? 'info' : 'good'} />
+            </div>)}
+          </div>}
+        </section>
+        <div className="telegram-note"><Info size={16} /><p>Each group and non-owner private chat has its own persistent session. The owner chat follows the session you explicitly select in Telegram.</p></div>
+      </div>
+    </Shell>
   );
 }

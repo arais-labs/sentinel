@@ -55,19 +55,13 @@ If `route_mode=session` is set and the `target_session_id` no longer exists (the
 If you see trigger messages appearing in the main session unexpectedly, check whether the original target session still exists. The trigger's stored `action_config` will contain a `route_fallback_reason` field after fallback occurs.
 :::
 
-### Legacy `session_id` field
-
-Older trigger configs may use `session_id` instead of `target_session_id`. The system treats this as a `session`-mode target for backward compatibility. If you set `route_mode=main` but also include a `session_id`, the system will automatically promote the route mode to `session` and use that ID as the target.
-
----
-
 ## Action config structure
 
 ```json
 {
   "message": "Run the weekly competitor scan and summarize findings.",
   "route_mode": "session",
-  "target_session_id": "abc123-...",
+  "target_session_id": "11111111-1111-4111-8111-111111111111"
 }
 ```
 
@@ -83,7 +77,7 @@ After routing resolves, the stored config is updated with:
 
 ## What agents can do with triggers
 
-Agents can manage triggers programmatically via the `trigger_create`, `trigger_update`, `trigger_list`, and `trigger_delete` tools — when those tools are available in the current context.
+Agents can manage triggers programmatically via the `triggers` module's `create`, `update`, `list`, and `delete` actions — when those tools are available in the current context.
 
 This enables self-scheduling workflows: agents that set up their own recurring checks, periodic reports, follow-up reminders, and cleanup jobs.
 

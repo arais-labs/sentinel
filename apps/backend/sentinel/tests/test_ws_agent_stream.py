@@ -1,25 +1,22 @@
 import asyncio
-import os
+import pytest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from uuid import UUID
 
 from fastapi.testclient import TestClient
 
-os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-with-32-bytes-min")
 
 from app.main import app
-from app.routers import ws as ws_router
-from app.services.agent import PreparedRuntimeTurnContext
+from app.services.agent.runtime_support import PreparedRuntimeTurnContext
 from app.services.sessions.compaction import CompactionResult
-from app.services.llm.generic.base import LLMProvider
-from app.services.llm.generic.types import AgentEvent
+from sentral.llm.generic.base import LLMProvider
+from sentral.llm.generic.types import AgentEvent
 from app.services.tools.executor import ToolExecutor
 from app.services.tools.registry import ToolRegistry
 from app.services.ws.ws_stream_service import maybe_auto_compact_after_run
 from tests.fake_db import FakeDB
 from tests.helpers import (
-    FakeSessionFactory,
     install_fake_db_overrides,
     make_fake_instance_context,
     restore_test_app,
@@ -39,15 +36,28 @@ class _FakeProvider(LLMProvider):
         return "fake"
 
     async def chat(
-        self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None
+        self,
+        messages,
+        model,
+        tools=None,
+        temperature=0.7,
+        reasoning_config=None,
+        tool_choice=None,
     ):
         _ = (messages, model, tools, temperature, reasoning_config, tool_choice)
         raise AssertionError("WS runtime tests expect the streaming provider path")
 
     async def stream(
-        self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None
+        self,
+        messages,
+        model,
+        tools=None,
+        temperature=0.7,
+        reasoning_config=None,
+        tool_choice=None,
     ):
         _ = (messages, model, tools, temperature, reasoning_config, tool_choice)
+        self.last_model = model
         run_idx = min(self.calls, len(self._deltas_by_run) - 1)
         self.calls += 1
         for delta in self._deltas_by_run[run_idx]:
@@ -117,21 +127,18 @@ class _FakeLoop:
         return self._collect_attachments(messages)
 
 
-def test_ws_streams_runtime_events_when_provider_available():
+@pytest.mark.parametrize("selection", [{}, {"provider_id": "anthropic", "reasoning_level": "low"}])
+def test_ws_streams_runtime_events_when_provider_available(selection):
     fake_db = FakeDB()
     fake_loop = _FakeLoop()
     instance_context = make_fake_instance_context(app_db=fake_db, agent_runtime_support=fake_loop)
     old_init = install_fake_db_overrides(app_db=fake_db, instance_context=instance_context)
 
-    old_manager_session = ws_router.ManagerSessionLocal
-    ws_router.ManagerSessionLocal = FakeSessionFactory(FakeDB())
-
     try:
-        client = TestClient(app)
-        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
-        assert login.status_code == 200
-        token = login.json()["access_token"]
-        headers = {"Authorization": f"Bearer {token}"}
+        client = TestClient(
+            app, headers={"x-sentinel-desktop-token": "test-desktop-transport-token"}
+        )
+        headers = {"x-sentinel-desktop-token": "test-desktop-transport-token"}
 
         session_resp = client.post(SESSIONS_API, json={"title": "ws-stream"}, headers=headers)
         assert session_resp.status_code == 200
@@ -141,16 +148,18 @@ def test_ws_streams_runtime_events_when_provider_available():
             "app.routers.ws.SessionNamingService.maybe_auto_rename",
             new=AsyncMock(return_value=None),
         ):
-            with client.websocket_connect(f"{WS_API}/{session_id}/stream?token={token}") as ws:
+            with client.websocket_connect(f"{WS_API}/{session_id}/stream") as ws:
                 connected = ws.receive_json()
                 assert connected["type"] == "connected"
 
-                ws.send_json({"type": "message", "content": "hello"})
+                ws.send_json({"type": "message", "content": "hello", **selection})
                 ack = ws.receive_json()
                 assert ack["type"] == "message_ack"
 
                 thinking = ws.receive_json()
                 assert thinking["type"] == "agent_thinking"
+
+                assert ws.receive_json() == {"type": "run_state", "run_active": True}
 
                 progress = ws.receive_json()
                 assert progress["type"] == "agent_progress"
@@ -167,8 +176,11 @@ def test_ws_streams_runtime_events_when_provider_available():
                 done = ws.receive_json()
                 assert done["type"] == "done"
                 assert done["stop_reason"] == "stop"
+                assert ws.receive_json() == {"type": "run_state", "run_active": False}
+                assert fake_loop.provider.last_model == (
+                    "sentinel:normal:anthropic:low" if selection else "normal"
+                )
     finally:
-        ws_router.ManagerSessionLocal = old_manager_session
         restore_test_app(old_init)
 
 
@@ -191,8 +203,7 @@ def test_ws_auto_compacts_without_resuming():
         auto_compact_if_needed = AsyncMock(
             return_value=CompactionResult(
                 session_id=session_id,
-                raw_token_count=120,
-                compressed_token_count=40,
+                compacted=True,
                 summary_preview="summary",
             )
         )
@@ -221,3 +232,62 @@ def test_ws_auto_compacts_without_resuming():
     assert manager.thinking_count == 0
     _CompactionService.should_auto_compact.assert_awaited_once()
     _CompactionService.auto_compact_if_needed.assert_awaited_once()
+
+
+def test_form_dismissal_acknowledges_without_starting_model():
+    import json
+    from app.models import Message
+
+    fake_db = FakeDB()
+    fake_loop = _FakeLoop()
+    instance_context = make_fake_instance_context(app_db=fake_db, agent_runtime_support=fake_loop)
+    old_init = install_fake_db_overrides(app_db=fake_db, instance_context=instance_context)
+    try:
+        client = TestClient(
+            app, headers={"x-sentinel-desktop-token": "test-desktop-transport-token"}
+        )
+        session_id = client.post(SESSIONS_API, json={"title": "Dismiss form"}).json()["id"]
+        fake_db.add(
+            Message(
+                session_id=UUID(session_id),
+                role="tool_result",
+                tool_name="form",
+                content=json.dumps(
+                    {
+                        "kind": "form",
+                        "form_id": "dismiss-test",
+                        "title": "Choose",
+                        "questions": [{"id": "1", "question": "Direction?"}],
+                    }
+                ),
+            )
+        )
+        with patch(
+            "app.routers.ws.SessionNamingService.maybe_auto_rename",
+            new=AsyncMock(return_value=None),
+        ):
+            with client.websocket_connect(f"{WS_API}/{session_id}/stream") as ws:
+                assert ws.receive_json()["type"] == "connected"
+                ws.send_json(
+                    {
+                        "type": "message",
+                        "content": "Dismiss",
+                        "form_response": {
+                            "form_id": "dismiss-test",
+                            "status": "dismissed",
+                            "answers": [],
+                        },
+                    }
+                )
+                ack = ws.receive_json()
+                assert ack["type"] == "message_ack"
+                assert ack["metadata"]["form_response"]["status"] == "dismissed"
+                # A new message must be acknowledged next, without intervening model events.
+                ws.send_json({"type": "message", "content": "Continue now"})
+                assert ws.receive_json()["type"] == "message_ack"
+                assert ws.receive_json()["type"] == "agent_thinking"
+                while ws.receive_json()["type"] != "done":
+                    pass
+                assert fake_loop.provider.calls == 1
+    finally:
+        restore_test_app(old_init)

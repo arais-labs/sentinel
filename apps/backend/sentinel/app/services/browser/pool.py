@@ -9,13 +9,10 @@ from typing import Any
 
 from app.services.browser.manager import BrowserManager
 from app.services.runtime.desktop import RuntimeDesktopManager
-from app.services.runtime.remote_commands import load_remote_command
-from app.services.runtime.ssh_runtime import (
-    get_runtime_desktop_manager,
-    get_runtime_terminal_manager,
-)
+from app.services.runtime.guest_commands import guest_python_command
+import app.services.runtime.ssh_runtime as ssh_runtime
 from app.services.runtime.terminal_manager import RuntimeTerminalManager
-from app.services.runtime.workspace import workspace_paths
+from app.services.runtime.workspace import WorkspaceLocation, workspace_paths
 
 
 class BrowserPoolError(RuntimeError):
@@ -36,7 +33,7 @@ class _BrowserHandle:
 class _BrowserRuntime:
     terminal_manager: RuntimeTerminalManager
     desktop_manager: RuntimeDesktopManager
-    workspaces_root: str | None
+    workspace_location: WorkspaceLocation | None
 
 
 type _BrowserKey = tuple[str, str]
@@ -57,12 +54,12 @@ class BrowserPool:
         terminal_manager: RuntimeTerminalManager | None = None,
         desktop_manager: RuntimeDesktopManager | None = None,
         manager_cls: type[BrowserManager] = BrowserManager,
-        workspaces_root: str | None = None,
+        workspace_location: WorkspaceLocation | None = None,
     ) -> None:
         self._terminal_manager = terminal_manager
         self._desktop_manager = desktop_manager
         self._manager_cls = manager_cls
-        self._workspaces_root = workspaces_root
+        self._workspace_location = workspace_location
         self._handles: dict[_BrowserKey, _BrowserHandle] = {}
         self._locks: dict[_BrowserKey, asyncio.Lock] = {}
 
@@ -95,19 +92,21 @@ class BrowserPool:
             await self._reset_remote(sid, instance_name=instance_name)
             handle = await self._start_remote_with_retry(sid, instance_name=instance_name)
             self._handles[key] = handle
-            runtime = await self._runtime(instance_name=instance_name)
+            runtime = await self._runtime(session_id=session_id, instance_name=instance_name)
             state = await handle.manager.warmup()
             return {
                 "reset": True,
                 "profile_dir": str(
-                    PurePosixPath(workspace_paths(sid, root=runtime.workspaces_root).browser)
+                    PurePosixPath(workspace_paths(sid, root=runtime.workspace_location).browser)
                     / "chromium"
                 ),
                 "cdp_endpoint": handle.cdp_endpoint,
                 **state,
             }
 
-    async def remove(self, session_id: str, *, instance_name: str | None = None) -> None:
+    async def remove(
+        self, session_id: str, *, instance_name: str | None = None, stop_remote: bool = True
+    ) -> None:
         sid = str(session_id)
         key = _handle_key(sid, instance_name=instance_name)
         lock = self._locks.setdefault(key, asyncio.Lock())
@@ -115,7 +114,9 @@ class BrowserPool:
             handle = self._handles.pop(key, None)
             if handle is not None:
                 await self._close_handle(handle)
-            await self._stop_remote(sid, instance_name=instance_name)
+            # A deleted workspace has no remote process left to stop.
+            if stop_remote:
+                await self._stop_remote(sid, instance_name=instance_name)
 
     async def close_all(self) -> None:
         for instance_key, sid in list(self._handles):
@@ -142,18 +143,21 @@ class BrowserPool:
         raise BrowserPoolError(f"Failed to connect to runtime browser: {last_exc}") from last_exc
 
     async def _start_remote(self, session_id: str, *, instance_name: str | None) -> _BrowserHandle:
-        runtime = await self._runtime(instance_name=instance_name)
-        desktop = await runtime.desktop_manager.ensure_session_desktop(session_id)
+        runtime = await self._runtime(session_id=session_id, instance_name=instance_name)
         await runtime.terminal_manager.prepare_workspace(session_id)
-        script, args = _build_browser_start_script(
-            session_id,
-            root=runtime.workspaces_root,
-            display=desktop.display,
-            geometry=desktop.geometry,
+        desktop = (
+            (await runtime.desktop_manager.ensure_session_desktop(session_id))
+            if runtime.desktop_manager.enabled
+            else None
         )
-        result = await runtime.terminal_manager.ssh.run_script(
-            script,
-            args=args,
+        command = _build_browser_start_command(
+            session_id,
+            root=runtime.workspace_location,
+            display=desktop.display if desktop else "",
+            geometry=desktop.geometry if desktop else "1920x1200",
+        )
+        result = await runtime.terminal_manager.ssh.run(
+            command,
             timeout=45,
         )
         if result.exit_status not in {0, None}:
@@ -177,13 +181,13 @@ class BrowserPool:
             )
         except Exception as exc:  # noqa: BLE001
             await self._stop_remote(session_id, instance_name=instance_name)
-            raise BrowserPoolError(f"Failed to open browser CDP SSH tunnel: {exc}") from exc
+            raise BrowserPoolError(f"Failed to open workspace browser connection: {exc}") from exc
 
         cdp_endpoint = f"http://127.0.0.1:{local_port}"
         manager = self._manager_cls(
             cdp_endpoint=cdp_endpoint,
             user_data_dir=str(
-                PurePosixPath(workspace_paths(session_id, root=runtime.workspaces_root).browser)
+                PurePosixPath(workspace_paths(session_id, root=runtime.workspace_location).browser)
                 / "chromium"
             ),
         )
@@ -205,40 +209,38 @@ class BrowserPool:
         )
 
     async def _stop_remote(self, session_id: str, *, instance_name: str | None) -> None:
-        runtime = await self._runtime(instance_name=instance_name)
-        script, args = _build_browser_stop_script(session_id, root=runtime.workspaces_root)
-        await runtime.terminal_manager.ssh.run_script(
-            script,
-            args=args,
+        runtime = await self._runtime(session_id=session_id, instance_name=instance_name)
+        command = _build_browser_stop_command(session_id, root=runtime.workspace_location)
+        await runtime.terminal_manager.ssh.run(
+            command,
             timeout=30,
         )
 
     async def _reset_remote(self, session_id: str, *, instance_name: str | None) -> None:
-        runtime = await self._runtime(instance_name=instance_name)
-        script, args = _build_browser_reset_script(session_id, root=runtime.workspaces_root)
-        result = await runtime.terminal_manager.ssh.run_script(
-            script,
-            args=args,
+        runtime = await self._runtime(session_id=session_id, instance_name=instance_name)
+        command = _build_browser_reset_command(session_id, root=runtime.workspace_location)
+        result = await runtime.terminal_manager.ssh.run(
+            command,
             timeout=45,
         )
         if result.exit_status not in {0, None}:
             detail = (result.stderr or result.stdout or "browser reset failed").strip()[:1200]
             raise BrowserPoolError(detail)
 
-    async def _runtime(self, *, instance_name: str | None) -> _BrowserRuntime:
-        terminal_manager = self._terminal_manager or await get_runtime_terminal_manager(
-            instance_name=instance_name
+    async def _runtime(self, *, session_id: str, instance_name: str | None) -> _BrowserRuntime:
+        terminal_manager = self._terminal_manager or await ssh_runtime.get_runtime_terminal_manager(
+            session_id=session_id, instance_name=instance_name
         )
-        desktop_manager = self._desktop_manager or await get_runtime_desktop_manager(
-            instance_name=instance_name
+        desktop_manager = self._desktop_manager or await ssh_runtime.get_runtime_desktop_manager(
+            session_id=session_id, instance_name=instance_name
         )
-        workspaces_root = self._workspaces_root
-        if workspaces_root is None:
-            workspaces_root = getattr(terminal_manager, "workspaces_root", None)
+        workspace_location = self._workspace_location
+        if workspace_location is None:
+            workspace_location = getattr(terminal_manager, "workspace_location", None)
         return _BrowserRuntime(
             terminal_manager=terminal_manager,
             desktop_manager=desktop_manager,
-            workspaces_root=workspaces_root,
+            workspace_location=workspace_location,
         )
 
     async def _close_handle(self, handle: _BrowserHandle) -> None:
@@ -265,13 +267,17 @@ async def _close_listener(listener: object) -> None:
 
 
 def _browser_request(
-    session_id: str, *, root: str | None, display: str | None = None, geometry: str | None = None
+    session_id: str,
+    *,
+    root: WorkspaceLocation,
+    display: str | None = None,
+    geometry: str | None = None,
 ) -> dict[str, object]:
     paths = workspace_paths(session_id, root=root)
     request: dict[str, object] = {
         "session_id": paths.session_id,
         "session_root": paths.session_root,
-        "home": paths.home,
+        "home": str(PurePosixPath(paths.browser) / "home"),
         "runtime": paths.runtime,
         "browser": paths.browser,
         "logs": paths.logs,
@@ -283,11 +289,11 @@ def _browser_request(
     return request
 
 
-def _build_browser_start_script(
-    session_id: str, *, root: str | None, display: str, geometry: str
-) -> tuple[str, list[str]]:
-    return (
-        load_remote_command("linux/browser/start.sh"),
+def _build_browser_start_command(
+    session_id: str, *, root: WorkspaceLocation, display: str, geometry: str
+) -> str:
+    return guest_python_command(
+        "linux/browser/start.py",
         [
             json.dumps(
                 _browser_request(session_id, root=root, display=display, geometry=geometry),
@@ -297,15 +303,19 @@ def _build_browser_start_script(
     )
 
 
-def _build_browser_stop_script(session_id: str, *, root: str | None) -> tuple[str, list[str]]:
-    return (
-        load_remote_command("linux/browser/stop.sh"),
-        [json.dumps(_browser_request(session_id, root=root), separators=(",", ":"))],
+def _build_browser_stop_command(session_id: str, *, root: WorkspaceLocation) -> str:
+    return guest_python_command(
+        "linux/browser/stop.py",
+        [
+            json.dumps(_browser_request(session_id, root=root), separators=(",", ":")),
+        ],
     )
 
 
-def _build_browser_reset_script(session_id: str, *, root: str | None) -> tuple[str, list[str]]:
-    return (
-        load_remote_command("linux/browser/reset.sh"),
-        [json.dumps(_browser_request(session_id, root=root), separators=(",", ":"))],
+def _build_browser_reset_command(session_id: str, *, root: WorkspaceLocation) -> str:
+    return guest_python_command(
+        "linux/browser/reset.py",
+        [
+            json.dumps(_browser_request(session_id, root=root), separators=(",", ":")),
+        ],
     )

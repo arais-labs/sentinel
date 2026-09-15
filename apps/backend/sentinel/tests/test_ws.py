@@ -1,46 +1,20 @@
-import os
 import uuid
 from datetime import UTC, datetime, timedelta
 
-import jwt
 import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
-os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-with-32-bytes-min")
 
 from app.main import app
-from app.routers import ws as ws_router
 from app.models import Message, ToolApproval
 from app.services.sessions.agent_run_registry import AgentRunRegistry
 from app.services.ws.ws_stream_service import unresolved_tool_calls_from_history
 from tests.fake_db import FakeDB
-from tests.helpers import FakeSessionFactory, install_fake_db_overrides, restore_test_app
+from tests.helpers import install_fake_db_overrides, restore_test_app
 
 SESSIONS_API = "/api/v1/instances/main/sessions"
 WS_API = "/ws/instances/main/sessions"
-
-
-@pytest.fixture(autouse=True)
-def _use_fake_ws_manager_db(monkeypatch):
-    monkeypatch.setattr(ws_router, "ManagerSessionLocal", FakeSessionFactory(FakeDB()))
-
-
-def _make_token(*, sub: str, role: str = "agent", agent_id: str = "agent-test") -> str:
-    secret = os.getenv("JWT_SECRET_KEY", "test-secret-key-with-32-bytes-min")
-    return jwt.encode(
-        {
-            "sub": sub,
-            "role": role,
-            "agent_id": agent_id,
-            "exp": 1999999999,
-            "iat": 1771810000,
-            "jti": str(uuid.uuid4()),
-            "token_type": "access",
-        },
-        secret,
-        algorithm="HS256",
-    )
 
 
 class _AlwaysRunningRegistry(AgentRunRegistry):
@@ -61,20 +35,20 @@ def test_ws_connect_send_ack_and_rejections():
     app.state.agent_runtime_support = None
 
     try:
-        client = TestClient(app)
-        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
-        assert login.status_code == 200
-        owner_token = login.json()["access_token"]
-        owner_headers = {"Authorization": f"Bearer {owner_token}"}
+        client = TestClient(
+            app, headers={"x-sentinel-desktop-token": "test-desktop-transport-token"}
+        )
+        owner_headers = {"x-sentinel-desktop-token": "test-desktop-transport-token"}
 
         session_resp = client.post(SESSIONS_API, json={"title": "ws-test"}, headers=owner_headers)
         assert session_resp.status_code == 200
         session_id = session_resp.json()["id"]
 
-        with client.websocket_connect(f"{WS_API}/{session_id}/stream?token={owner_token}") as ws:
+        with client.websocket_connect(f"{WS_API}/{session_id}/stream") as ws:
             connected = ws.receive_json()
             assert connected["type"] == "connected"
             assert connected["session_id"] == session_id
+            assert connected["run_active"] is False
 
             ws.send_json(
                 {
@@ -101,7 +75,7 @@ def test_ws_connect_send_ack_and_rejections():
             assert generation.get("requested_tier") == "normal"
             assert generation.get("temperature") == 0.7
             assert isinstance(generation.get("max_iterations"), int)
-            assert generation.get("max_iterations") > 0
+            assert generation.get("max_iterations") == 0
 
             # No provider configured in tests -> explicit agent error for UI feedback.
             no_provider = ws.receive_json()
@@ -124,28 +98,11 @@ def test_ws_connect_send_ack_and_rejections():
         assert stored_generation.get("requested_tier") == "normal"
         assert stored_generation.get("temperature") == 0.7
         assert isinstance(stored_generation.get("max_iterations"), int)
-        assert stored_generation.get("max_iterations") > 0
-
-        anon_client = TestClient(app)
-        with pytest.raises(WebSocketDisconnect) as missing_token:
-            with anon_client.websocket_connect(f"{WS_API}/{session_id}/stream"):
-                pass
-        assert missing_token.value.code == 4001
-
-        with pytest.raises(WebSocketDisconnect) as bad_token:
-            with client.websocket_connect(f"{WS_API}/{session_id}/stream?token=invalid-token"):
-                pass
-        assert bad_token.value.code == 4001
-
-        other_token = _make_token(sub="other-user")
-        with pytest.raises(WebSocketDisconnect) as forbidden:
-            with client.websocket_connect(f"{WS_API}/{session_id}/stream?token={other_token}"):
-                pass
-        assert forbidden.value.code == 4004
+        assert stored_generation.get("max_iterations") == 0
 
         unknown_session = uuid.uuid4()
         with pytest.raises(WebSocketDisconnect) as unknown:
-            with client.websocket_connect(f"{WS_API}/{unknown_session}/stream?token={owner_token}"):
+            with client.websocket_connect(f"{WS_API}/{unknown_session}/stream"):
                 pass
         assert unknown.value.code == 4004
     finally:
@@ -159,11 +116,10 @@ def test_ws_rejects_invalid_agent_mode_payload():
     old_init = install_fake_db_overrides(app_db=fake_db)
 
     try:
-        client = TestClient(app)
-        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
-        assert login.status_code == 200
-        owner_token = login.json()["access_token"]
-        owner_headers = {"Authorization": f"Bearer {owner_token}"}
+        client = TestClient(
+            app, headers={"x-sentinel-desktop-token": "test-desktop-transport-token"}
+        )
+        owner_headers = {"x-sentinel-desktop-token": "test-desktop-transport-token"}
 
         session_resp = client.post(
             SESSIONS_API, json={"title": "ws-invalid-mode"}, headers=owner_headers
@@ -171,7 +127,7 @@ def test_ws_rejects_invalid_agent_mode_payload():
         assert session_resp.status_code == 200
         session_id = session_resp.json()["id"]
 
-        with client.websocket_connect(f"{WS_API}/{session_id}/stream?token={owner_token}") as ws:
+        with client.websocket_connect(f"{WS_API}/{session_id}/stream") as ws:
             connected = ws.receive_json()
             assert connected["type"] == "connected"
             ws.send_json({"type": "message", "content": "hello", "agent_mode": "invalid-mode"})
@@ -190,11 +146,10 @@ def test_ws_connected_rehydrates_unresolved_tool_calls():
     app.state.agent_run_registry = _ThinkingRunningRegistry()
 
     try:
-        client = TestClient(app)
-        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
-        assert login.status_code == 200
-        owner_token = login.json()["access_token"]
-        owner_headers = {"Authorization": f"Bearer {owner_token}"}
+        client = TestClient(
+            app, headers={"x-sentinel-desktop-token": "test-desktop-transport-token"}
+        )
+        owner_headers = {"x-sentinel-desktop-token": "test-desktop-transport-token"}
 
         session_resp = client.post(
             SESSIONS_API, json={"title": "ws-pending"}, headers=owner_headers
@@ -213,7 +168,7 @@ def test_ws_connected_rehydrates_unresolved_tool_calls():
                             "id": "toolu_pending_1",
                             "name": "git",
                             "arguments": {
-                                "command": "write",
+                                "action": "write",
                                 "cli_command": "git push origin main",
                             },
                         }
@@ -235,7 +190,7 @@ def test_ws_connected_rehydrates_unresolved_tool_calls():
             )
         )
 
-        with client.websocket_connect(f"{WS_API}/{session_id}/stream?token={owner_token}") as ws:
+        with client.websocket_connect(f"{WS_API}/{session_id}/stream") as ws:
             connected = ws.receive_json()
             assert connected["type"] == "connected"
             assert connected["session_id"] == session_id
@@ -249,7 +204,7 @@ def test_ws_connected_rehydrates_unresolved_tool_calls():
             assert replay_pending["type"] == "tool_result"
             assert replay_pending["tool_result"]["tool_call_id"] == "toolu_pending_1"
             assert replay_pending["tool_result"]["tool_arguments"] == {
-                "command": "write",
+                "action": "write",
                 "cli_command": "git push origin main",
             }
             assert replay_pending["tool_result"]["content"]["status"] == "pending"
@@ -272,19 +227,24 @@ def test_ws_connected_rehydrates_unresolved_tool_calls():
         restore_test_app(old_init)
 
 
-def test_ws_connected_rehydrates_active_run_as_thinking_when_no_tool_pending():
+@pytest.mark.parametrize("phase", [None, "thinking", "streaming", "tool"])
+def test_ws_connected_restores_active_run_in_every_phase(phase):
     fake_db = FakeDB()
 
     old_init = install_fake_db_overrides(app_db=fake_db)
     old_run_registry = getattr(app.state, "agent_run_registry", None)
-    app.state.agent_run_registry = _AlwaysRunningRegistry()
+
+    class RunningRegistry(_AlwaysRunningRegistry):
+        async def get_phase(self, session_id):
+            return phase
+
+    app.state.agent_run_registry = RunningRegistry()
 
     try:
-        client = TestClient(app)
-        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
-        assert login.status_code == 200
-        owner_token = login.json()["access_token"]
-        owner_headers = {"Authorization": f"Bearer {owner_token}"}
+        client = TestClient(
+            app, headers={"x-sentinel-desktop-token": "test-desktop-transport-token"}
+        )
+        owner_headers = {"x-sentinel-desktop-token": "test-desktop-transport-token"}
 
         session_resp = client.post(
             SESSIONS_API, json={"title": "ws-running"}, headers=owner_headers
@@ -292,14 +252,16 @@ def test_ws_connected_rehydrates_active_run_as_thinking_when_no_tool_pending():
         assert session_resp.status_code == 200
         session_id = session_resp.json()["id"]
 
-        with client.websocket_connect(f"{WS_API}/{session_id}/stream?token={owner_token}") as ws:
+        with client.websocket_connect(f"{WS_API}/{session_id}/stream") as ws:
             connected = ws.receive_json()
             assert connected["type"] == "connected"
+            assert connected["run_active"] is True
             assert connected["session_id"] == session_id
 
-            replay_running = ws.receive_json()
-            assert replay_running["type"] == "thinking_start"
-            assert replay_running["session_id"] == session_id
+            if phase in {None, "thinking"}:
+                replay_running = ws.receive_json()
+                assert replay_running["type"] == "thinking_start"
+                assert replay_running["session_id"] == session_id
     finally:
         if old_run_registry is None:
             delattr(app.state, "agent_run_registry")
@@ -318,7 +280,7 @@ def test_unresolved_tool_calls_ignore_calls_with_persisted_tool_result():
                     {
                         "id": "toolu_pending_1",
                         "name": "git",
-                        "arguments": {"command": "write", "cli_command": "git push origin main"},
+                        "arguments": {"action": "write", "cli_command": "git push origin main"},
                     }
                 ]
             },
@@ -351,11 +313,10 @@ def test_ws_connected_history_includes_pending_tool_result_for_approval():
     app.state.agent_run_registry = _AlwaysRunningRegistry()
 
     try:
-        client = TestClient(app)
-        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
-        assert login.status_code == 200
-        owner_token = login.json()["access_token"]
-        owner_headers = {"Authorization": f"Bearer {owner_token}"}
+        client = TestClient(
+            app, headers={"x-sentinel-desktop-token": "test-desktop-transport-token"}
+        )
+        owner_headers = {"x-sentinel-desktop-token": "test-desktop-transport-token"}
 
         session_resp = client.post(
             SESSIONS_API, json={"title": "ws-pending-truncated"}, headers=owner_headers
@@ -374,7 +335,7 @@ def test_ws_connected_history_includes_pending_tool_result_for_approval():
                             "id": "toolu_pending_2",
                             "name": "git",
                             "arguments": {
-                                "command": "write",
+                                "action": "write",
                                 "cli_command": "gh pr create --repo exampleco/exampleco-gitops --title Test --body Body",
                             },
                         }
@@ -403,11 +364,12 @@ def test_ws_connected_history_includes_pending_tool_result_for_approval():
             )
         )
 
-        with client.websocket_connect(f"{WS_API}/{session_id}/stream?token={owner_token}") as ws:
+        with client.websocket_connect(f"{WS_API}/{session_id}/stream") as ws:
             connected = ws.receive_json()
             assert connected["type"] == "connected"
             assert connected["session_id"] == session_id
-            history = connected["history"]
+            assert connected["history_via_http"] is True
+            history = client.get(f"{SESSIONS_API}/{session_id}/messages?limit=50").json()["items"]
             pending_result = next(item for item in history if item["role"] == "tool_result")
             assert pending_result["tool_call_id"] == "toolu_pending_2"
             approval = pending_result["metadata"].get("approval")
@@ -430,11 +392,10 @@ def test_ws_connected_rehydrates_unresolved_non_git_tool_calls():
     app.state.agent_run_registry = _AlwaysRunningRegistry()
 
     try:
-        client = TestClient(app)
-        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
-        assert login.status_code == 200
-        owner_token = login.json()["access_token"]
-        owner_headers = {"Authorization": f"Bearer {owner_token}"}
+        client = TestClient(
+            app, headers={"x-sentinel-desktop-token": "test-desktop-transport-token"}
+        )
+        owner_headers = {"x-sentinel-desktop-token": "test-desktop-transport-token"}
 
         session_resp = client.post(
             SESSIONS_API, json={"title": "ws-runtime-pending"}, headers=owner_headers
@@ -452,14 +413,14 @@ def test_ws_connected_rehydrates_unresolved_non_git_tool_calls():
                         {
                             "id": "toolu_pending_runtime",
                             "name": "runtime",
-                            "arguments": {"command": "user", "shell_command": "sleep 10"},
+                            "arguments": {"action": "exec", "shell_command": "sleep 10"},
                         }
                     ]
                 },
             )
         )
 
-        with client.websocket_connect(f"{WS_API}/{session_id}/stream?token={owner_token}") as ws:
+        with client.websocket_connect(f"{WS_API}/{session_id}/stream") as ws:
             connected = ws.receive_json()
             assert connected["type"] == "connected"
             assert connected["session_id"] == session_id
@@ -473,7 +434,7 @@ def test_ws_connected_rehydrates_unresolved_non_git_tool_calls():
             assert replay_pending["type"] == "tool_result"
             assert replay_pending["tool_result"]["tool_call_id"] == "toolu_pending_runtime"
             assert replay_pending["tool_result"]["tool_arguments"] == {
-                "command": "user",
+                "action": "exec",
                 "shell_command": "sleep 10",
             }
             assert replay_pending["tool_result"]["content"]["status"] == "running"
@@ -495,11 +456,10 @@ def test_ws_connected_does_not_attach_mismatched_pending_approval():
     app.state.agent_run_registry = _AlwaysRunningRegistry()
 
     try:
-        client = TestClient(app)
-        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
-        assert login.status_code == 200
-        owner_token = login.json()["access_token"]
-        owner_headers = {"Authorization": f"Bearer {owner_token}"}
+        client = TestClient(
+            app, headers={"x-sentinel-desktop-token": "test-desktop-transport-token"}
+        )
+        owner_headers = {"x-sentinel-desktop-token": "test-desktop-transport-token"}
 
         session_resp = client.post(
             SESSIONS_API, json={"title": "ws-pending-mismatch"}, headers=owner_headers
@@ -517,7 +477,7 @@ def test_ws_connected_does_not_attach_mismatched_pending_approval():
                         {
                             "id": "toolu_git_read",
                             "name": "git",
-                            "arguments": {"command": "read", "cli_command": "git status"},
+                            "arguments": {"action": "read", "cli_command": "git status"},
                         }
                     ]
                 },
@@ -537,7 +497,7 @@ def test_ws_connected_does_not_attach_mismatched_pending_approval():
             )
         )
 
-        with client.websocket_connect(f"{WS_API}/{session_id}/stream?token={owner_token}") as ws:
+        with client.websocket_connect(f"{WS_API}/{session_id}/stream") as ws:
             connected = ws.receive_json()
             assert connected["type"] == "connected"
             assert connected["session_id"] == session_id
@@ -566,11 +526,10 @@ def test_ws_connected_reconciles_stale_unresolved_calls_when_run_not_active():
     old_init = install_fake_db_overrides(app_db=fake_db)
 
     try:
-        client = TestClient(app)
-        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
-        assert login.status_code == 200
-        owner_token = login.json()["access_token"]
-        owner_headers = {"Authorization": f"Bearer {owner_token}"}
+        client = TestClient(
+            app, headers={"x-sentinel-desktop-token": "test-desktop-transport-token"}
+        )
+        owner_headers = {"x-sentinel-desktop-token": "test-desktop-transport-token"}
 
         session_resp = client.post(
             SESSIONS_API, json={"title": "ws-stale-pending"}, headers=owner_headers
@@ -596,7 +555,7 @@ def test_ws_connected_reconciles_stale_unresolved_calls_when_run_not_active():
                             "id": "toolu_stale_1",
                             "name": "git",
                             "arguments": {
-                                "command": "write",
+                                "action": "write",
                                 "cli_command": "git push origin main",
                             },
                         }
@@ -617,10 +576,11 @@ def test_ws_connected_reconciles_stale_unresolved_calls_when_run_not_active():
         )
         fake_db.add(pending_approval)
 
-        with client.websocket_connect(f"{WS_API}/{session_id}/stream?token={owner_token}") as ws:
+        with client.websocket_connect(f"{WS_API}/{session_id}/stream") as ws:
             connected = ws.receive_json()
             assert connected["type"] == "connected"
-            history = connected.get("history") or []
+            assert connected["history_via_http"] is True
+            history = client.get(f"{SESSIONS_API}/{session_id}/messages?limit=50").json()["items"]
             reconciled = next(
                 (
                     item
@@ -642,4 +602,56 @@ def test_ws_connected_reconciles_stale_unresolved_calls_when_run_not_active():
         assert pending_approval.status == "cancelled"
         assert pending_approval.resolved_at is not None
     finally:
+        restore_test_app(old_init)
+
+
+def test_large_screenshot_history_does_not_overflow_reconnect_frame():
+    """A long computer-use run must reconnect under the desktop 16 MiB limit."""
+    fake_db = FakeDB()
+    old_init = install_fake_db_overrides(app_db=fake_db)
+    old_registry = getattr(app.state, "agent_run_registry", None)
+    app.state.agent_run_registry = _AlwaysRunningRegistry()
+    try:
+        client = TestClient(
+            app, headers={"x-sentinel-desktop-token": "test-desktop-transport-token"}
+        )
+        session_id = client.post(SESSIONS_API, json={"title": "large-history"}).json()["id"]
+        for _ in range(18):
+            fake_db.add(
+                Message(
+                    id=uuid.uuid4(),
+                    session_id=uuid.UUID(session_id),
+                    role="tool_result",
+                    tool_name="computer",
+                    content='{"ok":true}',
+                    metadata_json={"attachments": [{"base64": "A" * (1024 * 1024)}]},
+                )
+            )
+        with client.websocket_connect(f"{WS_API}/{session_id}/stream") as ws:
+            connected = ws.receive_json()
+            assert connected["run_active"] is True
+            assert connected["history_via_http"] is True
+            assert "history" not in connected
+            import json
+
+            assert len(json.dumps(connected)) < 4096
+            # The same socket still accepts input after its handshake.
+            ws.send_json({"type": "not-a-valid-message"})
+            # A rehydrated thinking event may precede the validation error.
+            for _ in range(3):
+                event = ws.receive_json()
+                if event["type"] == "error":
+                    assert event["code"] == "invalid_payload"
+                    break
+            else:
+                pytest.fail("Socket did not remain usable after reconnect")
+        page = client.get(f"{SESSIONS_API}/{session_id}/messages?limit=5").json()
+        assert len(page["items"]) == 5
+        assert page["has_more"] is True
+        assert len(page["items"][0]["metadata"]["attachments"][0]["base64"]) == 1024 * 1024
+    finally:
+        if old_registry is None:
+            delattr(app.state, "agent_run_registry")
+        else:
+            app.state.agent_run_registry = old_registry
         restore_test_app(old_init)

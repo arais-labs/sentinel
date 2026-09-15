@@ -1,39 +1,25 @@
 from __future__ import annotations
 
-import os
-import uuid
 from datetime import UTC, datetime, timedelta
 
-import jwt
 from fastapi.testclient import TestClient
 
-os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-with-32-bytes-min")
 
 from app.dependencies import get_db, get_manager_db
 from app.main import app
 from app.middleware.rate_limit import RateLimitMiddleware
-from app.models import GitAccount, Message, Session, ToolApproval
+from app.models import GitAccount, ToolApproval
 from tests.fake_db import FakeDB
 
 
-def _make_token(*, sub: str, role: str = "agent", agent_id: str = "agent-test") -> str:
-    secret = os.getenv("JWT_SECRET_KEY", "test-secret-key-with-32-bytes-min")
-    return jwt.encode(
-        {
-            "sub": sub,
-            "role": role,
-            "agent_id": agent_id,
-            "exp": 1_999_999_999,
-            "iat": 1_771_810_000,
-            "jti": str(uuid.uuid4()),
-            "token_type": "access",
-        },
-        secret,
-        algorithm="HS256",
-    )
+def test_git_accounts_crud_and_approval_resolution(monkeypatch):
+    from app.routers import git
+    from app.services.github_account import GitHubIdentity
 
+    async def verify(_token):
+        return GitHubIdentity(login="tester", name="Test User", email="alex@example.com")
 
-def test_git_accounts_crud_and_approval_resolution():
+    monkeypatch.setattr(git, "verify_github_token", verify)
     fake_db = FakeDB()
 
     async def _override_get_db():
@@ -51,28 +37,28 @@ def test_git_accounts_crud_and_approval_resolution():
     app.dependency_overrides[get_manager_db] = _override_get_db
 
     try:
-        client = TestClient(app)
-        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
-        assert login.status_code == 200
-        admin_headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        client = TestClient(
+            app, headers={"x-sentinel-desktop-token": "test-desktop-transport-token"}
+        )
+        admin_headers = {"x-sentinel-desktop-token": "test-desktop-transport-token"}
 
         created = client.post(
             "/api/v1/instances/main/git/accounts",
             json={
                 "name": "Client GitHub",
                 "host": "github.com",
-                "scope_pattern": "arais-labs/*",
+                "scope_pattern": "example-org/*",
                 "author_name": "Test User",
                 "author_email": "alex@example.com",
-                "token_read": "ghr_read_123",
-                "token_write": "ghw_write_456",
+                "token": "github-test-token",
             },
             headers=admin_headers,
         )
         assert created.status_code == 201
         account_id = created.json()["id"]
-        assert created.json()["has_read_token"] is True
-        assert created.json()["has_write_token"] is True
+        assert created.json()["has_token"] is True
+        assert created.json()["github_login"] == "tester"
+        assert "github-test-token" not in created.text
 
         listed = client.get("/api/v1/instances/main/git/accounts", headers=admin_headers)
         assert listed.status_code == 200
@@ -82,13 +68,13 @@ def test_git_accounts_crud_and_approval_resolution():
         updated = client.patch(
             f"/api/v1/instances/main/git/accounts/{account_id}",
             json={
-                "scope_pattern": "arais-labs/sentinel*",
+                "scope_pattern": "example-org/sample-app*",
                 "author_email": "ops@example.com",
             },
             headers=admin_headers,
         )
         assert updated.status_code == 200
-        assert updated.json()["scope_pattern"] == "arais-labs/sentinel*"
+        assert updated.json()["scope_pattern"] == "example-org/sample-app*"
         assert updated.json()["author_email"] == "ops@example.com"
 
         approval = ToolApproval(
@@ -131,33 +117,6 @@ def test_git_accounts_crud_and_approval_resolution():
         app_main.init_db = old_init
 
 
-def test_git_routes_require_admin_role():
-    fake_db = FakeDB()
-
-    async def _override_get_db():
-        yield fake_db
-
-    async def _noop_init_db():
-        return None
-
-    from app import main as app_main
-
-    old_init = app_main.init_db
-    app_main.init_db = _noop_init_db
-    RateLimitMiddleware._buckets.clear()
-    app.dependency_overrides[get_db] = _override_get_db
-    app.dependency_overrides[get_manager_db] = _override_get_db
-
-    try:
-        client = TestClient(app)
-        agent_headers = {"Authorization": f"Bearer {_make_token(sub='agent-1', role='agent')}"}
-        response = client.get("/api/v1/instances/main/git/accounts", headers=agent_headers)
-        assert response.status_code == 403
-    finally:
-        app.dependency_overrides.clear()
-        app_main.init_db = old_init
-
-
 def test_generic_approvals_routes_list_and_resolve_git_tool_approval():
     fake_db = FakeDB()
 
@@ -176,10 +135,10 @@ def test_generic_approvals_routes_list_and_resolve_git_tool_approval():
     app.dependency_overrides[get_manager_db] = _override_get_db
 
     try:
-        client = TestClient(app)
-        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
-        assert login.status_code == 200
-        admin_headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        client = TestClient(
+            app, headers={"x-sentinel-desktop-token": "test-desktop-transport-token"}
+        )
+        admin_headers = {"x-sentinel-desktop-token": "test-desktop-transport-token"}
 
         account = GitAccount(
             name="github-main",
@@ -187,8 +146,7 @@ def test_generic_approvals_routes_list_and_resolve_git_tool_approval():
             scope_pattern="exampleco/*",
             author_name="Bot",
             author_email="bot@arais.ai",
-            token_read="ghr_read_token_123",
-            token_write="ghw_write_token_456",
+            token="github-test-token",
         )
         fake_db.add(account)
         fake_db.add(

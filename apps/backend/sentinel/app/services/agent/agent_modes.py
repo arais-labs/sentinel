@@ -4,10 +4,12 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
-from app.services.agent.interactive_output import (
-    POLICY_CONTENT as _INTERACTIVE_OUTPUT_CONTENT,
-    POLICY_EXPLANATION as _INTERACTIVE_OUTPUT_EXPLANATION,
-    POLICY_TITLE as _INTERACTIVE_OUTPUT_TITLE,
+from app.services.agent.policies import (
+    AgentModePolicy,
+    FULL_PERMISSION_POLICY,
+    READ_ONLY_POLICY,
+    CODE_REVIEW_POLICY,
+    INTERACTIVE_OUTPUT_POLICY,
 )
 
 
@@ -17,14 +19,6 @@ class AgentMode(StrEnum):
     READ_ONLY = "read_only"
     CODE_REVIEW = "code_review"
     INTERACTIVE_OUTPUT = "interactive_output"
-
-
-@dataclass(frozen=True, slots=True)
-class AgentModePolicy:
-    kind: str
-    title: str
-    explanation: str
-    content: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,66 +46,28 @@ _AGENT_MODE_DEFINITIONS: tuple[AgentModeDefinition, ...] = (
         label="Full Permission",
         description="Auto-approves approval-gated tool actions.",
         auto_approve_tool_gates=True,
-        policy=AgentModePolicy(
-            kind="agent_mode_policy",
-            title="Agent Mode Policy (Full Permission)",
-            explanation="Mode-specific execution policy for this run.",
-            content=(
-                "## Agent Mode Policy: Full Permission\n"
-                "This run is operating in Full Permission mode.\n"
-                "Approval-gated actions are auto-approved by backend policy for this run.\n"
-                "Proceed with normal execution and provide explicit traceability for high-impact actions."
-            ),
-        ),
+        policy=FULL_PERMISSION_POLICY,
     ),
     AgentModeDefinition(
         id=AgentMode.READ_ONLY,
         label="Read-Only",
         description="Investigation only. Do not modify files, state, or external systems.",
         auto_approve_tool_gates=False,
-        policy=AgentModePolicy(
-            kind="agent_mode_policy",
-            title="Agent Mode Policy (Read-Only)",
-            explanation="Mode-specific execution policy for this run.",
-            content=(
-                "## Agent Mode Policy: Read-Only\n"
-                "This run is operating in Read-Only mode.\n"
-                "Do not modify files, repositories, database state, configuration, or external systems.\n"
-                "Do investigation, diagnostics, and reporting only.\n"
-                "Do not output code patches or migration steps as completed actions."
-            ),
-        ),
+        policy=READ_ONLY_POLICY,
     ),
     AgentModeDefinition(
         id=AgentMode.CODE_REVIEW,
         label="Code Review",
         description="Review-first mode: analyze code for bugs/risks and report findings clearly.",
         auto_approve_tool_gates=False,
-        policy=AgentModePolicy(
-            kind="agent_mode_policy",
-            title="Agent Mode Policy (Code Review)",
-            explanation="Mode-specific execution policy for this run.",
-            content=(
-                "## Agent Mode Policy: Code Review\n"
-                "This run is operating in Code Review mode.\n"
-                "Prioritize identifying bugs, regressions, reliability risks, security issues, and missing tests.\n"
-                "Present findings first, ordered by severity, with concrete file/line references when possible.\n"
-                "Keep summaries brief and evidence-based.\n"
-                "Do not make code changes unless the user explicitly asks for fixes."
-            ),
-        ),
+        policy=CODE_REVIEW_POLICY,
     ),
     AgentModeDefinition(
         id=AgentMode.INTERACTIVE_OUTPUT,
         label="Interactive Output",
         description="Assistant can render HTML artifacts in a sandboxed iframe; optionally uses auto-injected Sentinel theme components.",
         auto_approve_tool_gates=False,
-        policy=AgentModePolicy(
-            kind="agent_mode_policy",
-            title=_INTERACTIVE_OUTPUT_TITLE,
-            explanation=_INTERACTIVE_OUTPUT_EXPLANATION,
-            content=_INTERACTIVE_OUTPUT_CONTENT,
-        ),
+        policy=INTERACTIVE_OUTPUT_POLICY,
     ),
 )
 

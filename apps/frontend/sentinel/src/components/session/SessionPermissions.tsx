@@ -1,0 +1,57 @@
+import { useEffect, useRef, useState } from 'react';
+import { api } from '../../lib/api';
+import { SESSION_PERMISSIONS_CHANGED } from '../../lib/approvals';
+import './approval-actions.css';
+
+type Grant = { id: string; action: string; session_id: string };
+
+export function SessionPermissions({ instanceName, sessionId }: { instanceName: string; sessionId: string }) {
+  const [grants, setGrants] = useState<Grant[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState<string | null>(null);
+  const [revision, setRevision] = useState(0);
+  const requestVersion = useRef(0);
+  const base = `/instances/${encodeURIComponent(instanceName)}/approvals/sessions/${encodeURIComponent(sessionId)}/grants`;
+  useEffect(() => {
+    let stopped = false;
+    const refresh = () => {
+      const version = ++requestVersion.current;
+      void api.get<Grant[]>(base).then(items => {
+        if (!stopped && version === requestVersion.current) { setGrants(items); setError(''); }
+      }).catch(() => {
+        if (!stopped && version === requestVersion.current) setError('Could not load permissions.');
+      }).finally(() => { if (!stopped && version === requestVersion.current) setLoading(false); });
+    };
+    refresh();
+    window.addEventListener(SESSION_PERMISSIONS_CHANGED, refresh);
+    return () => { stopped = true; window.removeEventListener(SESSION_PERMISSIONS_CHANGED, refresh); };
+  }, [base, revision]);
+
+  async function revoke(grant: Grant) {
+    if (busy) return;
+    setBusy(grant.id);
+    requestVersion.current++;
+    try {
+      await api.delete(`${base}/${encodeURIComponent(grant.id)}`);
+      requestVersion.current++;
+      setGrants(items => items.filter(item => item.id !== grant.id));
+      setError('');
+      window.dispatchEvent(new Event(SESSION_PERMISSIONS_CHANGED));
+    } catch { setError('Could not revoke permission. Try again.'); }
+    finally { setBusy(null); }
+  }
+
+  return <section className="run-settings-section session-permissions">
+    <h3>Session permissions</h3>
+    {loading ? <p role="status">Loading…</p> : <>
+      <p>{grants.length ? 'These actions can run without asking in this conversation.' : 'No actions automatically approved for this conversation.'}</p>
+      <ul>{grants.map(grant => <li key={grant.id}>
+        <code>{grant.action}</code>
+        <button type="button" disabled={busy !== null} aria-label={`Revoke ${grant.action}`}
+          onClick={() => void revoke(grant)}>{busy === grant.id ? 'Revoking…' : 'Revoke'}</button>
+      </li>)}</ul>
+    </>}
+    {error && <p role="alert">{error} <button type="button" onClick={() => setRevision(value => value + 1)}>Retry</button></p>}
+  </section>;
+}

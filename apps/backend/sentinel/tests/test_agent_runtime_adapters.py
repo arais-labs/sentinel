@@ -2,19 +2,17 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from typing import Any
+from uuid import UUID
 
 import pytest
 
-from app.sentral import ConversationItem, GenerationConfig, TextBlock, ToolCallBlock, ToolSchema
-from app.services.araios.module_types import ActionDefinition, ModuleDefinition
-from app.services.agent_runtime_adapters import (
-    SentinelProviderAdapter,
-    SentinelToolRegistryAdapter,
-    runtime_item_to_sentinel_message,
-    sentinel_message_to_runtime_item,
-)
-from app.services.llm.generic.base import LLMProvider
-from app.services.llm.generic.types import (
+from sentral import ConversationItem, GenerationConfig, TextBlock, ToolCallBlock, ToolSchema
+from sentral.llm.runtime_adapter import SentinelProviderAdapter
+from app.services.agent_runtime_adapters.tools import SentinelToolRegistryAdapter
+from sentral.llm.runtime_conversions import runtime_item_to_sentinel_message
+from sentral.llm.runtime_conversions import sentinel_message_to_runtime_item
+from sentral.llm.generic.base import LLMProvider
+from sentral.llm.generic.types import (
     AgentEvent,
     AssistantMessage,
     TextContent,
@@ -22,7 +20,10 @@ from app.services.llm.generic.types import (
     TokenUsage,
     ToolCallContent,
 )
-from app.services.tools.executor import ToolExecutionError, ToolExecutor, ToolValidationError
+from app.services.modules.definitions import ActionDefinition, ModuleDefinition
+from app.services.modules.tool_adapter import build_module_tools
+from sentral.errors import ToolValidationError
+from app.services.tools.executor import ToolExecutionError, ToolExecutor
 from app.services.tools.registry import (
     ToolApprovalEvaluation,
     ToolApprovalOutcome,
@@ -32,7 +33,6 @@ from app.services.tools.registry import (
     ToolRegistry,
     ToolRuntimeContext,
 )
-from uuid import UUID
 
 
 class _FakeProvider(LLMProvider):
@@ -86,7 +86,9 @@ class _FakeProvider(LLMProvider):
         yield AgentEvent(
             type="toolcall_end",
             tool_call=ToolCallContent(
-                id="call-1", name="browser.navigate", arguments={"url": "https://example.com"}
+                id="call-1",
+                name="browser.navigate",
+                arguments={"url": "https://example.com"},
             ),
         )
         yield AgentEvent(type="done", stop_reason="tool_use")
@@ -125,7 +127,7 @@ class _FakeIndexedProvider(LLMProvider):
         yield AgentEvent(
             type="toolcall_delta",
             content_index=4,
-            delta='{"command":"user","shell_command":"pwd"}',
+            delta='{"action":"exec","shell_command":"pwd"}',
         )
         yield AgentEvent(type="done", stop_reason="tool_use")
 
@@ -161,7 +163,9 @@ def test_runtime_message_conversion_skips_invalid_tool_call_blocks() -> None:
             TextBlock(text="hi"),
             ToolCallBlock(id="", name="browser.navigate", arguments={"url": "https://example.com"}),
             ToolCallBlock(
-                id="call-1", name="browser.navigate", arguments={"url": "https://example.com"}
+                id="call-1",
+                name="browser.navigate",
+                arguments={"url": "https://example.com"},
             ),
         ],
         metadata={
@@ -192,7 +196,9 @@ async def test_provider_adapter_converts_chat_surface() -> None:
         ],
         tools=[
             ToolSchema(
-                name="notes.create", description="Create note", parameters={"type": "object"}
+                name="notes.create",
+                description="Create note",
+                parameters={"type": "object"},
             )
         ],
         config=GenerationConfig(model="normal", temperature=0.2),
@@ -242,7 +248,7 @@ async def test_provider_adapter_preserves_content_index_for_streamed_tool_calls(
 
     assert tool_start.metadata["content_index"] == 4
     assert tool_delta.metadata["content_index"] == 4
-    assert tool_delta.delta == '{"command":"user","shell_command":"pwd"}'
+    assert tool_delta.delta == '{"action":"exec","shell_command":"pwd"}'
 
 
 @pytest.mark.asyncio
@@ -252,7 +258,10 @@ async def test_tool_registry_adapter_maps_ok_result() -> None:
         ToolDefinition(
             name="notes.create",
             description="Create a note",
-            parameters_schema={"type": "object", "properties": {"title": {"type": "string"}}},
+            parameters_schema={
+                "type": "object",
+                "properties": {"title": {"type": "string"}},
+            },
             execute=_ok_tool,
         )
     )
@@ -273,7 +282,11 @@ async def test_tool_registry_adapter_maps_pending_approval() -> None:
         ToolDefinition(
             name="git.push",
             description="Push branch",
-            parameters_schema={"type": "object", "properties": {}, "additionalProperties": True},
+            parameters_schema={
+                "type": "object",
+                "properties": {},
+                "additionalProperties": True,
+            },
             execute=_ok_tool,
             approval_check=lambda: ToolApprovalEvaluation.require(
                 ToolApprovalRequirement(
@@ -304,13 +317,17 @@ async def test_tool_registry_adapter_maps_post_approval_validation_error_to_erro
         payload: dict[str, Any], runtime: ToolRuntimeContext
     ) -> dict[str, Any]:
         _ = payload, runtime
-        raise ToolValidationError("Field 'command' must be 'read' for non-write git or gh commands")
+        raise ToolValidationError("Field 'action' must be 'read' for non-write git or gh commands")
 
     registry.register(
         ToolDefinition(
             name="git",
             description="Git tool",
-            parameters_schema={"type": "object", "properties": {}, "additionalProperties": True},
+            parameters_schema={
+                "type": "object",
+                "properties": {},
+                "additionalProperties": True,
+            },
             execute=_invalid_after_approval,
             approval_check=lambda: ToolApprovalEvaluation.require(
                 ToolApprovalRequirement(
@@ -326,12 +343,15 @@ async def test_tool_registry_adapter_maps_post_approval_validation_error_to_erro
     tool = adapter.get_tool("git")
     assert tool is not None
     result = await tool.execute(
-        {"command": "write", "cli_command": "git clone https://github.com/example/repo.git"}
+        {
+            "action": "write",
+            "cli_command": "git clone https://github.com/example/repo.git",
+        }
     )
 
     assert result.status == "error"
     assert result.approval_request is None
-    assert result.error == "Field 'command' must be 'read' for non-write git or gh commands"
+    assert result.error == "Field 'action' must be 'read' for non-write git or gh commands"
     assert result.metadata["approval"]["status"] == "approved"
     assert result.metadata["approval"]["pending"] is False
 
@@ -349,11 +369,11 @@ async def test_tool_registry_adapter_hides_and_injects_session_id_for_grouped_to
 
     module = ModuleDefinition(
         name="runtime",
-        label="Runtime",
+        label="Machine",
         grouped_tool=True,
         actions=[
             ActionDefinition(
-                id="user",
+                id="exec",
                 label="Run User",
                 handler=_handle_run_user,
                 parameters_schema={
@@ -369,7 +389,11 @@ async def test_tool_registry_adapter_hides_and_injects_session_id_for_grouped_to
         ],
     )
     registry = ToolRegistry()
-    registry.register(module.to_tool_definitions()[0])
+    registry.register(
+        build_module_tools(
+            module,
+        )[0]
+    )
     adapter = SentinelToolRegistryAdapter(
         registry,
         ToolExecutor(registry),
@@ -378,9 +402,9 @@ async def test_tool_registry_adapter_hides_and_injects_session_id_for_grouped_to
 
     tool = adapter.get_tool("runtime")
     assert tool is not None
-    assert "command" in tool.parameters_schema["required"]
+    assert "action" in tool.parameters_schema["required"]
 
-    result = await tool.execute({"command": "user", "shell_command": "pwd"})
+    result = await tool.execute({"action": "exec", "shell_command": "pwd"})
 
     assert result.status == "ok"
     assert seen_payloads == [

@@ -34,7 +34,7 @@ Each node has the following fields:
 | `importance` | Integer weight `0`–`100` used for retrieval/injection ranking |
 | `pinned` | If true, a **root** node is injected into every turn (see below) |
 | `parent_id` | Parent node, or null for a root |
-| `embedding` | Optional 1536-dimension vector for semantic search |
+| `embedding` | Optional 384-dimension local vector for semantic search |
 
 ---
 
@@ -77,9 +77,9 @@ The agent controls which non-pinned branches to expand by calling the memory too
 When the agent searches memory (the `search` action), it runs a hybrid pipeline with automatic fallbacks:
 
 ```
-1. Vector search (cosine similarity on embeddings)   ← only if an embedding service is active
+1. Vector search (sqlite-vec cosine similarity)   ← only if an embedding service is active
        +
-2. Keyword search (PostgreSQL tsvector full-text)
+2. Keyword search (SQLite FTS5 full-text)
        ↓ results from 1 + 2 merged via Reciprocal Rank Fusion (RRF)
        ↓ if the merge is empty
 3. Substring scan (Python-level string matching)
@@ -93,8 +93,10 @@ When an embedding service is active, vector and keyword results are combined wit
 The final fallback (most recent) **always returns results** — even if the query is unrelated to the returned nodes. If you see the agent citing oddly irrelevant memory context, this is likely the cause.
 :::
 
-:::warning Embeddings are not active in the default build
-Vector (semantic) search only runs when an embedding service is initialized. The embedding service is currently process-global and is built from an embedding API key — but that key, like other provider credentials, is **database-only** and is not yet hydrated at process startup. As a result, the embedding service does not initialize in the current build, so the pipeline runs **keyword → substring → recent only**. Semantic relevance is therefore degraded until embeddings are made per-instance. This is a known limitation tracked in the backend (`app/main.py`); see [Current limitations](#current-limitations).
+:::note Local embeddings — no API key
+Sentinel runs `BAAI/bge-small-en-v1.5` on CPU through FastEmbed. The model downloads once into `<storage_root>/models/embeddings`; subsequent inference uses cached files. Memory text is not sent to an embedding API. Inference runs off the server event loop, and model initialization is shared across instances; each instance's stored memories remain isolated.
+
+New and edited memories are embedded automatically. Startup backfill populates missing vectors and rebuilds embeddings with an unknown or different model identifier. Long memories are split into overlapping chunks and pooled into a normalized vector. If model loading fails (for example, an offline first launch), text storage and keyword retrieval remain available; model loading retries after a cooldown.
 :::
 
 ---
@@ -157,12 +159,12 @@ Operators can inspect and edit the full memory tree in the Sentinel UI under **M
 - Delete nodes
 - Pin or unpin nodes
 
-Agents also manage memory autonomously — storing new context, updating stale nodes, merging duplicates, and reorganizing structure when it becomes crowded — using the operations above. Protected system nodes (`agent_identity`, `user_profile`) are off-limits to both operators and agents.
+Agents also manage memory autonomously — storing new context, updating stale nodes, merging duplicates, and reorganizing structure when it becomes crowded — using the operations above. Protected system nodes (`agent_identity`, `user_profile`) can have their content updated, but cannot be deleted, unpinned, or moved. The policy calls for saving durable corrections, preferences, decisions, and verified discoveries at natural milestones, updating existing entries rather than duplicating them. Subagents report findings to the parent for durable writes.
 
 ---
 
 ## Current limitations
 
-- **Semantic (vector) search is inactive in the current build.** The embedding service is process-global and built from a DB-only API key that is not hydrated at boot, so it never initializes. Search runs keyword → substring → recent only. Tracked for migration to per-instance embeddings.
+- **The local model is English-focused.** Multilingual retrieval quality is not guaranteed. First use requires downloading model assets; offline installations need the model cache provisioned beforehand.
 - **The "most recent" fallback can return unrelated nodes.** Because it always returns results, low-quality matches can surface as memory context when keyword/substring searches come up empty.
 - **System-node protection is service-layer, not fully constraint-enforced.** Direct database writes that bypass the service could violate the protection rules.

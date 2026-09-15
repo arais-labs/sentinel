@@ -24,7 +24,18 @@ class SecurityHeadersMiddleware:
                 header_list = list(message.get("headers", []))
 
                 _setdefault(header_list, b"x-content-type-options", b"nosniff")
-                _setdefault(header_list, b"x-frame-options", b"DENY")
+                # Responses with an explicit framing policy own their allowed
+                # ancestors. Adding DENY breaks Chromium's native PDF viewer.
+                has_frame_policy = any(
+                    name.lower() == b"content-security-policy"
+                    and any(
+                        directive.strip().lower().startswith(b"frame-ancestors ")
+                        for directive in value.split(b";")
+                    )
+                    for name, value in header_list
+                )
+                if not has_frame_policy:
+                    _setdefault(header_list, b"x-frame-options", b"DENY")
                 _setdefault(header_list, b"referrer-policy", b"no-referrer")
                 _setdefault(
                     header_list, b"permissions-policy", b"camera=(), microphone=(), geolocation=()"

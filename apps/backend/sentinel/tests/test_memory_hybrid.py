@@ -1,13 +1,19 @@
 from __future__ import annotations
 
-import os
 
+import pytest
+import pytest_asyncio
+from uuid import uuid4
+
+from sqlalchemy.ext.asyncio import async_sessionmaker
+from app.config import settings
+from app.database.initialization import init_instance_db
+from app.database.engine import create_database_engine
 from fastapi.testclient import TestClient
 
-os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-with-32-bytes-min")
 
 from app.main import app
-from app.models import Memory, Session
+from app.models import Memory
 from app.services.memory.search import MemorySearchResult, MemorySearchService
 from tests.fake_db import FakeDB
 from tests.helpers import install_fake_db_overrides, restore_test_app
@@ -42,13 +48,14 @@ def test_memory_store_auto_embeds_when_embedding_service_available():
     old_embedding = getattr(app.state, "embedding_service", None)
     old_search = getattr(app.state, "memory_search_service", None)
     app.state.embedding_service = _FakeEmbeddingService([0.1, 0.2])
+    app.state.embedding_service.fingerprint = "local-test"
     app.state.memory_search_service = None
 
     try:
-        client = TestClient(app)
-        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
-        token = login.json()["access_token"]
-        headers = {"Authorization": f"Bearer {token}"}
+        client = TestClient(
+            app, headers={"x-sentinel-desktop-token": "test-desktop-transport-token"}
+        )
+        headers = {"x-sentinel-desktop-token": "test-desktop-transport-token"}
 
         resp = client.post(
             MEMORY_API,
@@ -59,6 +66,12 @@ def test_memory_store_auto_embeds_when_embedding_service_available():
 
         stored = fake_db.storage[Memory][0]
         assert stored.embedding == [0.1, 0.2]
+        assert stored.metadata_json["_embedding_model"] == "local-test"
+        app.state.embedding_service.vector = [0.3, 0.4]
+        response = client.patch(f"{MEMORY_API}/nodes/{stored.id}", json={"content": "updated fact"})
+        assert response.status_code == 200
+        assert stored.embedding == [0.3, 0.4]
+        assert stored.metadata_json["_embedding_model"] == "local-test"
     finally:
         restore_test_app(old_init)
         app.state.embedding_service = old_embedding
@@ -75,10 +88,10 @@ def test_memory_store_works_without_embedding_service():
     app.state.memory_search_service = None
 
     try:
-        client = TestClient(app)
-        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
-        token = login.json()["access_token"]
-        headers = {"Authorization": f"Bearer {token}"}
+        client = TestClient(
+            app, headers={"x-sentinel-desktop-token": "test-desktop-transport-token"}
+        )
+        headers = {"x-sentinel-desktop-token": "test-desktop-transport-token"}
 
         resp = client.post(
             MEMORY_API,
@@ -104,10 +117,10 @@ def test_memory_list_uses_hybrid_search_service_when_available():
     app.state.memory_search_service = search_service
 
     try:
-        client = TestClient(app)
-        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
-        token = login.json()["access_token"]
-        headers = {"Authorization": f"Bearer {token}"}
+        client = TestClient(
+            app, headers={"x-sentinel-desktop-token": "test-desktop-transport-token"}
+        )
+        headers = {"x-sentinel-desktop-token": "test-desktop-transport-token"}
 
         resp = client.get(f"{MEMORY_API}?query=matched", headers=headers)
         assert resp.status_code == 200
@@ -120,32 +133,35 @@ def test_memory_list_uses_hybrid_search_service_when_available():
         app.state.memory_search_service = old_search
 
 
-def test_memory_list_falls_back_to_substring_when_no_embedding_service():
-    db = FakeDB()
-    session = Session(user_id="dev-admin", status="active", title="m")
-    db.add(session)
+@pytest.mark.asyncio
+async def test_memory_list_falls_back_to_substring_when_no_embedding_service(memory_db):
+    db = memory_db
     db.add(Memory(content="alpha bravo", category="project", metadata_json={}))
     db.add(Memory(content="charlie delta", category="project", metadata_json={}))
 
+    await db.commit()
     search = MemorySearchService(embedding_service=None)
-    results = _run(search.search(db, "alpha", category="project", limit=10))
+    results = await search.search(db, "alpha", category="project", limit=10)
     assert len(results) == 1
     assert results[0].memory.content == "alpha bravo"
 
 
-def test_memory_search_returns_recent_when_no_match_and_no_embedding():
-    db = FakeDB()
+@pytest.mark.asyncio
+async def test_memory_search_returns_recent_when_no_match_and_no_embedding(memory_db):
+    db = memory_db
     db.add(Memory(content="first memory", category="project", metadata_json={}))
     db.add(Memory(content="second memory", category="project", metadata_json={}))
 
+    await db.commit()
     search = MemorySearchService(embedding_service=None)
-    results = _run(search.search(db, "what memories do you have", category="project", limit=10))
+    results = await search.search(db, "what memories do you have", category="project", limit=10)
     assert len(results) == 2
     assert results[0].memory.content in {"first memory", "second memory"}
 
 
-def test_memory_search_vector_order_and_rrf_merge():
-    db = FakeDB()
+@pytest.mark.asyncio
+async def test_memory_search_vector_order_and_rrf_merge(memory_db):
+    db = memory_db
     m1 = Memory(content="apple project", category="project", metadata_json={}, embedding=[1.0, 0.0])
     m2 = Memory(content="apple docs", category="project", metadata_json={}, embedding=[0.2, 0.8])
     m3 = Memory(content="banana notes", category="project", metadata_json={}, embedding=[0.0, 1.0])
@@ -153,12 +169,13 @@ def test_memory_search_vector_order_and_rrf_merge():
     db.add(m2)
     db.add(m3)
 
+    await db.commit()
     search = MemorySearchService(embedding_service=_FakeEmbeddingService([1.0, 0.0]))
 
-    vector = _run(search._vector_search(db, [1.0, 0.0], "project", 3))
+    vector = await search._vector_search(db, [1.0, 0.0], "project", 3)
     assert vector[0][0].id == m1.id
 
-    keyword = _run(search._keyword_search(db, "apple", "project", 3))
+    keyword = await search._keyword_search(db, "apple", "project", 3)
     assert keyword[0][0].id in {m1.id, m2.id}
 
     merged = search._rrf_merge(vector, keyword, k=60)
@@ -166,7 +183,39 @@ def test_memory_search_vector_order_and_rrf_merge():
     assert merged[0].memory.id in {m1.id, m2.id}
 
 
-def _run(coro):
-    import asyncio
+@pytest_asyncio.fixture
+async def memory_db():
+    identifier = str(uuid4())
+    await init_instance_db(identifier)
+    engine = create_database_engine(settings.database_url(identifier))
+    try:
+        async with async_sessionmaker(engine, expire_on_commit=False)() as db:
+            yield db
+    finally:
+        await engine.dispose()
 
-    return asyncio.run(coro)
+
+@pytest.mark.asyncio
+async def test_vectors_from_other_models_are_not_compared(memory_db):
+    service = _FakeEmbeddingService([1.0, 0.0])
+    service.fingerprint = "local-test"
+    for model, vector in [("old-model", [1.0, 0.0]), ("local-test", [0.8, 0.2])]:
+        memory_db.add(
+            Memory(
+                content=model,
+                category="project",
+                metadata_json={"_embedding_model": model},
+                embedding=vector,
+            )
+        )
+    memory_db.add(
+        Memory(
+            content="wrong dimension",
+            category="project",
+            metadata_json={"_embedding_model": "local-test"},
+            embedding=[1.0, 0.0, 0.0],
+        )
+    )
+    await memory_db.commit()
+    results = await MemorySearchService(service)._vector_search(memory_db, [1.0, 0.0], None, 10)
+    assert [memory.content for memory, score in results] == ["local-test"]

@@ -1,5 +1,13 @@
 from __future__ import annotations
 
+import asyncio
+from alembic import command
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import async_sessionmaker
+from app.database.engine import create_database_engine
+from app.models.tool_approvals import SessionActionGrant, ToolApproval
+from tests.test_alembic_baselines import migration_config
+
 import base64
 import json
 import os
@@ -8,18 +16,16 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-with-32-bytes-min")
 os.environ.setdefault("DATA_ENCRYPTION_KEY", "test-data-key-with-32-bytes-minimum")
 
 from fastapi.testclient import TestClient
 
 from app.main import app
-from app.models.araios import AraiosModule, AraiosModuleRecord, AraiosModuleSecret
 from app.models.memory import Memory
+from app.models.modules import Module, ModuleRecord, ModuleSecret
 from app.models.sessions import Message, Session
 from app.models.triggers import Trigger, TriggerLog
 from app.services.backup import (
-    BackupCompatibilityError,
     BackupFormatError,
     BackupPassphraseError,
     encrypt_backup,
@@ -58,16 +64,26 @@ def test_crypto_requires_passphrase():
         encrypt_backup(b"x", "")
 
 
+@pytest.fixture(autouse=True)
+def _payload_test_kdf(request, monkeypatch):
+    # Keep crypto contract tests at production cost. Payload/import tests still
+    # use real authenticated encryption, but need not repeatedly benchmark scrypt.
+    if not request.node.name.startswith("test_crypto_"):
+        from app.services.backup import crypto
+
+        monkeypatch.setattr(crypto, "_SCRYPT_N", 2**10)
+
+
 # ── engine fixtures ──
 def _seed_source() -> FakeDB:
-    db = FakeDB(seed_auth=False)
+    db = FakeDB()
     base = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
-    db.add(AraiosModule(name="notes", label="Notes", system=False))
-    db.add(AraiosModule(name="core", label="Core", system=True))
-    db.add(AraiosModuleRecord(id="rec-notes", module_name="notes", data={"x": 1}))
-    db.add(AraiosModuleRecord(id="rec-core", module_name="core", data={"y": 2}))
-    db.add(AraiosModuleSecret(module_name="notes", key="api_key", value="s3cr3t"))
+    db.add(Module(name="notes", label="Notes", system=False))
+    db.add(Module(name="core", label="Core", system=True))
+    db.add(ModuleRecord(id="rec-notes", module_name="notes", data={"x": 1}))
+    db.add(ModuleRecord(id="rec-core", module_name="core", data={"y": 2}))
+    db.add(ModuleSecret(module_name="notes", key="api_key", value="s3cr3t"))
 
     s1 = Session(id=uuid.uuid4(), user_id="u1", title="Root", created_at=base)
     s2 = Session(
@@ -126,14 +142,14 @@ async def test_export_import_roundtrip():
     src = _seed_source()
     blob = await export_backup(src, instance_name="main", items=ALL_ITEMS, passphrase=_PASS)
 
-    dst = FakeDB(seed_auth=False)
+    dst = FakeDB()
     summary = await import_backup(dst, blob, _PASS)
 
     # notes module + its record + its secret; core (system) module and its record excluded.
-    modules = dst.storage[AraiosModule]
+    modules = dst.storage[Module]
     assert {m.name for m in modules} == {"notes"}
-    assert {r.id for r in dst.storage[AraiosModuleRecord]} == {"rec-notes"}
-    assert {s.key for s in dst.storage[AraiosModuleSecret]} == {"api_key"}
+    assert {r.id for r in dst.storage[ModuleRecord]} == {"rec-notes"}
+    assert {s.key for s in dst.storage[ModuleSecret]} == {"api_key"}
 
     # two sessions (parent + child), one message.
     assert len(dst.storage[Session]) == 2
@@ -156,7 +172,7 @@ async def test_reimport_is_noop():
     src = _seed_source()
     blob = await export_backup(src, instance_name="main", items=ALL_ITEMS, passphrase=_PASS)
 
-    dst = FakeDB(seed_auth=False)
+    dst = FakeDB()
     first = await import_backup(dst, blob, _PASS)
     counts = {model: len(rows) for model, rows in dst.storage.items()}
 
@@ -173,10 +189,10 @@ async def test_selective_import_only_modules():
     src = _seed_source()
     blob = await export_backup(src, instance_name="main", items=ALL_ITEMS, passphrase=_PASS)
 
-    dst = FakeDB(seed_auth=False)
+    dst = FakeDB()
     await import_backup(dst, blob, _PASS, items=["modules"])
 
-    assert len(dst.storage[AraiosModule]) == 1
+    assert len(dst.storage[Module]) == 1
     assert len(dst.storage[Session]) == 0
     assert len(dst.storage[Memory]) == 0
     assert len(dst.storage[Trigger]) == 0
@@ -191,10 +207,10 @@ async def test_selective_export_only_triggers():
     assert info["items"] == ["triggers"]
     assert info["source_instance"] == "main"
 
-    dst = FakeDB(seed_auth=False)
+    dst = FakeDB()
     await import_backup(dst, blob, _PASS)
     assert len(dst.storage[Trigger]) == 1
-    assert len(dst.storage[AraiosModule]) == 0
+    assert len(dst.storage[Module]) == 0
 
 
 @pytest.mark.asyncio
@@ -202,7 +218,7 @@ async def test_import_remaps_owner_to_importing_user():
     src = _seed_source()
     blob = await export_backup(src, instance_name="main", items=ALL_ITEMS, passphrase=_PASS)
 
-    dst = FakeDB(seed_auth=False)
+    dst = FakeDB()
     summary = await import_backup(dst, blob, _PASS, owner_user_id="u2")
 
     # Owner-scoped rows are reassigned to the importing user, not the source's.
@@ -212,7 +228,7 @@ async def test_import_remaps_owner_to_importing_user():
     assert set(summary.items) == set(ALL_ITEMS)
 
 
-# ── version compatibility ──
+# ── backup format contract ──
 def _stamped_blob(created_by_version, *, items=("modules",), tables=None) -> bytes:
     payload = {
         "schema_version": backup_engine.SCHEMA_VERSION,
@@ -227,65 +243,26 @@ def _stamped_blob(created_by_version, *, items=("modules",), tables=None) -> byt
 
 
 @pytest.mark.asyncio
-async def test_import_refuses_backup_below_min_version(monkeypatch):
-    monkeypatch.setattr(backup_engine, "MIN_RESTORABLE_VERSION", "0.5.0")
-    monkeypatch.setattr(backup_engine, "app_version", lambda: "0.5.0")
-    with pytest.raises(BackupCompatibilityError):
-        await import_backup(FakeDB(seed_auth=False), _stamped_blob("0.4.9"), _PASS)
-
-
-@pytest.mark.asyncio
-async def test_import_refuses_backup_from_newer_major(monkeypatch):
-    monkeypatch.setattr(backup_engine, "app_version", lambda: "1.2.0")
-    with pytest.raises(BackupCompatibilityError):
-        await import_backup(FakeDB(seed_auth=False), _stamped_blob("2.0.0"), _PASS)
-
-
-@pytest.mark.asyncio
-async def test_import_allows_newer_minor_same_major(monkeypatch):
-    # Upper bound is major-only: a newer minor/patch still restores.
-    monkeypatch.setattr(backup_engine, "app_version", lambda: "1.2.0")
-    summary = await import_backup(FakeDB(seed_auth=False), _stamped_blob("1.9.3"), _PASS)
-    assert summary.imported == 0  # empty tables, but not refused
-
-
-@pytest.mark.asyncio
-async def test_import_refuses_unstamped_backup():
-    with pytest.raises(BackupCompatibilityError):
-        await import_backup(FakeDB(seed_auth=False), _stamped_blob(None), _PASS)
-
-
-@pytest.mark.asyncio
-async def test_import_refuses_when_schema_head_unverified(monkeypatch):
-    monkeypatch.setattr(backup_engine, "VERIFIED_INSTANCE_ALEMBIC_HEAD", "not-the-real-head")
-    blob = await export_backup(
-        _seed_source(), instance_name="main", items=["modules"], passphrase=_PASS
-    )
-    with pytest.raises(BackupCompatibilityError):
-        await import_backup(FakeDB(seed_auth=False), blob, _PASS)
-
-
-def test_inspect_reports_incompatible_backup(monkeypatch):
-    monkeypatch.setattr(backup_engine, "app_version", lambda: "1.0.0")
-    info = inspect_backup(_stamped_blob("2.0.0"), _PASS)
-    assert info["restorable"] is False
-    assert info["compatibility"]
-    assert info["created_by_version"] == "2.0.0"
+@pytest.mark.parametrize("version", [None, "0.0.1", "999.0.0", "development"])
+async def test_app_version_is_informational(version):
+    blob = _stamped_blob(version)
+    assert inspect_backup(blob, _PASS)["created_by_version"] == version
+    assert (await import_backup(FakeDB(), blob, _PASS)).imported == 0
 
 
 # ── router ──
-def _auth_headers(client: TestClient) -> dict[str, str]:
-    resp = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin"})
-    assert resp.status_code == 200
-    return {"Authorization": f"Bearer {resp.json()['access_token']}"}
+def _desktop_headers(client: TestClient) -> dict[str, str]:
+    return {"x-sentinel-desktop-token": "test-desktop-transport-token"}
 
 
 def test_list_items_endpoint():
     fake_db = FakeDB()
     old_init = install_fake_db_overrides(app_db=fake_db)
     try:
-        client = TestClient(app)
-        headers = _auth_headers(client)
+        client = TestClient(
+            app, headers={"x-sentinel-desktop-token": "test-desktop-transport-token"}
+        )
+        headers = _desktop_headers(client)
         resp = client.get(f"{BACKUP_API}/items", headers=headers)
         assert resp.status_code == 200
         keys = {i["key"] for i in resp.json()["items"]}
@@ -298,8 +275,10 @@ def test_export_requires_item_selection():
     fake_db = FakeDB()
     old_init = install_fake_db_overrides(app_db=fake_db)
     try:
-        client = TestClient(app)
-        headers = _auth_headers(client)
+        client = TestClient(
+            app, headers={"x-sentinel-desktop-token": "test-desktop-transport-token"}
+        )
+        headers = _desktop_headers(client)
         resp = client.post(
             f"{BACKUP_API}/export", json={"items": [], "passphrase": _PASS}, headers=headers
         )
@@ -310,12 +289,14 @@ def test_export_requires_item_selection():
 
 def test_api_export_then_import_roundtrip():
     fake_db = FakeDB()
-    fake_db.add(AraiosModule(name="notes", label="Notes", system=False))
+    fake_db.add(Module(name="notes", label="Notes", system=False))
 
     old_init = install_fake_db_overrides(app_db=fake_db)
     try:
-        client = TestClient(app)
-        headers = _auth_headers(client)
+        client = TestClient(
+            app, headers={"x-sentinel-desktop-token": "test-desktop-transport-token"}
+        )
+        headers = _desktop_headers(client)
 
         exported = client.post(
             f"{BACKUP_API}/export",
@@ -334,7 +315,7 @@ def test_api_export_then_import_roundtrip():
         assert inspected.json()["items"] == ["modules"]
 
         # Drop the module to simulate restoring onto an instance that lacks it.
-        fake_db.storage[AraiosModule] = []
+        fake_db.storage[Module] = []
 
         imported = client.post(
             f"{BACKUP_API}/import",
@@ -343,19 +324,21 @@ def test_api_export_then_import_roundtrip():
         )
         assert imported.status_code == 200
         assert imported.json()["imported"] >= 1
-        assert {m.name for m in fake_db.storage[AraiosModule]} == {"notes"}
+        assert {m.name for m in fake_db.storage[Module]} == {"notes"}
     finally:
         restore_test_app(old_init)
 
 
 def test_api_import_wrong_passphrase():
     fake_db = FakeDB()
-    fake_db.add(AraiosModule(name="notes", label="Notes", system=False))
+    fake_db.add(Module(name="notes", label="Notes", system=False))
 
     old_init = install_fake_db_overrides(app_db=fake_db)
     try:
-        client = TestClient(app)
-        headers = _auth_headers(client)
+        client = TestClient(
+            app, headers={"x-sentinel-desktop-token": "test-desktop-transport-token"}
+        )
+        headers = _desktop_headers(client)
         exported = client.post(
             f"{BACKUP_API}/export",
             json={"items": ["modules"], "passphrase": _PASS},
@@ -371,3 +354,86 @@ def test_api_import_wrong_passphrase():
         assert bad.status_code == 400
     finally:
         restore_test_app(old_init)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("schema_version", 999),
+        ("schema_version", "3"),
+        ("items", "sessions"),
+        ("items", ["unknown"]),
+        ("tables", {"modules": "bad"}),
+        ("tables", {"modules": [1]}),
+        ("tables", {"session_action_grants": []}),
+    ],
+)
+def test_malformed_or_unsupported_payload_rejected(field, value):
+    payload = json.loads(decrypt_backup(_stamped_blob("development"), _PASS))
+    payload[field] = value
+    blob = encrypt_backup(json.dumps(payload).encode(), _PASS)
+    with pytest.raises(BackupFormatError):
+        inspect_backup(blob, _PASS)
+
+
+def test_backup_roundtrip_on_fresh_migrations(tmp_path):
+
+    source_path, target_path = tmp_path / "source.sqlite", tmp_path / "target.sqlite"
+    for path in (source_path, target_path):
+        command.upgrade(migration_config("instance", path), "head")
+
+    async def scenario():
+        source = create_database_engine(f"sqlite+aiosqlite:///{source_path}")
+        target = create_database_engine(f"sqlite+aiosqlite:///{target_path}")
+        try:
+            async with async_sessionmaker(source, expire_on_commit=False)() as db:
+                seeded = _seed_source()
+                # Insert parent tables before dependent rows with SQLite FK enforcement.
+                for model in (
+                    Module,
+                    Session,
+                    Message,
+                    Memory,
+                    Trigger,
+                    TriggerLog,
+                    ModuleRecord,
+                    ModuleSecret,
+                ):
+                    for row in seeded.storage[model]:
+                        db.add(row)
+                        await db.flush()
+                session_id = seeded.storage[Session][0].id
+                db.add(
+                    SessionActionGrant(
+                        session_id=session_id, action="notes.write", approved_by="u1"
+                    )
+                )
+                db.add(
+                    ToolApproval(
+                        session_id=session_id,
+                        tool_name="notes",
+                        action="notes.write",
+                        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+                    )
+                )
+                await db.commit()
+                blob = await export_backup(
+                    db, instance_name="source", items=ALL_ITEMS, passphrase=_PASS
+                )
+            payload = json.loads(decrypt_backup(blob, _PASS))
+            assert "session_action_grants" not in payload["tables"]
+            assert "tool_approvals" not in payload["tables"]
+            async with async_sessionmaker(target, expire_on_commit=False)() as db:
+                summary = await import_backup(db, blob, _PASS, owner_user_id="restorer")
+                assert summary.imported > 0 and summary.skipped == 0
+                assert await db.scalar(select(func.count()).select_from(Session)) == 2
+                assert await db.scalar(select(ModuleSecret.value)) == "s3cr3t"
+                assert await db.scalar(select(func.count()).select_from(SessionActionGrant)) == 0
+                assert await db.scalar(select(func.count()).select_from(ToolApproval)) == 0
+                assert set((await db.scalars(select(Session.user_id))).all()) == {"restorer"}
+                assert (await import_backup(db, blob, _PASS)).imported == 0
+        finally:
+            await source.dispose()
+            await target.dispose()
+
+    asyncio.run(scenario())

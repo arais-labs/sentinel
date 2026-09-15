@@ -11,7 +11,8 @@ from app.config import (
     CHAT_MAX_ITERATIONS,
 )
 from app.services.agent.agent_modes import AgentMode
-from app.services.llm.ids import TierName
+from sentral.llm.ids import ProviderId, TierName
+from app.services.llm.session_selection import ReasoningLevel
 
 
 class CreateSessionRequest(BaseModel):
@@ -39,6 +40,7 @@ class UpdateSessionRequest(BaseModel):
 
 
 class SessionResponse(BaseModel):
+    workspace_id: UUID | None = None
     id: UUID
     user_id: str
     agent_id: str | None = None
@@ -48,11 +50,11 @@ class SessionResponse(BaseModel):
     latest_system_prompt: str | None = None
     started_at: datetime
     is_running: bool = False
-    is_main: bool = False
     has_unread: bool = False
 
 
 class SessionListItemResponse(BaseModel):
+    workspace_id: UUID | None = None
     id: UUID
     user_id: str
     agent_id: str | None = None
@@ -60,8 +62,10 @@ class SessionListItemResponse(BaseModel):
     title: str | None = None
     started_at: datetime
     is_running: bool = False
-    is_main: bool = False
     has_unread: bool = False
+    awaiting_input: bool = False
+    pending_form_id: str | None = None
+    completion_id: str | None = None
 
 
 class SessionListResponse(BaseModel):
@@ -72,10 +76,9 @@ class SessionListResponse(BaseModel):
 class SessionContextUsageResponse(BaseModel):
     session_id: UUID
     context_token_budget: int
-    estimated_context_tokens: int | None = None
-    estimated_context_percent: int | None = None
     snapshot_created_at: datetime | None = None
-    source: str = "runtime_context"
+    source: str = "unavailable"
+    last_request_usage: dict | None = None
 
 
 class CreateMessageRequest(BaseModel):
@@ -121,16 +124,30 @@ class ChatAttachment(BaseModel):
     filename: str | None = Field(default=None, max_length=200)
 
 
+class RetryMessageRequest(BaseModel):
+    """Optional overrides; an omitted field preserves the previous attempt."""
+
+    tier: TierName | None = None
+    provider_id: ProviderId | None = None
+    reasoning_level: ReasoningLevel | None = None
+    fast_mode: bool = Field(default=False, strict=True)
+    agent_mode: AgentMode | None = None
+    max_iterations: int = Field(default=CHAT_DEFAULT_ITERATIONS, ge=0, le=CHAT_MAX_ITERATIONS)
+
+
 class ChatRequest(BaseModel):
     content: str = Field(default="", max_length=50_000)
     attachments: list[ChatAttachment] = Field(default_factory=list, max_length=4)
     tier: TierName | None = None
+    provider_id: ProviderId | None = None
+    reasoning_level: ReasoningLevel | None = None
+    fast_mode: bool = Field(default=False, strict=True)
     agent_mode: AgentMode | None = None
     system_prompt: str | None = None
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     max_iterations: int = Field(
         default=CHAT_DEFAULT_ITERATIONS,
-        ge=1,
+        ge=0,
         le=CHAT_MAX_ITERATIONS,
     )
 
@@ -158,6 +175,10 @@ class ChatRequest(BaseModel):
 class ChatUsage(BaseModel):
     input_tokens: int = 0
     output_tokens: int = 0
+
+
+class SteeringRequest(ChatRequest):
+    message_id: UUID
 
 
 class ChatResponse(BaseModel):

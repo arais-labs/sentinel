@@ -2,23 +2,34 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func, text
-from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy import JSON, ForeignKey, Integer, String, Text, Uuid, func, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
+from app.models.column_types import UTCDateTime
+
+if TYPE_CHECKING:
+    from app.models.memory import SessionSummary
+    from app.models.sub_agents import SubAgentTask
 
 
 class Session(Base):
     __tablename__ = "sessions"
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[str] = mapped_column(String(100), index=True)
     agent_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     parent_session_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True),
+        Uuid(as_uuid=True),
         ForeignKey("sessions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    workspace_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
         nullable=True,
         index=True,
     )
@@ -28,13 +39,13 @@ class Session(Base):
     status: Mapped[str] = mapped_column(
         String(20), default="active", server_default=text("'active'"), index=True
     )
-    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    started_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=func.now())
+    ended_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+        UTCDateTime(), server_default=func.now(), onupdate=func.now()
     )
-    last_read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_read_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     conversation_message_count: Mapped[int] = mapped_column(Integer, server_default=text("0"))
     last_auto_rename_count: Mapped[int] = mapped_column(Integer, server_default=text("0"))
 
@@ -52,18 +63,16 @@ class Session(Base):
 class Message(Base):
     __tablename__ = "messages"
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
     session_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("sessions.id", ondelete="CASCADE"), index=True
+        Uuid(as_uuid=True), ForeignKey("sessions.id", ondelete="CASCADE"), index=True
     )
     role: Mapped[str] = mapped_column(String(20))
     content: Mapped[str] = mapped_column(Text)
-    metadata_json: Mapped[dict] = mapped_column(
-        "metadata", JSONB, server_default=text("'{}'::jsonb")
-    )
+    metadata_json: Mapped[dict] = mapped_column("metadata", JSON, server_default=text("'{}'"))
     token_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     tool_call_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     tool_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=func.now())
 
     session: Mapped["Session"] = relationship(back_populates="messages")

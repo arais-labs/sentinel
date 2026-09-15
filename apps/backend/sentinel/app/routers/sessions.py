@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
-import re
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 import httpx
@@ -23,46 +23,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import CHAT_DEFAULT_ITERATIONS
-from app.database import ManagerSessionLocal
-from app.dependencies import get_db, get_request_db_factory, get_request_instance_runtime_context
-from app.middleware.auth import (
-    ACCESS_TOKEN_COOKIE_NAME,
-    TokenPayload,
-    decode_and_validate_token,
-    require_auth,
+from app.dependencies import (
+    get_db,
+    get_request_db_factory,
+    get_request_instance_runtime_context,
+    get_request_run_registry,
 )
 from app.models import Message, Session
-from app.schemas.sessions import (
-    ChatRequest,
-    ChatResponse,
-    CreateMessageRequest,
-    CreateSessionRequest,
-    MessageListResponse,
-    MessageResponse,
-    UpdateSessionRequest,
-    SessionListItemResponse,
-    SessionListResponse,
-    SessionContextUsageResponse,
-    SessionResponse,
-)
-from app.services.agent.agent_modes import (
-    get_default_agent_mode,
-    parse_agent_mode,
-)
-from app.services.llm.generic.types import ImageContent, TextContent
-from app.services.llm.ids import TierName, parse_tier_name
-from app.services.sessions.agent_run_registry import AgentRunRegistry
-from app.services.sessions import (
-    AgentRuntimeUnavailableError,
-    ChatPayloadRequiredError,
-    MainSessionDeletionError,
-    MainSessionTargetInvalidError,
-    MessageNotFoundError,
-    SessionRenameNotAllowedError,
-    SessionNotFoundError,
-    SessionService,
-    SessionWorkspaceCleanupError,
-)
 from app.schemas.runtime import (
     SessionRuntimeFilePreviewResponse,
     SessionRuntimeFilesResponse,
@@ -70,25 +37,61 @@ from app.schemas.runtime import (
     SessionRuntimeGitDiffResponse,
     SessionRuntimeGitRootsResponse,
 )
+from app.schemas.sessions import (
+    ChatRequest,
+    ChatResponse,
+    CreateMessageRequest,
+    CreateSessionRequest,
+    MessageListResponse,
+    MessageResponse,
+    RetryMessageRequest,
+    SessionContextUsageResponse,
+    SessionListItemResponse,
+    SessionListResponse,
+    SessionResponse,
+    SteeringRequest,
+    UpdateSessionRequest,
+)
+from app.services.agent.agent_modes import (
+    get_default_agent_mode,
+    parse_agent_mode,
+)
+from app.services.agent_runtime_adapters.conversions import db_messages_to_runtime_items
+from sentral.llm.generic.types import ImageContent, TextContent, UserMessage
+from sentral.llm.ids import TierName, parse_tier_name
+from app.services.llm.session_selection import selection_model
+from app.services.modules.builtins.form.contract import pending_form_sessions
+from app.services.runtime.file_stream import stream_response
 from app.services.runtime.files import (
     RuntimePathInvalidError,
     RuntimePathIsDirectoryError,
     RuntimePathNotFoundError,
 )
-from app.services.araios.runtime_services import get_browser_pool
+from app.services.runtime.machines import InstanceRuntimeNotConfigured
+from app.services.runtime.panes import TmuxPanes
+from app.services.runtime.port_forwards import RuntimeForwardNotFound
 from app.services.runtime.ssh_runtime import (
-    get_runtime_desktop_manager,
+    get_runtime_port_forward_manager,
     get_runtime_terminal_manager,
     get_runtime_workspace_files,
 )
-from app.services.runtime.port_forwards import RuntimeForwardNotFound
-from app.services.runtime.ssh_runtime import get_runtime_port_forward_manager
-from app.services.ws.ws_stream_service import run_agent_once
+from app.services.sessions.agent_run_registry import AgentRunRegistry
+from app.services.sessions.attention import pending_approval_sessions
+from app.services.sessions.errors import (
+    AgentRuntimeUnavailableError,
+    ChatPayloadRequiredError,
+    MessageNotFoundError,
+    SessionNotFoundError,
+    SessionRenameNotAllowedError,
+    SessionWorkspaceCleanupError,
+)
+from app.services.sessions.service import SessionService
+from app.services.ws.ws_stream_parser import parse_ws_message
+from app.services.ws.ws_stream_service import persist_user_message, run_agent_once
 
 router = APIRouter()
 
 _logger = logging.getLogger(__name__)
-_TERMINAL_ID_HTTP_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 _HOP_BY_HOP_HEADERS = {
     "connection",
     "keep-alive",
@@ -103,10 +106,7 @@ _SENTINEL_PRIVATE_HEADERS = {"authorization", "cookie", "host", "content-length"
 
 
 def _resolve_session_service(request: Request) -> SessionService:
-    run_registry = getattr(request.app.state, "agent_run_registry", None)
-    if not isinstance(run_registry, AgentRunRegistry):
-        run_registry = AgentRunRegistry()
-        request.app.state.agent_run_registry = run_registry
+    run_registry = get_request_run_registry(request)
     try:
         agent_runtime_support = get_request_instance_runtime_context(request).agent_runtime_support
     except RuntimeError:
@@ -118,14 +118,6 @@ def _resolve_session_service(request: Request) -> SessionService:
     )
 
 
-def _resolve_run_registry(request: Request) -> AgentRunRegistry:
-    run_registry = getattr(request.app.state, "agent_run_registry", None)
-    if not isinstance(run_registry, AgentRunRegistry):
-        run_registry = AgentRunRegistry()
-        request.app.state.agent_run_registry = run_registry
-    return run_registry
-
-
 def _raise_http_for_session_error(exc: Exception) -> None:
     if isinstance(exc, SessionNotFoundError):
         raise HTTPException(
@@ -134,16 +126,6 @@ def _raise_http_for_session_error(exc: Exception) -> None:
     if isinstance(exc, MessageNotFoundError):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Message not found"
-        ) from exc
-    if isinstance(exc, MainSessionDeletionError):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Main session cannot be deleted",
-        ) from exc
-    if isinstance(exc, MainSessionTargetInvalidError):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(exc) or "Invalid main session target",
         ) from exc
     if isinstance(exc, SessionRenameNotAllowedError):
         raise HTTPException(
@@ -156,7 +138,7 @@ def _raise_http_for_session_error(exc: Exception) -> None:
             detail="No LLM provider configured",
         ) from exc
     if isinstance(exc, SessionWorkspaceCleanupError):
-        detail = "Runtime workspace cleanup failed; session was not deleted."
+        detail = "Machine workspace cleanup failed; session was not deleted."
         if exc.detail:
             detail = f"{detail} {exc.detail}"
         raise HTTPException(
@@ -175,7 +157,7 @@ def _raise_http_for_runtime_path_error(exc: Exception) -> None:
     if isinstance(exc, RuntimePathNotFoundError):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=str(exc) or "Runtime path not found",
+            detail=str(exc) or "Machine path not found",
         ) from exc
     if isinstance(exc, (RuntimePathInvalidError, RuntimePathIsDirectoryError)):
         raise HTTPException(
@@ -186,8 +168,16 @@ def _raise_http_for_runtime_path_error(exc: Exception) -> None:
 
 
 def _raise_http_for_session_or_runtime_error(exc: Exception) -> None:
+
+    if isinstance(exc, InstanceRuntimeNotConfigured):
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     if isinstance(
-        exc, (RuntimePathNotFoundError, RuntimePathInvalidError, RuntimePathIsDirectoryError)
+        exc,
+        (
+            RuntimePathNotFoundError,
+            RuntimePathInvalidError,
+            RuntimePathIsDirectoryError,
+        ),
     ):
         _raise_http_for_runtime_path_error(exc)
         return
@@ -288,7 +278,7 @@ def _message_retry_max_iterations(message: Message) -> int:
     if not isinstance(generation, dict):
         return CHAT_DEFAULT_ITERATIONS
     raw = generation.get("max_iterations")
-    if isinstance(raw, int) and raw >= 1:
+    if isinstance(raw, int) and raw >= 0:
         return raw
     return CHAT_DEFAULT_ITERATIONS
 
@@ -310,8 +300,18 @@ async def _retry_existing_user_message_run(
     tier: TierName | None,
     max_iterations: int,
     agent_mode: str,
+    provider_id: str | None = None,
+    reasoning_level: str | None = None,
+    fast_mode: bool = False,
+    message_id: UUID | None = None,
 ) -> None:
     async with db_factory() as db:
+        message = None
+        if message_id is not None:
+            result = await db.execute(
+                select(Message).where(Message.id == message_id, Message.session_id == session_id)
+            )
+            message = result.scalars().first()
         await manager.broadcast_agent_thinking(str(session_id))
         await run_agent_once(
             db=db,
@@ -322,9 +322,13 @@ async def _retry_existing_user_message_run(
             agent_runtime_support=agent_runtime_support,
             payload=payload,
             tier=tier,
+            provider_id=provider_id,
+            reasoning_level=reasoning_level,
+            fast_mode=fast_mode,
             max_iterations=max_iterations,
             agent_mode=parse_agent_mode(agent_mode) or get_default_agent_mode(),
             persist_user_message=False,
+            user_message=message,
         )
 
 
@@ -334,25 +338,35 @@ async def list_sessions(
     include_sub_agents: bool = Query(default=False),
     limit: int = Query(default=20, ge=1, le=300),
     offset: int = Query(default=0, ge=0),
-    user: TokenPayload = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ) -> SessionListResponse:
     service = _resolve_session_service(request)
-    main_session_id = await service.get_main_session_id(db, user_id=user.sub)
     page = await service.list_sessions(
         db,
-        user_id=user.sub,
+        user_id="local",
         include_sub_agents=include_sub_agents,
         limit=limit,
         offset=offset,
     )
-    unread_flags = await service.compute_unread_flags(db, page.items)
+
+    waiting = await pending_form_sessions(db, [item.id for item in page.items])
+
+    approvals = await pending_approval_sessions(db, [item.id for item in page.items])
+    completed = await service.completion_details(db, page.items)
+    completions = {session_id: str(value[0]) for session_id, value in completed.items()}
+    unread_flags = await service.compute_unread_flags(
+        db,
+        page.items,
+        latest_by_session={session_id: value[1] for session_id, value in completed.items()},
+    )
     items = [
         await _session_list_item_response(
             item,
             service,
-            main_session_id=main_session_id,
             has_unread=unread_flags.get(item.id, False),
+            pending_form_id=waiting.get(item.id),
+            awaiting_approval=item.id in approvals,
+            completion_id=completions.get(item.id),
         )
         for item in page.items
     ]
@@ -363,65 +377,53 @@ async def list_sessions(
 async def create_session(
     request: Request,
     payload: CreateSessionRequest,
-    user: TokenPayload = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ) -> SessionResponse:
     service = _resolve_session_service(request)
     session = await service.create_session(
         db,
-        user_id=user.sub,
-        agent_id=user.agent_id,
+        user_id="local",
+        agent_id=None,
         title=payload.title,
     )
-    main_session_id = await service.get_main_session_id(db, user_id=user.sub)
-    return await _session_response(session, service, main_session_id=main_session_id)
+    return await _session_response(session, service)
 
 
-@router.get("/default")
-async def get_default_session(
-    request: Request,
-    user: TokenPayload = Depends(require_auth),
-    db: AsyncSession = Depends(get_db),
-) -> SessionResponse:
-    service = _resolve_session_service(request)
-    session = await service.get_default_session(db, user_id=user.sub, agent_id=user.agent_id)
-    return await _session_response(session, service, main_session_id=session.id)
-
-
-@router.post("/default/reset")
-async def reset_default_session(
-    request: Request,
-    user: TokenPayload = Depends(require_auth),
-    db: AsyncSession = Depends(get_db),
-) -> SessionResponse:
-    service = _resolve_session_service(request)
-    session = await service.reset_default_session(db, user_id=user.sub, agent_id=user.agent_id)
-    return await _session_response(session, service, main_session_id=session.id)
-
-
-@router.get("/{id}")
-async def get_session(
+@router.post("/{id:uuid}/fork")
+async def fork_session(
     id: UUID,
     request: Request,
-    user: TokenPayload = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ) -> SessionResponse:
     service = _resolve_session_service(request)
     try:
-        session = await service.get_session(db, session_id=id, user_id=user.sub)
+        session = await service.fork_session(db, session_id=id, user_id="local")
     except Exception as exc:  # noqa: BLE001
         _raise_http_for_session_error(exc)
         raise
-    main_session_id = await service.get_main_session_id(db, user_id=user.sub)
-    return await _session_response(session, service, main_session_id=main_session_id)
+    return await _session_response(session, service)
 
 
-@router.patch("/{id}")
+@router.get("/{id:uuid}")
+async def get_session(
+    id: UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> SessionResponse:
+    service = _resolve_session_service(request)
+    try:
+        session = await service.get_session(db, session_id=id, user_id="local")
+    except Exception as exc:  # noqa: BLE001
+        _raise_http_for_session_error(exc)
+        raise
+    return await _session_response(session, service)
+
+
+@router.patch("/{id:uuid}")
 async def update_session(
     id: UUID,
     payload: UpdateSessionRequest,
     request: Request,
-    user: TokenPayload = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ) -> SessionResponse:
     service = _resolve_session_service(request)
@@ -429,65 +431,106 @@ async def update_session(
         session = await service.rename_session(
             db,
             session_id=id,
-            user_id=user.sub,
+            user_id="local",
             title=payload.title,
         )
     except Exception as exc:  # noqa: BLE001
         _raise_http_for_session_error(exc)
         raise
-    main_session_id = await service.get_main_session_id(db, user_id=user.sub)
-    return await _session_response(session, service, main_session_id=main_session_id)
+    return await _session_response(session, service)
 
 
-@router.post("/{id}/main")
-async def set_session_as_main(
-    id: UUID,
-    request: Request,
-    user: TokenPayload = Depends(require_auth),
-    db: AsyncSession = Depends(get_db),
-) -> SessionResponse:
-    service = _resolve_session_service(request)
-    try:
-        session = await service.set_main_session(
-            db,
-            session_id=id,
-            user_id=user.sub,
-        )
-    except Exception as exc:  # noqa: BLE001
-        _raise_http_for_session_error(exc)
-        raise
-    return await _session_response(session, service, main_session_id=session.id)
-
-
-@router.get("/{id}/context-usage", response_model=SessionContextUsageResponse)
+@router.get("/{id:uuid}/context-usage", response_model=SessionContextUsageResponse)
 async def get_session_context_usage(
     id: UUID,
     request: Request,
-    user: TokenPayload = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ) -> SessionContextUsageResponse:
     service = _resolve_session_service(request)
     try:
-        usage = await service.get_context_usage(db, session_id=id, user_id=user.sub)
+        usage = await service.get_context_usage(db, session_id=id, user_id="local")
     except Exception as exc:  # noqa: BLE001
         _raise_http_for_session_error(exc)
         raise
     return SessionContextUsageResponse(**usage)
 
 
-@router.get("/{id}/runtime/files", response_model=SessionRuntimeFilesResponse)
+@router.get("/{id:uuid}/usage")
+async def get_session_usage(id: UUID, request: Request, db: AsyncSession = Depends(get_db)) -> dict:
+    service = _resolve_session_service(request)
+    try:
+        return await service.get_usage(db, session_id=id, user_id="local")
+    except Exception as exc:  # noqa: BLE001
+        _raise_http_for_session_error(exc)
+        raise
+
+
+@router.post("/{id:uuid}/model-context")
+async def check_model_context(
+    id: UUID, payload: ChatRequest, request: Request, db: AsyncSession = Depends(get_db)
+) -> dict:
+    service = _resolve_session_service(request)
+    await service.get_session(db, session_id=id, user_id="local")
+    support = get_request_instance_runtime_context(request).agent_runtime_support
+    if support is None or support.provider is None:
+        raise HTTPException(409, "Configure a model provider before switching models.")
+
+    tier = selection_model(
+        payload.tier, payload.provider_id, payload.reasoning_level, payload.fast_mode
+    )
+    try:
+        limits = support.provider.model_context(tier)
+    except (ValueError, KeyError) as exc:
+        raise HTTPException(422, str(exc)) from exc
+    if limits["context_token_budget"] is None:
+        raise HTTPException(409, "The selected model's context limit is unknown.")
+    messages = await support.context_builder.build(
+        db,
+        id,
+        system_prompt=payload.system_prompt,
+        pending_user_message=payload.content,
+        agent_mode=payload.agent_mode,
+        include_full_history=True,
+    )
+    content = [TextContent(text=payload.content)] if payload.content else []
+    content.extend(
+        ImageContent(media_type=item.mime_type, data=item.base64) for item in payload.attachments
+    )
+    if content:
+        messages.append(UserMessage(content=content))
+    tools = support.tool_registry.list_schemas()
+    count = None
+    try:
+        async with asyncio.timeout(15):
+            count = await support.provider.count_input_tokens(messages, tier, tools)
+    except (httpx.HTTPError, TimeoutError, KeyError, ValueError):
+        _logger.info("Provider token preflight unavailable for %s", tier)
+    source = "provider_count" if count is not None else "unavailable"
+    return {
+        **limits,
+        "input_tokens": count,
+        "count_source": source,
+        "requires_compaction": (
+            count > limits["context_token_budget"] if count is not None else None
+        ),
+    }
+
+
+@router.get("/{id:uuid}/runtime/files", response_model=SessionRuntimeFilesResponse)
 async def list_session_runtime_files(
     id: UUID,
     request: Request,
     path: str = Query(default=""),
     limit: int = Query(default=400, ge=1, le=2000),
-    user: TokenPayload = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ) -> SessionRuntimeFilesResponse:
     service = _resolve_session_service(request)
     try:
-        await service.get_session(db, session_id=id, user_id=user.sub)
-        files = await get_runtime_workspace_files(instance_name=_request_instance_name(request))
+        await service.get_session(db, session_id=id, user_id="local")
+        await db.close()
+        files = await get_runtime_workspace_files(
+            session_id=id, instance_name=_request_instance_name(request)
+        )
         payload = await files.list_files(str(id), path=path, limit=limit)
     except Exception as exc:  # noqa: BLE001
         _raise_http_for_session_or_runtime_error(exc)
@@ -495,19 +538,21 @@ async def list_session_runtime_files(
     return SessionRuntimeFilesResponse(**payload)
 
 
-@router.get("/{id}/runtime/file", response_model=SessionRuntimeFilePreviewResponse)
+@router.get("/{id:uuid}/runtime/file", response_model=SessionRuntimeFilePreviewResponse)
 async def get_session_runtime_file(
     id: UUID,
     request: Request,
     path: str = Query(..., min_length=1),
     max_bytes: int = Query(default=32000, ge=256, le=200000),
-    user: TokenPayload = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ) -> SessionRuntimeFilePreviewResponse:
     service = _resolve_session_service(request)
     try:
-        await service.get_session(db, session_id=id, user_id=user.sub)
-        files = await get_runtime_workspace_files(instance_name=_request_instance_name(request))
+        await service.get_session(db, session_id=id, user_id="local")
+        await db.close()
+        files = await get_runtime_workspace_files(
+            session_id=id, instance_name=_request_instance_name(request)
+        )
         payload = await files.preview_file(
             str(id),
             path=path,
@@ -519,32 +564,68 @@ async def get_session_runtime_file(
     return SessionRuntimeFilePreviewResponse(**payload)
 
 
-@router.get("/{id}/runtime/download")
+@router.get("/{id:uuid}/runtime/download")
+@router.head("/{id:uuid}/runtime/download", include_in_schema=False)
 async def download_session_runtime_path(
     id: UUID,
     request: Request,
     path: str = Query(..., min_length=1),
-    user: TokenPayload = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ) -> Response:
     service = _resolve_session_service(request)
     try:
-        await service.get_session(db, session_id=id, user_id=user.sub)
-        files = await get_runtime_workspace_files(instance_name=_request_instance_name(request))
-        payload = await files.download(str(id), path=path)
+        await service.get_session(db, session_id=id, user_id="local")
+        await db.close()
+        files = await get_runtime_workspace_files(
+            session_id=id, instance_name=_request_instance_name(request)
+        )
+        payload = await files.download(
+            str(id),
+            path=path,
+            range_header=request.headers.get("range"),
+            if_range=request.headers.get("if-range"),
+            head=request.method == "HEAD",
+        )
     except Exception as exc:  # noqa: BLE001
         _raise_http_for_session_or_runtime_error(exc)
         raise
-    headers = {"Content-Disposition": f'attachment; filename="{payload.download_name}"'}
-    return Response(content=payload.content, media_type=payload.media_type, headers=headers)
+    return await stream_response(payload, head=request.method == "HEAD", download=True)
+
+
+@router.get("/{id:uuid}/runtime/forward-target/{forward_id}")
+async def get_runtime_forward_target(
+    id: UUID,
+    forward_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, str]:
+    """Resolve an existing forward for the desktop's isolated preview window."""
+    service = _resolve_session_service(request)
+    try:
+        await service.get_session(db, session_id=id, user_id="local")
+        await db.close()
+    except Exception as exc:
+        _raise_http_for_session_error(exc)
+        raise
+    forwards = await get_runtime_port_forward_manager(
+        session_id=id, instance_name=_request_instance_name(request)
+    )
+    try:
+        forward = await forwards.get_forward(session_id=str(id), forward_id=forward_id)
+    except RuntimeForwardNotFound as exc:
+        raise HTTPException(status_code=404, detail="Workspace port forward not found") from exc
+    return {
+        "url": f"http://127.0.0.1:{forward.local_port}/",
+        "label": forward.label or "Workspace preview",
+    }
 
 
 @router.api_route(
-    "/{id}/runtime/forwards/{forward_id}",
+    "/{id:uuid}/runtime/forwards/{forward_id}",
     methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
 )
 @router.api_route(
-    "/{id}/runtime/forwards/{forward_id}/{path:path}",
+    "/{id:uuid}/runtime/forwards/{forward_id}/{path:path}",
     methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
 )
 async def proxy_runtime_forward_http(
@@ -552,14 +633,14 @@ async def proxy_runtime_forward_http(
     forward_id: str,
     request: Request,
     path: str = "",
-    user: TokenPayload = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ) -> Response:
     service = _resolve_session_service(request)
     try:
-        await service.get_session(db, session_id=id, user_id=user.sub)
+        await service.get_session(db, session_id=id, user_id="local")
+        await db.close()
         forwards = await get_runtime_port_forward_manager(
-            instance_name=_request_instance_name(request)
+            session_id=id, instance_name=_request_instance_name(request)
         )
         forward = await forwards.get_forward(
             session_id=str(id),
@@ -567,7 +648,8 @@ async def proxy_runtime_forward_http(
         )
     except RuntimeForwardNotFound as exc:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Runtime forward not found"
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Workspace port forward not found",
         ) from exc
     except Exception as exc:  # noqa: BLE001
         _raise_http_for_session_error(exc)
@@ -595,8 +677,8 @@ async def proxy_runtime_forward_http(
     )
 
 
-@router.websocket("/{id}/runtime/forwards/{forward_id}")
-@router.websocket("/{id}/runtime/forwards/{forward_id}/{path:path}")
+@router.websocket("/{id:uuid}/runtime/forwards/{forward_id}")
+@router.websocket("/{id:uuid}/runtime/forwards/{forward_id}/{path:path}")
 async def proxy_runtime_forward_websocket(
     websocket: WebSocket,
     id: UUID,
@@ -604,32 +686,22 @@ async def proxy_runtime_forward_websocket(
     path: str = "",
     db: AsyncSession = Depends(get_db),
 ) -> None:
-    token = websocket.query_params.get("token")
-    if not token:
-        token = websocket.cookies.get(ACCESS_TOKEN_COOKIE_NAME)
-    if not token:
-        await websocket.close(code=4001, reason="Missing token")
-        return
-    try:
-        async with ManagerSessionLocal() as manager_db:
-            user = await decode_and_validate_token(token, manager_db, expected_type="access")
-    except Exception:
-        await websocket.close(code=4001, reason="Invalid token")
-        return
-    result = await db.execute(select(Session).where(Session.id == id, Session.user_id == user.sub))
-    if result.scalar_one_or_none() is None:
+    result = await db.execute(select(Session.id).where(Session.id == id))
+    exists = result.scalar_one_or_none() is not None
+    await db.close()
+    if not exists:
         await websocket.close(code=4004, reason="Session not found")
         return
     try:
         forwards = await get_runtime_port_forward_manager(
-            instance_name=str(websocket.path_params["instance_name"])
+            session_id=id, instance_name=str(websocket.path_params["instance_name"])
         )
         forward = await forwards.get_forward(
             session_id=str(id),
             forward_id=forward_id,
         )
     except RuntimeForwardNotFound:
-        await websocket.close(code=4004, reason="Runtime forward not found")
+        await websocket.close(code=4004, reason="Workspace port forward not found")
         return
 
     suffix = path.strip("/")
@@ -676,24 +748,26 @@ async def proxy_runtime_forward_websocket(
     except Exception:
         _logger.warning("runtime forward websocket proxy failed", exc_info=True)
         try:
-            await websocket.close(code=4005, reason="Runtime forward unavailable")
+            await websocket.close(code=4005, reason="Workspace port forward unavailable")
         except Exception:
             return
 
 
-@router.get("/{id}/runtime/git/roots", response_model=SessionRuntimeGitRootsResponse)
+@router.get("/{id:uuid}/runtime/git/roots", response_model=SessionRuntimeGitRootsResponse)
 async def list_session_runtime_git_roots(
     id: UUID,
     request: Request,
     path: str = Query(default=""),
     limit: int = Query(default=200, ge=1, le=1000),
-    user: TokenPayload = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ) -> SessionRuntimeGitRootsResponse:
     service = _resolve_session_service(request)
     try:
-        await service.get_session(db, session_id=id, user_id=user.sub)
-        files = await get_runtime_workspace_files(instance_name=_request_instance_name(request))
+        await service.get_session(db, session_id=id, user_id="local")
+        await db.close()
+        files = await get_runtime_workspace_files(
+            session_id=id, instance_name=_request_instance_name(request)
+        )
         payload = await files.git_roots(str(id), path=path, limit=limit)
     except Exception as exc:  # noqa: BLE001
         _raise_http_for_session_or_runtime_error(exc)
@@ -701,19 +775,24 @@ async def list_session_runtime_git_roots(
     return SessionRuntimeGitRootsResponse(**payload)
 
 
-@router.get("/{id}/runtime/git/changed", response_model=SessionRuntimeGitChangedFilesResponse)
+@router.get(
+    "/{id:uuid}/runtime/git/changed",
+    response_model=SessionRuntimeGitChangedFilesResponse,
+)
 async def list_session_runtime_git_changed_files(
     id: UUID,
     request: Request,
     path: str = Query(default=""),
     limit: int = Query(default=200, ge=1, le=1000),
-    user: TokenPayload = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ) -> SessionRuntimeGitChangedFilesResponse:
     service = _resolve_session_service(request)
     try:
-        await service.get_session(db, session_id=id, user_id=user.sub)
-        files = await get_runtime_workspace_files(instance_name=_request_instance_name(request))
+        await service.get_session(db, session_id=id, user_id="local")
+        await db.close()
+        files = await get_runtime_workspace_files(
+            session_id=id, instance_name=_request_instance_name(request)
+        )
         payload = await files.git_changed(str(id), path=path, limit=limit)
     except Exception as exc:  # noqa: BLE001
         _raise_http_for_session_or_runtime_error(exc)
@@ -721,7 +800,7 @@ async def list_session_runtime_git_changed_files(
     return SessionRuntimeGitChangedFilesResponse(**payload)
 
 
-@router.get("/{id}/runtime/git/diff", response_model=SessionRuntimeGitDiffResponse)
+@router.get("/{id:uuid}/runtime/git/diff", response_model=SessionRuntimeGitDiffResponse)
 async def get_session_runtime_git_diff(
     id: UUID,
     request: Request,
@@ -730,13 +809,15 @@ async def get_session_runtime_git_diff(
     staged: bool = Query(default=False),
     context_lines: int = Query(default=3, ge=0, le=20),
     max_bytes: int = Query(default=120000, ge=1024, le=500000),
-    user: TokenPayload = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ) -> SessionRuntimeGitDiffResponse:
     service = _resolve_session_service(request)
     try:
-        await service.get_session(db, session_id=id, user_id=user.sub)
-        files = await get_runtime_workspace_files(instance_name=_request_instance_name(request))
+        await service.get_session(db, session_id=id, user_id="local")
+        await db.close()
+        files = await get_runtime_workspace_files(
+            session_id=id, instance_name=_request_instance_name(request)
+        )
         payload = await files.git_diff(
             str(id),
             path=path,
@@ -751,98 +832,46 @@ async def get_session_runtime_git_diff(
     return SessionRuntimeGitDiffResponse(**payload)
 
 
-@router.delete("/{id}/terminals/{terminal_id}")
-async def close_terminal(
-    id: UUID,
-    terminal_id: str,
-    request: Request,
-    user: TokenPayload = Depends(require_auth),
-    db: AsyncSession = Depends(get_db),
+@router.delete("/{id:uuid}/panes/{pane_id}")
+async def close_pane(
+    id: UUID, pane_id: str, request: Request, db: AsyncSession = Depends(get_db)
 ) -> dict[str, Any]:
-    if not _TERMINAL_ID_HTTP_PATTERN.fullmatch(terminal_id):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="terminal_id must match [A-Za-z0-9][A-Za-z0-9_.-]{0,63}",
-        )
+
     service = _resolve_session_service(request)
+    await service.get_session(db, session_id=id, user_id="local")
+    await db.close()
+    terminal = await get_runtime_terminal_manager(
+        session_id=id, instance_name=_request_instance_name(request)
+    )
+    bridge = TmuxPanes(terminal)
     try:
-        await service.get_session(db, session_id=id, user_id=user.sub)
-    except Exception as exc:  # noqa: BLE001
-        _raise_http_for_session_error(exc)
-        raise
-    terminal_manager = await get_runtime_terminal_manager(
-        instance_name=_request_instance_name(request)
-    )
-    status_result = await terminal_manager.close_terminal(
-        str(id),
-        terminal_id=terminal_id,
-    )
+        await bridge.close_pane(str(id), pane_id)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
     manager = getattr(request.app.state, "ws_manager", None)
-    if manager is not None and hasattr(manager, "broadcast"):
+    if manager:
         await manager.broadcast(
             str(id),
-            {"type": "terminal_closed", "session_id": str(id), "terminal_id": terminal_id},
+            {
+                "type": "panes_changed",
+                "panes": [p for w in await bridge.tree(str(id)) for p in w["panes"]],
+            },
         )
-    return {
-        "session_id": str(id),
-        "terminal_id": terminal_id,
-        "closed": status_result.status == "stopped",
-    }
+    return {"pane_id": pane_id, "closed": True}
 
 
-async def _cleanup_runtime_for_deleted_sessions(
-    session_ids: list[UUID], *, instance_name: str
-) -> None:
-    terminal_manager = await get_runtime_terminal_manager(instance_name=instance_name)
-    for session_id in session_ids:
-        session_key = str(session_id)
-        try:
-            await get_browser_pool().remove(session_key, instance_name=instance_name)
-        except Exception:
-            _logger.debug(
-                "failed to close runtime browser for deleted session %s",
-                session_key,
-                exc_info=True,
-            )
-        try:
-            forwards = await get_runtime_port_forward_manager(instance_name=instance_name)
-            await forwards.close_session(session_key)
-        except Exception:
-            _logger.debug(
-                "failed to close runtime forwards for deleted session %s",
-                session_key,
-                exc_info=True,
-            )
-        try:
-            desktop = await get_runtime_desktop_manager(instance_name=instance_name)
-            await desktop.close_session(session_key)
-        except Exception:
-            _logger.debug(
-                "failed to close runtime desktop for deleted session %s",
-                session_key,
-                exc_info=True,
-            )
-        await terminal_manager.delete_workspace(session_key)
-
-
-@router.delete("/{id}")
+@router.delete("/{id:uuid}")
 async def delete_session(
     id: UUID,
     request: Request,
-    user: TokenPayload = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, str | int]:
     service = _resolve_session_service(request)
-    instance_name = _request_instance_name(request)
     try:
         deleted_descendants = await service.delete_session(
             db,
             session_id=id,
-            user_id=user.sub,
-            before_delete=lambda ids: _cleanup_runtime_for_deleted_sessions(
-                ids,
-                instance_name=instance_name,
-            ),
+            user_id="local",
         )
     except Exception as exc:  # noqa: BLE001
         _raise_http_for_session_error(exc)
@@ -850,44 +879,70 @@ async def delete_session(
     return {"status": "deleted", "deleted_descendants": deleted_descendants}
 
 
-@router.post("/{id}/stop")
+@router.post("/{id:uuid}/close")
+async def close_session(
+    id: UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, str]:
+    service = _resolve_session_service(request)
+    deleted = await service.discard_empty_session(
+        db,
+        session_id=id,
+        user_id="local",
+    )
+    return {"status": "discarded" if deleted else "kept"}
+
+
+@router.post("/{id:uuid}/stop")
 async def stop_session_generation(
     id: UUID,
     request: Request,
-    user: TokenPayload = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, str]:
     service = _resolve_session_service(request)
     try:
-        cancelled = await service.stop_generation(db, session_id=id, user_id=user.sub)
+        await service.get_session(db, session_id=id, user_id="local")
+        registry = get_request_run_registry(request)
+        async with registry.idle_guard(str(id)):
+            registry.discard_steering(str(id))
+            result = await db.execute(
+                select(Message).where(Message.session_id == id, Message.role == "user")
+            )
+            for message in result.scalars().all():
+                if (message.metadata_json or {}).get("steering") == "pending":
+                    message.metadata_json = {
+                        **message.metadata_json,
+                        "steering": "cancelled",
+                    }
+            await db.commit()
+        cancelled = await service.stop_generation(db, session_id=id, user_id="local")
     except Exception as exc:  # noqa: BLE001
         _raise_http_for_session_error(exc)
         raise
     return {"status": "stopping" if cancelled else "idle"}
 
 
-@router.post("/{id}/read")
+@router.post("/{id:uuid}/read")
 async def mark_session_read(
     id: UUID,
     request: Request,
-    user: TokenPayload = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, str]:
     service = _resolve_session_service(request)
     try:
-        await service.mark_as_read(db, session_id=id, user_id=user.sub)
+        await service.mark_as_read(db, session_id=id, user_id="local")
     except Exception as exc:  # noqa: BLE001
         _raise_http_for_session_error(exc)
         raise
     return {"status": "ok"}
 
 
-@router.post("/{id}/messages")
+@router.post("/{id:uuid}/messages")
 async def create_message(
     id: UUID,
     request: Request,
     payload: CreateMessageRequest,
-    user: TokenPayload = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ) -> MessageResponse:
     service = _resolve_session_service(request)
@@ -895,7 +950,7 @@ async def create_message(
         message = await service.create_message(
             db,
             session_id=id,
-            user_id=user.sub,
+            user_id="local",
             role=payload.role,
             content=payload.content,
             metadata=payload.metadata,
@@ -906,17 +961,17 @@ async def create_message(
     return _message_response(message)
 
 
-@router.post("/{id}/messages/{message_id}/retry")
+@router.post("/{id:uuid}/messages/{message_id:uuid}/retry")
 async def retry_message(
     id: UUID,
     message_id: UUID,
     request: Request,
-    user: TokenPayload = Depends(require_auth),
+    payload: RetryMessageRequest | None = None,
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, str]:
     service = _resolve_session_service(request)
     try:
-        await service.get_session(db, session_id=id, user_id=user.sub)
+        await service.get_session(db, session_id=id, user_id="local")
     except Exception as exc:  # noqa: BLE001
         _raise_http_for_session_error(exc)
         raise
@@ -950,7 +1005,7 @@ async def retry_message(
             detail="Agent runtime unavailable",
         )
 
-    run_registry = _resolve_run_registry(request)
+    run_registry = get_request_run_registry(request)
     session_key = str(id)
     if await run_registry.is_running(session_key):
         raise HTTPException(
@@ -959,10 +1014,39 @@ async def retry_message(
         )
 
     metadata = dict(message.metadata_json or {}) if isinstance(message.metadata_json, dict) else {}
-    if "retryable_error" in metadata:
-        metadata.pop("retryable_error", None)
-        message.metadata_json = metadata
-        await db.commit()
+    selection = (
+        metadata.get("model_selection")
+        or (metadata.get("generation") or {}).get("model_selection")
+        or {}
+    )
+    retry_settings = {
+        "tier": _message_retry_tier(message),
+        "provider_id": selection.get("provider_id"),
+        "reasoning_level": selection.get("reasoning_level"),
+        "fast_mode": selection.get("fast_mode", False),
+        "max_iterations": _message_retry_max_iterations(message),
+        "agent_mode": _message_retry_agent_mode(message),
+        **(metadata.get("retry_settings") or {}),
+    }
+    if payload is not None and payload.model_fields_set:
+        retry_settings.update(payload.model_dump(mode="json", exclude_unset=True))
+        # Validate against the current runtime before clearing the failure or
+        # scheduling work. Explicit null clears a previous provider/effort pin.
+        try:
+            agent_runtime_support.provider.model_context(
+                selection_model(
+                    retry_settings["tier"],
+                    retry_settings["provider_id"],
+                    retry_settings["reasoning_level"],
+                    retry_settings["fast_mode"],
+                )
+            )
+        except (ValueError, KeyError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    # Keep the failure durable until the retry actually succeeds.
+    metadata["retry_settings"] = retry_settings
+    message.metadata_json = metadata
+    await db.commit()
 
     db_factory = get_request_db_factory(request)
     asyncio.create_task(
@@ -973,21 +1057,21 @@ async def retry_message(
             run_registry=run_registry,
             agent_runtime_support=agent_runtime_support,
             payload=_message_retry_payload(message),
-            tier=_message_retry_tier(message),
-            max_iterations=_message_retry_max_iterations(message),
-            agent_mode=_message_retry_agent_mode(message),
+            message_id=message.id,
+            **retry_settings,
         )
     )
     return {"status": "retrying"}
 
 
-@router.get("/{id}/messages")
+@router.get("/{id:uuid}/messages")
 async def list_messages(
     id: UUID,
     request: Request,
     limit: int = Query(default=50, ge=1, le=100),
     before: UUID | None = Query(default=None),
-    user: TokenPayload = Depends(require_auth),
+    final_only: bool = Query(default=False),
+    view: Literal["full", "chat"] = Query(default="full"),
     db: AsyncSession = Depends(get_db),
 ) -> MessageListResponse:
     service = _resolve_session_service(request)
@@ -995,9 +1079,11 @@ async def list_messages(
         page = await service.list_messages(
             db,
             session_id=id,
-            user_id=user.sub,
+            user_id="local",
             limit=limit,
             before=before,
+            final_only=final_only,
+            chat_view=view == "chat",
         )
     except Exception as exc:  # noqa: BLE001
         _raise_http_for_session_error(exc)
@@ -1008,12 +1094,87 @@ async def list_messages(
     )
 
 
-@router.post("/{id}/chat", response_model=ChatResponse)
+@router.post("/{id:uuid}/steer", response_model=MessageResponse)
+async def steer_session(
+    id: UUID,
+    payload: SteeringRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> MessageResponse:
+
+    service = _resolve_session_service(request)
+    try:
+        session = await service.get_session(db, session_id=id, user_id="local")
+    except Exception as exc:
+        _raise_http_for_session_error(exc)
+        raise
+    support = get_request_instance_runtime_context(request).agent_runtime_support
+    manager = getattr(request.app.state, "ws_manager", None)
+    if support is None or manager is None:
+        raise HTTPException(status_code=503, detail="Agent runtime unavailable")
+    parsed = parse_ws_message(json.dumps({**payload.model_dump(mode="json"), "type": "message"}))
+    if parsed is None:
+        raise HTTPException(status_code=422, detail="Invalid steering message or attachments")
+    try:
+        support.provider.model_context(
+            selection_model(
+                parsed.tier,
+                parsed.provider_id,
+                parsed.reasoning_level,
+                parsed.fast_mode,
+            )
+        )
+    except (ValueError, KeyError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    registry = get_request_run_registry(request)
+    key = str(id)
+    # Serialize enqueue against run completion and other submissions. A message
+    # arriving after completion is picked up by the existing idle wakeup worker.
+    async with registry.idle_guard(key):
+        result = await db.execute(select(Message).where(Message.id == payload.message_id))
+        message = result.scalars().first()
+        if message is not None:
+            if message.session_id != id or not (message.metadata_json or {}).get("steering_id"):
+                raise HTTPException(status_code=409, detail="Message ID already in use")
+        else:
+            message = await persist_user_message(
+                db,
+                session_id=id,
+                session=session,
+                content=parsed.content,
+                attachments=parsed.attachments,
+                requested_tier=parsed.tier,
+                provider_id=parsed.provider_id,
+                reasoning_level=parsed.reasoning_level,
+                fast_mode=parsed.fast_mode,
+                temperature=0.7,
+                max_iterations=parsed.max_iterations,
+                agent_mode=parsed.agent_mode,
+                message_id=payload.message_id,
+                steering=True,
+            )
+        await manager.broadcast_message_ack(
+            key,
+            str(message.id),
+            message.content,
+            message.created_at,
+            metadata=message.metadata_json or {},
+        )
+        if (message.metadata_json or {}).get("steering") == "pending":
+            if not any(
+                item.metadata.get("steering_id") == str(message.id)
+                for item in registry.peek_interjections(key)
+            ):
+                registry.enqueue_interjection(key, db_messages_to_runtime_items([message])[0])
+    await registry.notify_idle_interjections(key)
+    return _message_response(message)
+
+
+@router.post("/{id:uuid}/chat", response_model=ChatResponse)
 async def chat_session(
     id: UUID,
     payload: ChatRequest,
     request: Request,
-    user: TokenPayload = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ) -> ChatResponse:
     service = _resolve_session_service(request)
@@ -1021,10 +1182,13 @@ async def chat_session(
         result = await service.run_chat(
             db,
             session_id=id,
-            user_id=user.sub,
+            user_id="local",
             content=payload.content,
             attachments=payload.attachments,
             tier=payload.tier,
+            provider_id=payload.provider_id,
+            reasoning_level=payload.reasoning_level,
+            fast_mode=payload.fast_mode,
             agent_mode=payload.agent_mode,
             system_prompt=payload.system_prompt,
             temperature=payload.temperature,
@@ -1048,11 +1212,11 @@ async def _session_response(
     session: Session,
     service: SessionService,
     *,
-    main_session_id: UUID | None = None,
     has_unread: bool = False,
 ) -> SessionResponse:
     is_running = await service.is_session_running(session.id)
     return SessionResponse(
+        workspace_id=session.workspace_id,
         id=session.id,
         user_id=session.user_id,
         agent_id=session.agent_id,
@@ -1062,7 +1226,6 @@ async def _session_response(
         latest_system_prompt=session.latest_system_prompt,
         started_at=session.started_at,
         is_running=is_running,
-        is_main=bool(main_session_id and session.id == main_session_id),
         has_unread=has_unread,
     )
 
@@ -1071,11 +1234,14 @@ async def _session_list_item_response(
     session: Session,
     service: SessionService,
     *,
-    main_session_id: UUID | None = None,
     has_unread: bool = False,
+    pending_form_id: str | None = None,
+    awaiting_approval: bool = False,
+    completion_id: str | None = None,
 ) -> SessionListItemResponse:
     is_running = await service.is_session_running(session.id)
     return SessionListItemResponse(
+        workspace_id=session.workspace_id,
         id=session.id,
         user_id=session.user_id,
         agent_id=session.agent_id,
@@ -1083,8 +1249,10 @@ async def _session_list_item_response(
         title=session.title,
         started_at=session.started_at,
         is_running=is_running,
-        is_main=bool(main_session_id and session.id == main_session_id),
         has_unread=has_unread,
+        awaiting_input=pending_form_id is not None or awaiting_approval,
+        pending_form_id=pending_form_id,
+        completion_id=completion_id,
     )
 
 

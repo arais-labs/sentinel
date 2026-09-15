@@ -1,3 +1,7 @@
+export type ApprovalScope = 'once' | 'session';
+
+export const SESSION_PERMISSIONS_CHANGED = 'sentinel-session-permissions-changed';
+
 export interface ApprovalRef {
   provider: string;
   approvalId: string;
@@ -6,6 +10,8 @@ export interface ApprovalRef {
   canResolve: boolean;
   label?: string;
   matchKey?: string | null;
+  sessionId?: string | null;
+  action?: string | null;
 }
 
 export function isWaitingApproval(metadata: Record<string, unknown>): boolean {
@@ -37,6 +43,8 @@ export function approvalRefFromMetadata(metadata: Record<string, unknown>): Appr
     canResolve,
     label: stringValue(approval.label) ?? undefined,
     matchKey: stringValue(approval.match_key) ?? undefined,
+    sessionId: stringValue(approval.session_id),
+    action: stringValue(approval.action),
   };
 }
 

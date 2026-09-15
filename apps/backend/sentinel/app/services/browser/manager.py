@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json as _json
+import logging
 import re
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -15,10 +17,7 @@ from app.services.runtime.playwright_runtime import (
     get_browser_user_data_dir,
 )
 
-try:
-    from playwright.async_api import async_playwright
-except Exception:  # pragma: no cover - optional runtime dependency
-    async_playwright = None
+from playwright.async_api import async_playwright
 
 _MAX_BROWSER_CONTENT_CHARS = 10_000
 _TRUNCATION_NOTICE = "\n\n[...TRUNCATED - content too large. Use a specific CSS selector or interactive_only=true to get less data.]"
@@ -994,7 +993,7 @@ class BrowserManager:
     ) -> dict[str, Any]:
         """Intercept network requests matching a URL glob pattern.
 
-        action='log'   — record matching requests (retrieve with browser command=network_logs).
+        action='log'   — record matching requests (retrieve with browser action=network_logs).
         action='block' — abort matching requests.
         action='mock'  — return a static response_body instead.
         """
@@ -1400,8 +1399,6 @@ class BrowserManager:
         max_depth: int | None = None,
         tab_id: str | None = None,
     ) -> dict[str, Any]:
-        import json as _json
-        import logging
 
         logger = logging.getLogger(__name__)
         page, resolved_tab_id, _ = await self._resolve_action_page(tab_id)
@@ -1521,8 +1518,8 @@ class BrowserManager:
                 "snapshot": "",
                 "error": (
                     "All snapshot methods failed. "
-                    "Use browser with command='get_text' instead to read the page content, "
-                    "or browser with command='screenshot' to see the page visually."
+                    "Use browser with action='get_text' instead to read the page content, "
+                    "or browser with action='screenshot' to see the page visually."
                 ),
                 "methods_tried": methods_tried,
             }
@@ -1601,13 +1598,10 @@ class BrowserManager:
             self._sync_tabs()
             if self._page is not None:
                 return self._page
-        if async_playwright is None:
-            raise RuntimeError("Playwright runtime is not available")
-
         self._playwright_context = async_playwright()
         self._playwright = await self._playwright_context.start()
 
-        # Remote CDP connection (runtime container)
+        # Remote CDP connection (SSH runtime)
         if self._cdp_endpoint:
             self._browser = await self._playwright.chromium.connect_over_cdp(self._cdp_endpoint)
             self._context = (

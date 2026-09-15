@@ -1,3 +1,5 @@
+export interface Presentation { id: string; created_at: string }
+
 export interface StreamingToolCall {
   id: string;
   name: string;
@@ -10,12 +12,14 @@ export interface StreamingToolCall {
 }
 
 export interface StreamTimelineToolItem {
+  presentation?: Presentation;
   kind: 'tool';
   key: string;
   callKey: string;
 }
 
 export interface StreamTimelineTextItem {
+  presentation?: Presentation;
   kind: 'text';
   key: string;
   text: string;
@@ -29,6 +33,7 @@ export interface StreamingState {
   isStreaming: boolean;
   isCompactingContext: boolean;
   text: string;
+  textPresentation?: Presentation;
   timeline: StreamTimelineItem[];
   interimTextSeq: number;
   activeToolCalls: StreamingToolCall[];
@@ -114,6 +119,7 @@ interface ToolResultUpdate {
   isError: boolean;
   metadata: Record<string, unknown>;
   keepsWaitingState: boolean;
+  presentation?: Presentation;
 }
 
 export function applyToolResult(
@@ -188,7 +194,7 @@ export function applyToolResult(
     isStreaming: false,
     timeline: hasTimelineItem
       ? current.timeline
-      : [...current.timeline, { kind: 'tool', key: `tool-${syntheticKey}`, callKey: syntheticKey }],
+      : [...current.timeline, { kind: 'tool', key: `tool-${syntheticKey}`, callKey: syntheticKey, presentation: update.presentation }],
     completedToolCalls: [...current.completedToolCalls, syntheticCall],
   };
 }

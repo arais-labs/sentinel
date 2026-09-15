@@ -5,7 +5,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies import get_manager_db
 from app.database.instance_sessions import instance_session_registry
-from app.middleware.auth import TokenPayload, require_admin
 from app.models.manager import SentinelInstance
 from app.schemas.instances import (
     InstanceCreateRequest,
@@ -34,7 +33,7 @@ def _response(instance: SentinelInstance) -> InstanceResponse:
         name=instance.name,
         database_name=instance.database_name,
         display_name=instance.display_name,
-        runtime_id=instance.runtime_id,
+        appearance=instance.appearance or {},
         created_at=instance.created_at,
         updated_at=instance.updated_at,
     )
@@ -50,7 +49,6 @@ def _raise_instance_error(error: InstanceError) -> None:
 
 @router.get("", response_model=list[InstanceResponse])
 async def list_instances(
-    _user: TokenPayload = Depends(require_admin),
     db: AsyncSession = Depends(get_manager_db),
     service: InstanceRegistryService = Depends(_service),
 ) -> list[InstanceResponse]:
@@ -62,7 +60,6 @@ async def list_instances(
 async def create_instance(
     payload: InstanceCreateRequest,
     request: Request,
-    _user: TokenPayload = Depends(require_admin),
     db: AsyncSession = Depends(get_manager_db),
     service: InstanceRegistryService = Depends(_service),
 ) -> InstanceResponse:
@@ -71,6 +68,11 @@ async def create_instance(
             db,
             name=payload.name,
             display_name=payload.display_name,
+            appearance=(
+                payload.appearance.model_dump(exclude_defaults=True)
+                if payload.appearance is not None
+                else None
+            ),
         )
     except InstanceError as error:
         _raise_instance_error(error)
@@ -86,7 +88,6 @@ async def create_instance(
 @router.get("/{name}", response_model=InstanceResponse)
 async def get_instance(
     name: str,
-    _user: TokenPayload = Depends(require_admin),
     db: AsyncSession = Depends(get_manager_db),
     service: InstanceRegistryService = Depends(_service),
 ) -> InstanceResponse:
@@ -101,8 +102,6 @@ async def get_instance(
 async def update_instance(
     name: str,
     payload: InstanceUpdateRequest,
-    request: Request,
-    _user: TokenPayload = Depends(require_admin),
     db: AsyncSession = Depends(get_manager_db),
     service: InstanceRegistryService = Depends(_service),
 ) -> InstanceResponse:
@@ -111,15 +110,14 @@ async def update_instance(
             db,
             name,
             display_name=payload.display_name,
+            appearance=(
+                payload.appearance.model_dump(exclude_defaults=True)
+                if payload.appearance is not None
+                else None
+            ),
         )
     except InstanceError as error:
         _raise_instance_error(error)
-    if hasattr(request.app.state, "instance_stop_event"):
-        await instance_runtime_context_registry.rebuild(
-            app_state=request.app.state,
-            instance=instance,
-            session_factory=instance_session_registry.session_factory(instance.database_name),
-        )
     return _response(instance)
 
 
@@ -128,7 +126,6 @@ async def rename_instance(
     name: str,
     payload: InstanceRenameRequest,
     request: Request,
-    _user: TokenPayload = Depends(require_admin),
     db: AsyncSession = Depends(get_manager_db),
     service: InstanceRegistryService = Depends(_service),
 ) -> InstanceResponse:
@@ -151,7 +148,6 @@ async def rename_instance(
 async def delete_instance(
     name: str,
     request: Request,
-    _user: TokenPayload = Depends(require_admin),
     db: AsyncSession = Depends(get_manager_db),
     service: InstanceRegistryService = Depends(_service),
 ) -> None:

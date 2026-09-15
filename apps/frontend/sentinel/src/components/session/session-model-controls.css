@@ -1,0 +1,70 @@
+.session-model-controls { padding: 0; color: var(--text-primary); }
+.session-model-providers { padding: 6px 16px 12px; display: flex; flex-wrap: wrap; gap: 5px; }
+.session-model-providers button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 29px; padding: 0 10px; border-radius: 9px; border: 1px solid var(--border-subtle); background: var(--surface-1); color: var(--text-secondary); font-size: 11px; font-weight: 600; transition: color 120ms, background 120ms, border-color 120ms; }
+.session-model-providers button:hover { border-color: var(--border-strong); color: var(--text-primary); }
+.session-model-providers button.is-selected { background: var(--accent-solid); color: var(--app-bg); border-color: transparent; }
+.session-provider-logo { display: inline-flex; align-items: center; width: 15px; height: 15px; flex-shrink: 0; }
+.session-provider-logo svg { display: block; width: 15px; height: 15px; fill: currentColor; }
+.session-model-name { margin: 7px 1px 0; font-size: 10px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-model-slider { margin: 12px 0 0; padding: 14px 12px 8px; border-top: 1px solid var(--border-subtle); }
+.session-model-slider-heading { padding: 0 4px; font-size: 10px; font-weight: 600; }
+.session-reasoning-range { position: relative; height: 42px; margin-top: 0; }
+.session-reasoning-track { position: absolute; top: 12px; left: 12px; right: 12px; height: 18px; border-radius: 999px; background: color-mix(in srgb, #81b8f2 12%, var(--surface-2)); pointer-events: none; overflow: hidden; box-shadow: inset 0 0 0 1px color-mix(in srgb, #81b8f2 12%, transparent); }
+.session-liquid-gauge { display: block; width: 100%; height: 100%; filter: saturate(1.15); }
+.session-model-slider input { position: relative; display: block; appearance: none; -webkit-appearance: none; width: calc(100% - 18px); margin: 0 9px; height: 42px; padding: 0; border: 0; cursor: default; background: transparent; touch-action: none; box-shadow: none; }
+.session-model-slider input::-webkit-slider-runnable-track { height: 18px; background: transparent; }
+.session-model-slider input::-webkit-slider-thumb { appearance: none; -webkit-appearance: none; width: 6px; height: 16px; margin-top: 1px; border: 0; border-radius: 2px; background: transparent; box-shadow: none; }
+.session-model-slider input::-moz-range-track { height: 18px; background: transparent; }
+.session-model-slider input::-moz-range-progress { background: transparent; }
+.session-model-slider input::-moz-range-thumb { width: 6px; height: 16px; border: 0; border-radius: 2px; background: transparent; box-shadow: none; }
+.session-model-slider input:focus, .session-model-slider input:focus-visible { outline: none; box-shadow: none; }
+
+.session-model-stops { display: flex; justify-content: space-between; gap: 4px; padding: 0 4px; }
+.session-model-stops button { display: inline-flex; align-items: center; gap: 4px; min-height: 22px; font-size: 10px; color: var(--text-muted); transition: color 120ms; }
+.session-model-stops button.is-selected, .session-model-stops button:hover { color: var(--text-primary); }
+.session-model-stops button.is-selected { font-weight: 600; color: var(--level-color); }
+.session-model-stops button:focus-visible { outline: none; text-decoration: underline; text-underline-offset: 4px; }
+.session-reasoning-range:has(input:focus-visible) + .session-model-stops button.is-selected { text-decoration: underline; text-underline-offset: 4px; }
+.session-mode-icon.mode-fast { color: #34b888; }
+.session-mode-icon.mode-normal { color: #60a5fa; }
+.session-mode-icon.mode-hard { color: #e8799b; }
+.session-model-controls button:disabled, .session-model-controls input:disabled { cursor: default; opacity: .45; }
+.session-model-default { margin: 12px 0 0; color: var(--text-muted); font-size: 10px; }
+.model-switch-dialog { margin: auto; padding: 0; width: min(420px, calc(100vw - 32px)); max-height: calc(100vh - 32px); overflow: auto; border: 1px solid var(--border-strong); border-radius: 18px; background: var(--surface-0); color: var(--text-primary); box-shadow: 0 18px 70px #0005; }
+.model-switch-dialog::backdrop { background: #0008; }
+.model-switch-body { padding: 20px; }
+.model-switch-heading { display: flex; align-items: center; gap: 10px; }
+.model-switch-heading h2 { flex: 1; font-size: 13px; font-weight: 600; }
+.model-switch-symbol { color: var(--text-secondary); display: flex; }
+.model-switch-heading button { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 50%; color: var(--text-muted); }
+.model-switch-heading button:hover { background: var(--surface-1); color: var(--text-primary); }
+.model-switch-target { margin: 18px 0 14px; display: flex; align-items: center; gap: 10px; padding: 12px; border: 1px solid var(--border-subtle); border-radius: 10px; background: var(--surface-1); }
+.model-switch-target > div { min-width: 0; flex: 1; display: grid; gap: 3px; }
+.model-switch-target strong { font-size: 11px; font-weight: 600; }
+.model-switch-target div > span { font-size: 10px; color: var(--text-secondary); overflow-wrap: anywhere; }
+.model-switch-effort { font-size: 10px; color: var(--text-secondary); text-transform: capitalize; }
+.model-switch-body p { font-size: 12px; line-height: 1.7; color: var(--text-secondary); }
+.model-switch-body .model-switch-note { margin-top: 6px; color: var(--text-muted); font-size: 11px; }
+.model-switch-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
+.model-switch-actions button { height: 32px; padding: 0 14px; border-radius: 999px; border: 1px solid var(--border-subtle); font-size: 11px; font-weight: 600; color: var(--text-secondary); }
+.model-switch-actions button:hover { border-color: var(--border-strong); }
+.model-switch-actions .model-switch-confirm { display: inline-flex; align-items: center; gap: 7px; background: var(--accent-solid); color: var(--app-bg); border-color: transparent; }
+.model-switch-dialog button:focus-visible { outline: 2px solid var(--text-secondary); outline-offset: 3px; }
+
+.session-liquid-aura { position: absolute; top: 12px; bottom: 12px; left: 12px; right: 12px; pointer-events: none; filter: blur(7px); opacity: var(--liquid-glow); }
+.session-liquid-aura > span { display: block; width: 100%; height: 100%; border-radius: 999px; background: linear-gradient(90deg, #459aff, #24cfdf, #4bd888, #d8e74e, #ffb039, #ff6258); clip-path: inset(0 calc(100% - var(--range-fill)) 0 0 round 999px); }
+
+/* A quiet settings row beneath reasoning, using the menu's own spacing. */
+.session-fast-mode { display: flex; align-items: center; gap: 9px; width: 100%; min-height: 36px; padding: 8px 14px; text-align: left; border: 0; border-radius: 0; background: transparent; color: var(--text-secondary); cursor: pointer; }
+.session-fast-mode:hover { background: var(--surface-1); }
+.session-fast-mode > svg { flex-shrink: 0; color: var(--text-muted); }
+.session-fast-mode-label { font-size: 10px; font-weight: 600; color: var(--text-primary); }
+.session-fast-mode-note { margin-left: auto; font-size: 10px; color: var(--text-muted); }
+.session-fast-mode-toggle { box-sizing: border-box; width: 24px; height: 14px; padding: 2px; flex-shrink: 0; border-radius: 99px; background: var(--border-strong); transition: background 180ms ease; }
+.session-fast-mode-toggle > span { display: block; height: 10px; width: 10px; border-radius: 50%; background: var(--text-secondary); transition: transform 180ms ease, background 180ms ease; }
+.session-fast-mode.is-enabled > svg { color: var(--sentinel-blue); }
+.session-fast-mode.is-enabled .session-fast-mode-toggle { background: color-mix(in srgb, var(--sentinel-blue) 25%, transparent); }
+.session-fast-mode.is-enabled .session-fast-mode-toggle > span { transform: translateX(10px); background: var(--sentinel-blue); }
+.session-fast-mode:disabled { opacity: .4; cursor: default; }
+.session-fast-mode:focus-visible { outline: 1px solid var(--sentinel-blue); outline-offset: -2px; }
+@media (prefers-reduced-motion: reduce) { .session-fast-mode-toggle, .session-fast-mode-toggle > span { transition: none; } }

@@ -1,168 +1,62 @@
-import type { ReactNode } from 'react';
-import {
-  Globe,
-  Trash2,
-  Play,
-  Save,
-  ChevronRight,
-  Shield,
-  Activity,
-  Terminal,
-  Cpu,
-  User,
-  Info,
-  ExternalLink,
-  Plus,
-} from 'lucide-react';
-
+import { useState, type ReactNode } from 'react';
+import { Menu, MenuItem } from '@mui/material';
+import { Activity, Check, ChevronDown, Copy, File, GitBranch, Globe, Plus, RefreshCw, Search, Settings2, Terminal, X } from 'lucide-react';
 import { AppShell } from '../components/AppShell';
-import { JsonBlock } from '../components/ui/JsonBlock';
 import { Logo } from '../components/ui/Logo';
-import { Panel } from '../components/ui/Panel';
 import { StatusChip } from '../components/ui/StatusChip';
+import '../components/session/chat-header.css';
+import './ui-showcase.css';
 
-function ShowcaseSection({ title, subtitle, children }: { title: string; subtitle: string; children: ReactNode }) {
-  return (
-    <Panel className="p-6 space-y-4">
-      <div className="space-y-1 border-b border-[color:var(--border-subtle)] pb-4">
-        <h2 className="text-[10px] font-bold uppercase tracking-[0.2em] text-[color:var(--text-muted)]">
-          {title}
-        </h2>
-        <p className="text-[11px] text-[color:var(--text-secondary)] font-medium uppercase tracking-tight opacity-60">
-          {subtitle}
-        </p>
-      </div>
-      <div className="pt-2">
-        {children}
-      </div>
-    </Panel>
-  );
+function Section({ title, subtitle, children }: { title: string; subtitle: string; children: ReactNode }) {
+  return <section className="showcase-section"><header><h2>{title}</h2><p>{subtitle}</p></header>{children}</section>;
 }
 
 export function UiShowcasePage() {
-  return (
-    <AppShell title="UI Design System" subtitle="Operator Console Component Registry">
-      <div className="max-w-7xl mx-auto grid grid-cols-1 md:grid-cols-2 gap-6 animate-in fade-in duration-500">
-        
-        {/* Brand Elements */}
-        <ShowcaseSection title="Brand & Identity" subtitle="Primary visual identifiers and system icons.">
-          <div className="flex items-center gap-6">
-            <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-[color:var(--accent-solid)] text-[color:var(--app-bg)] shadow-xl shadow-black/10">
-              <Logo size={32} />
-            </div>
-            <div className="space-y-1">
-              <h3 className="text-xl font-bold tracking-tighter">SENTINEL OPERATOR</h3>
-              <p className="text-[10px] font-mono uppercase tracking-widest text-[color:var(--text-muted)]">Revision 0.1.0-alpha</p>
-            </div>
-          </div>
-        </ShowcaseSection>
-
-        {/* Semantic Status */}
-        <ShowcaseSection title="Semantic Status" subtitle="Standardized tonal feedback for system events.">
-          <div className="flex flex-wrap gap-2">
-            <StatusChip label="OPERATIONAL" tone="good" />
-            <StatusChip label="ESTOP_READY" tone="warn" />
-            <StatusChip label="CRITICAL_FAILURE" tone="danger" />
-            <StatusChip label="TELEMETRY_SYNC" tone="info" />
-            <StatusChip label="DEFAULT_NODE" />
-          </div>
-        </ShowcaseSection>
-
-        {/* Action Protocols */}
-        <ShowcaseSection title="Action Protocols" subtitle="Standardized button variants for operator interaction.">
-          <div className="grid grid-cols-2 gap-3">
-            <button className="flex items-center justify-center h-11 px-6 rounded-full bg-[color:var(--accent-solid)] text-[color:var(--app-bg)] text-[10px] font-bold uppercase tracking-[0.15em] gap-2.5 transition-all hover:opacity-90 active:scale-95 shadow-md shadow-black/5">
-              <Save size={14} /> Commit Changes
-            </button>
-            <button className="flex items-center justify-center h-11 px-6 rounded-full border border-[color:var(--border-strong)] bg-[color:var(--surface-0)] text-[color:var(--text-primary)] text-[10px] font-bold uppercase tracking-[0.15em] gap-2.5 transition-all hover:bg-[color:var(--surface-1)] active:scale-95 shadow-sm">
-              <Shield size={14} className="text-sky-500/80" /> Authorize
-            </button>
-            <button className="flex items-center justify-center h-11 px-6 rounded-full border border-rose-500/20 bg-rose-500/5 text-rose-500 text-[10px] font-bold uppercase tracking-[0.15em] gap-2.5 transition-all hover:bg-rose-500/10 active:scale-95">
-              <Trash2 size={14} /> Purge Registry
-            </button>
-            <button className="flex items-center justify-center h-11 px-6 rounded-full bg-emerald-600 text-white text-[10px] font-bold uppercase tracking-[0.15em] gap-2.5 transition-all hover:bg-emerald-700 active:scale-95 shadow-lg shadow-emerald-500/20">
-              <Play size={14} fill="currentColor" /> Run Sequence
-            </button>
-          </div>
-        </ShowcaseSection>
-
-        {/* Form Controls */}
-        <ShowcaseSection title="Operator Inputs" subtitle="High-density data entry surfaces.">
-          <div className="space-y-3">
-            <input className="input-field h-10 text-xs font-bold" placeholder="Registry Identifier..." />
-            <div className="relative">
-              <Terminal size={14} className="absolute left-3 top-3 text-[color:var(--text-muted)]" />
-              <textarea 
-                className="input-field min-h-[100px] pl-9 py-3 resize-none font-mono text-[12px]" 
-                placeholder="Root prompt definition..."
-              />
-            </div>
-          </div>
-        </ShowcaseSection>
-
-        {/* Data Surfaces */}
-        <ShowcaseSection title="Durable Content" subtitle="Syntax-highlighted telemetry and knowledge blocks.">
-          <JsonBlock value={JSON.stringify({
-            status: "synchronized",
-            latency: "42ms",
-            protocol: "SENTINEL_WS_v1",
-            nodes: ["auth", "playwright", "llm_router"]
-          }, null, 2)} />
-        </ShowcaseSection>
-
-        {/* Browser Target */}
-        <ShowcaseSection title="Browser Geometry" subtitle="Standard 16:9 projection for remote sessions.">
-          <div className="relative aspect-video w-full rounded-xl bg-zinc-950 border border-[color:var(--border-subtle)] overflow-hidden">
-            <div className="absolute inset-0 flex items-center justify-center opacity-20">
-              <Globe size={48} strokeWidth={1} />
-            </div>
-            <div className="absolute top-3 right-3 flex gap-2">
-              <div className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
-              <span className="text-[10px] font-bold text-white uppercase tracking-widest opacity-60">LIVE_LINK_OK</span>
-            </div>
-          </div>
-        </ShowcaseSection>
-
-        {/* Runtime Execution */}
-        <ShowcaseSection title="Runtime Execution" subtitle="Visual cards for active agent threads.">
-          <Panel className="p-4 bg-[color:var(--surface-1)] border-dashed">
-            <div className="flex items-center justify-between mb-3">
-              <div className="flex items-center gap-2">
-                <Cpu size={16} className="text-[color:var(--accent-solid)]" />
-                <span className="text-xs font-bold">Workspace Maintenance</span>
-              </div>
-              <StatusChip label="running" tone="warn" className="scale-75" />
-            </div>
-            <p className="text-[11px] text-[color:var(--text-secondary)] leading-relaxed mb-4">
-              Collecting orphan process identifiers and clearing temporary registry keys...
-            </p>
-            <div className="flex items-center gap-2">
-              <StatusChip label="step 14/20" className="scale-75 origin-left opacity-60" />
-              <div className="h-3 w-px bg-[color:var(--border-subtle)]" />
-              <span className="text-[9px] font-mono text-[color:var(--text-muted)]">PID: 88291</span>
-            </div>
-          </Panel>
-        </ShowcaseSection>
-
-        {/* Message Tones */}
-        <ShowcaseSection title="Communication Tones" subtitle="Differentiated palettes for identity roles.">
-          <div className="space-y-3">
-            <div className="flex flex-col items-end gap-1.5">
-              <span className="text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] px-1">user</span>
-              <div className="bg-[color:var(--accent-solid)] text-[color:var(--app-bg)] px-4 py-2 rounded-2xl rounded-tr-none text-xs font-medium shadow-sm">
-                Scale all active instances to zero.
-              </div>
-            </div>
-            <div className="flex flex-col items-start gap-1.5">
-              <span className="text-[9px] font-bold uppercase tracking-widest text-[color:var(--text-muted)] px-1">assistant</span>
-              <div className="bg-[color:var(--surface-1)] border border-[color:var(--border-subtle)] px-4 py-2 rounded-2xl rounded-tl-none text-xs font-medium shadow-sm leading-relaxed">
-                Acknowledged. Initiating system-wide shutdown protocol for all ephemeral nodes.
-              </div>
-            </div>
-          </div>
-        </ShowcaseSection>
-
-      </div>
-    </AppShell>
-  );
+  const [view, setView] = useState(0);
+  const [windowIndex, setWindowIndex] = useState(0);
+  const [changed, setChanged] = useState(false);
+  const [query, setQuery] = useState('');
+  const [menu, setMenu] = useState<HTMLButtonElement | null>(null);
+  const [filter, setFilter] = useState('All types');
+  const [notice, setNotice] = useState('');
+  const [selected, setSelected] = useState('Browser');
+  return <AppShell title="Showcase" subtitle="Design system" contentClassName="ui-showcase">
+    <div className="showcase-intro"><Logo size={32} /><div><h1>Sentinel design system</h1><p>Quiet surfaces, compact controls, and actions placed with their content.</p></div></div>
+    <div className="showcase-grid">
+      <Section title="Surfaces" subtitle="A shared canvas, subtle raised controls, and inset selection.">
+        <div className="showcase-swatches">{[['Canvas', 'var(--app-bg)'], ['Raised', 'var(--showcase-face)'], ['Inset track', 'var(--surface-2)']].map(([name, color]) => <div key={name}><span style={{ background:color }} /><strong>{name}</strong></div>)}</div>
+        <p className="showcase-note">Soft shadows and faint edges. Blue marks selection; amber marks cost and warnings.</p>
+      </Section>
+      <Section title="Pane controls" subtitle="One control bar. CAPS action labels, familiar icons, restrained hover states.">
+        <div className="chat-header-actions showcase-controls"><Activity size={16} /><span className="chat-header-pill"><i className="showcase-dot" />LIVE</span><button className="chat-header-pill" onClick={() => setNotice('Settings preview selected')}><Settings2 size={13} />RUN SETTINGS</button><button className="chat-header-pill showcase-icon" title="Refresh preview" aria-label="Refresh preview" onClick={() => setNotice('Preview refreshed')}><RefreshCw size={14} /></button><button className="chat-header-pill" aria-haspopup="menu" aria-expanded={Boolean(menu)} onClick={event => setMenu(event.currentTarget)}>{filter}<ChevronDown size={12} /></button><button className="showcase-primary" onClick={() => setNotice('Run preview selected')}>RUN</button></div>
+        <Menu open={Boolean(menu)} anchorEl={menu} onClose={() => setMenu(null)} disableScrollLock slotProps={{ paper:{ className:'showcase-menu' } }}>
+          {['All types', 'Cron', 'Webhook', 'Heartbeat'].map(type => <MenuItem key={type} selected={filter === type} onClick={() => { setFilter(type); setMenu(null); }}><span>{type}</span>{filter === type && <Check size={13} />}</MenuItem>)}
+        </Menu>
+        <p className="showcase-note" role="status">{notice || 'Interactive examples only; these controls do not run workspace actions.'}</p>
+      </Section>
+      <Section title="Selection & tabs" subtitle="Inset view switches and a light underline for terminal windows.">
+        <div className="showcase-segments" role="group" aria-label="Example browser view"><span className="showcase-segment-indicator" style={{ transform:`translateX(${view * 100}%)` }} />{['Files', 'Changes', 'History'].map((label, index) => <button key={label} aria-pressed={view === index} onClick={() => setView(index)}>{label}</button>)}</div>
+        <div className="showcase-window-tabs" role="tablist" aria-label="Example terminal windows">{['main', 'bash', 'server'].map((label,index) => <button key={label} role="tab" aria-selected={windowIndex === index} onClick={() => setWindowIndex(index)}><small>0{index + 1}</small>{label}</button>)}<span style={{ transform:`translateX(${windowIndex * 100}%)` }} /></div>
+        <div className="showcase-terminal"><Terminal size={13} />cache <span>❯</span></div>
+      </Section>
+      <Section title="Search & local actions" subtitle="Search owns its focus outline. Small content actions sit beside it.">
+        <div className="showcase-search-row"><label className="showcase-search"><Search size={14} /><input aria-label="Example file search" placeholder="Find a file…" value={query} onChange={event => setQuery(event.target.value)} />{query && <button aria-label="Clear example search" onClick={() => setQuery('')}><X size={12} /></button>}</label><button className="showcase-local" aria-label="Changed files only" aria-pressed={changed} title="Changed files only" onClick={() => setChanged(!changed)}><GitBranch size={15} /></button><button className="showcase-local" aria-label="Add example item" title="Add item" onClick={() => setNotice('Add item preview selected')}><Plus size={16} /></button></div>
+        <label className="showcase-field">DESCRIPTION<textarea placeholder="A short description…" rows={3} /></label>
+      </Section>
+      <Section title="Catalog & selection" subtitle="Readable descriptions, soft selection, and room for a separate scrollbar.">
+        <div className="showcase-catalog">{['Browser', 'Computer', 'Runtime', 'Memory', 'Triggers', 'Tasks'].map(label => <button className="showcase-catalog-item" key={label} aria-pressed={selected === label} onClick={() => setSelected(label)}><Globe size={15} /><span><strong>{label}</strong><small>Browse available actions and configuration.</small></span></button>)}</div>
+      </Section>
+      <Section title="Compact diagnostics" subtitle="Keep usage values visible, with secondary pricing details on demand.">
+        <article className="showcase-event"><header><strong>ASSISTANT STEP</strong><StatusChip label="LATEST" tone="good" /><time>09:16:26</time></header><p>Checked three tools successfully.</p><div className="showcase-model">gpt-5.6-luna <span>Codex OAuth</span></div><dl className="showcase-metrics">{[['Input','14,184'],['Output','27'],['Total','14,211'],['Cached input','13,056'],['Cache writes','0'],['Reasoning','0']].map(([label,value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl><div className="showcase-cost"><span>API-equivalent token cost</span><span>$0.00051912</span></div><details><summary>Usage & pricing details</summary><p>Illustrative values. Cache reads are included in input. API-equivalent pricing is not a subscription charge.</p></details></article>
+      </Section>
+      <Section title="Content & empty states" subtitle="Icon, title, and subtitle form one aligned group.">
+        <div className="showcase-welcome"><File size={26} /><div><h3>Disposable</h3><p>Open a file or review what changed.</p></div></div>
+        <div className="showcase-empty"><GitBranch size={24} /><div><h3>No Git history</h3><p>This folder isn’t a Git repository.</p></div></div>
+      </Section>
+      <Section title="Status & feedback" subtitle="Neutral empty states. Semantic color for status, warning, and failure.">
+        <div className="showcase-status"><StatusChip label="RUNNING" tone="good" /><StatusChip label="WARNING" tone="warn" /><StatusChip label="FAILED" tone="danger" /><StatusChip label="CONNECTED" tone="info" /><StatusChip label="IDLE" /></div>
+        <div className="showcase-motion"><Copy size={24} /><div><h3>Motion and interaction</h3><p>Short fades and slides, subtle hover feedback, and visible keyboard focus.</p><span className="showcase-motion-note">Respects reduced motion</span></div></div>
+      </Section>
+    </div>
+  </AppShell>;
 }

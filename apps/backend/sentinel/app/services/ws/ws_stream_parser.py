@@ -10,8 +10,13 @@ from app.config import (
     CHAT_DEFAULT_ITERATIONS,
     CHAT_MAX_ITERATIONS,
 )
-from app.services.agent.agent_modes import AgentMode, get_default_agent_mode, parse_agent_mode
-from app.services.llm.ids import TierName, parse_tier_name
+from app.services.agent.agent_modes import (
+    AgentMode,
+    get_default_agent_mode,
+    parse_agent_mode,
+)
+from app.services.llm.session_selection import LEVELS
+from sentral.llm.ids import ProviderId, TierName, parse_tier_name
 
 _ALLOWED_IMAGE_MIME_TYPES = {
     "image/png",
@@ -30,6 +35,10 @@ class ParsedWsMessage:
     max_iterations: int
     attachments: list[dict[str, Any]]
     agent_mode: AgentMode
+    form_response: dict[str, Any] | None = None
+    provider_id: str | None = None
+    reasoning_level: str | None = None
+    fast_mode: bool = False
 
 
 def parse_ws_message(payload: str) -> ParsedWsMessage | None:
@@ -42,6 +51,9 @@ def parse_ws_message(payload: str) -> ParsedWsMessage | None:
         return None
     if parsed.get("type") != "message":
         return None
+    form_response = parsed.get("form_response")
+    if form_response is not None and not isinstance(form_response, dict):
+        return None
     content = parsed.get("content")
     if not isinstance(content, str):
         return None
@@ -52,11 +64,20 @@ def parse_ws_message(payload: str) -> ParsedWsMessage | None:
     if not trimmed and not attachments:
         return None
 
+    provider_id = parsed.get("provider_id")
+    reasoning_level = parsed.get("reasoning_level")
+    fast_mode = parsed.get("fast_mode", False)
+    if not isinstance(fast_mode, bool):
+        return None
+    if provider_id is not None and provider_id not in list(ProviderId):
+        return None
+    if reasoning_level is not None and reasoning_level not in LEVELS:
+        return None
     tier = parse_tier_name(parsed.get("tier"))
     raw_iters = parsed.get("max_iterations")
     max_iterations = (
         int(raw_iters)
-        if isinstance(raw_iters, int) and 1 <= raw_iters <= CHAT_MAX_ITERATIONS
+        if isinstance(raw_iters, int) and 0 <= raw_iters <= CHAT_MAX_ITERATIONS
         else CHAT_DEFAULT_ITERATIONS
     )
     raw_agent_mode = parsed.get("agent_mode")
@@ -70,6 +91,10 @@ def parse_ws_message(payload: str) -> ParsedWsMessage | None:
         max_iterations=max_iterations,
         attachments=attachments,
         agent_mode=agent_mode,
+        form_response=form_response,
+        provider_id=provider_id,
+        reasoning_level=reasoning_level,
+        fast_mode=fast_mode,
     )
 
 

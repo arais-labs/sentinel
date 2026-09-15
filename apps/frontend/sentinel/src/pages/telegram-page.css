@@ -1,0 +1,54 @@
+.telegram-pane { background: var(--surface-0); container-type: inline-size; }
+html.dark .telegram-pane { background: #0c0c0e; }
+.telegram-content { width: min(100%, 820px); margin: 0 auto; display: grid; gap: 20px; padding: 8px 0 24px; }
+.telegram-header-actions { display: flex; align-items: center; gap: 8px; }
+.telegram-header-actions .chat-header-pill { display: inline-flex; align-items: center; text-transform: uppercase; }
+.telegram-connection i { width: 6px; height: 6px; border-radius: 50%; background: var(--text-muted); }
+.telegram-connection i[data-running] { background: #59af80; }
+.telegram-card { min-width: 0; padding: 24px; border-radius: 24px; background: var(--surface-1); border: 1px solid color-mix(in srgb, var(--text-primary) 4%, transparent); box-shadow: 2px 3px 8px #00000009, 7px 8px 24px #0000000b, -4px -4px 15px #ffffff30; animation: telegram-enter 260ms ease-out both; }
+html.dark .telegram-card { background: #101012; border-color: #ffffff06; box-shadow: 2px 3px 8px #0000001a,7px 8px 24px #00000030,-4px -4px 15px #ffffff03,inset 0 1px 0 #ffffff06; }
+.telegram-section-heading { display:flex; align-items: flex-start; gap: 12px; margin-bottom: 22px; }
+.telegram-section-heading > svg { color: var(--sentinel-blue, #60b9e8); margin-top: 2px; flex-shrink: 0; }
+.telegram-section-heading h2 { font-size: 14px; line-height: 22px; font-weight: 550; color: var(--text-primary); }
+.telegram-section-heading p, .telegram-field > p { color: var(--text-muted); font-size: 12px; line-height: 1.65; margin-top: 3px; }
+.telegram-status-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap: 20px; }
+.telegram-status-grid dt { font-size: 11px; color: var(--text-muted); margin-bottom: 6px; }
+.telegram-status-grid dd { font-size: 13px; color:var(--text-primary); overflow-wrap:anywhere; }
+.telegram-mono { font-family: var(--font-mono,monospace); }
+.telegram-field { display:grid; gap:10px; min-width:0; }
+.telegram-field > label { font-size: 12px; font-weight: 550; }
+.telegram-field-row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; min-width:0; }
+.telegram-token-input { flex:1 1 220px; position:relative; min-width:0; }
+.telegram-pane .input-field { height:38px; width:100%; min-width:0; font-size:12px; border-radius:12px; background:var(--surface-0); border:1px solid color-mix(in srgb,var(--text-primary) 9%,transparent); transition:border-color 160ms,box-shadow 160ms; }
+.telegram-pane .input-field:focus { border-color:color-mix(in srgb,var(--sentinel-blue, #60b9e8) 50%,transparent); box-shadow:0 0 0 2px #60b9e80d; }
+.telegram-token-input input { padding-right:40px; font-family:var(--font-mono,monospace); }
+.telegram-token-input > button { position:absolute; right:8px; top:5px; width:28px; height:28px; display:grid; place-items:center; border-radius:8px; color:var(--text-muted); }
+.telegram-token-input > button:hover { color:var(--text-primary); background:var(--surface-2); }
+.telegram-field-row select { flex:1 1 240px; width:auto; }
+.telegram-button { display:inline-flex; justify-content:center; align-items:center; gap:7px; min-height:36px; padding:0 14px; border-radius:999px; border:1px solid color-mix(in srgb,var(--text-primary) 6%,transparent); background:var(--surface-2); font-size:11px; font-weight:500; white-space:nowrap; color:var(--text-secondary); box-shadow:2px 3px 7px #0000000c,inset 0 1px 0 #ffffff0a; transition:background 160ms,color 160ms,box-shadow 160ms; }
+.telegram-button:hover:not(:disabled) { color:var(--text-primary); background:color-mix(in srgb,var(--text-primary) 7%,var(--surface-1)); }
+.telegram-button:active:not(:disabled) { box-shadow:inset 2px 2px 4px #0002; }
+.telegram-pane button:disabled { opacity:.45; cursor:default; }
+.telegram-pane button:focus-visible { outline:1px solid var(--sentinel-blue, #60b9e8); outline-offset:3px; }
+.telegram-owner { margin-top:22px; padding-top:22px; border-top:1px solid color-mix(in srgb,var(--text-primary) 7%,transparent); }
+.telegram-text-button { font-size:11px; color:var(--text-secondary); padding:4px 0; transition:color 160ms; }
+.telegram-text-button:hover { color:var(--text-primary); }
+.telegram-danger { color:#bc8290; }
+.telegram-confirm { display:flex; align-items:center; gap:14px; flex-wrap:wrap; animation:telegram-enter 180ms ease-out; }
+.telegram-confirm > span { font-size:12px; color:var(--text-secondary); }
+.telegram-count { display:inline-flex; align-items:center; justify-content:center; min-width:22px; height:20px; margin-left:6px; padding-inline:6px; font-size:10px; border-radius:999px; background:var(--surface-2); color:var(--text-secondary); }
+.telegram-empty { display:flex; flex-direction:column; align-items:center; padding:24px 8px; gap:10px; text-align:center; color:var(--text-muted); font-size:12px; }
+.telegram-empty p { font-size:12px; line-height:1.65; }
+.telegram-chats { display:grid; }
+.telegram-chat-row { display:flex; align-items:center; gap:12px; padding:14px 0; border-top:1px solid color-mix(in srgb,var(--text-primary) 6%,transparent); min-width:0; }
+.telegram-chat-row:first-child { border-top:0; padding-top:0; }
+.telegram-chat-row:last-child { padding-bottom:0; }
+.telegram-chat-row > svg { flex-shrink:0; color:var(--text-muted); }
+.telegram-chat-identity { flex:1; min-width:0; }
+.telegram-chat-identity p { font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.telegram-chat-identity span { font-size:11px; color:var(--text-muted); font-family:var(--font-mono,monospace); }
+.telegram-note { display:flex; align-items:flex-start; gap:10px; padding:0 12px; color:var(--text-muted); font-size:12px; line-height:1.7; }
+.telegram-note svg { flex-shrink:0; margin-top:3px; }
+@container (max-width:420px) { .telegram-card { padding:18px; border-radius:20px; } .telegram-status-grid { grid-template-columns:1fr; gap:14px; } .telegram-token-input { flex-basis:100%; } }
+@keyframes telegram-enter { from { opacity:0; transform:translateY(4px); } to { opacity:1; transform:translateY(0); } }
+@media(prefers-reduced-motion:reduce) { .telegram-pane *, .telegram-header-actions * { animation:none!important; transition:none!important; } }

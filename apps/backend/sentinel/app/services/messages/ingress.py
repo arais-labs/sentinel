@@ -3,7 +3,8 @@ from __future__ import annotations
 from typing import Any
 from uuid import UUID
 
-from app.services.llm.ids import TierName, parse_tier_name
+from sentral.llm.ids import TierName, parse_tier_name
+from app.services.llm.session_selection import selection_model
 
 
 def web_ingress_metadata() -> dict[str, Any]:
@@ -18,6 +19,7 @@ def trigger_ingress_metadata(
 ) -> dict[str, Any]:
     metadata: dict[str, Any] = {
         "source": "trigger",
+        "notice": {"title": f"Trigger · {(trigger_name or '').strip() or 'Trigger'}"},
         "trigger_id": str(trigger_id),
         "trigger_name": (trigger_name or "").strip() or "Trigger",
     }
@@ -62,6 +64,15 @@ def build_generation_metadata(
     max_iterations: int | None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {}
+    if isinstance(requested_tier, str) and requested_tier.startswith("sentinel:"):
+        parts = requested_tier.split(":")
+        if len(parts) in (4, 5):
+            requested_tier = parts[1]
+            payload["model_selection"] = {
+                "provider_id": None if parts[2] == "auto" else parts[2],
+                "reasoning_level": None if parts[3] == "default" else parts[3],
+                **({"fast_mode": True} if len(parts) == 5 and parts[4] == "fast" else {}),
+            }
     tier = parse_tier_name(requested_tier)
     if tier is not None:
         payload["requested_tier"] = tier.value
@@ -73,7 +84,7 @@ def build_generation_metadata(
         payload["provider"] = provider_value
     if isinstance(temperature, (int, float)):
         payload["temperature"] = float(temperature)
-    if isinstance(max_iterations, int) and max_iterations > 0:
+    if isinstance(max_iterations, int) and max_iterations >= 0:
         payload["max_iterations"] = int(max_iterations)
     return payload
 
@@ -81,8 +92,21 @@ def build_generation_metadata(
 def normalize_generation_metadata(raw: dict[str, Any] | None) -> dict[str, Any]:
     if not isinstance(raw, dict):
         return {}
+    requested_tier = raw.get("requested_tier")
+    selection = raw.get("model_selection")
+    if isinstance(selection, dict):
+
+        try:
+            requested_tier = selection_model(
+                requested_tier,
+                selection.get("provider_id"),
+                selection.get("reasoning_level"),
+                selection.get("fast_mode", False),
+            )
+        except (ValueError, TypeError):
+            pass
     return build_generation_metadata(
-        requested_tier=raw.get("requested_tier"),
+        requested_tier=requested_tier,
         resolved_model=(
             raw.get("resolved_model") if isinstance(raw.get("resolved_model"), str) else None
         ),

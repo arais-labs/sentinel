@@ -2,51 +2,54 @@
 
 from __future__ import annotations
 
+from sentral.llm.tool_images import ToolImageReinjectionPolicy
+
 import asyncio
 import contextlib
-import json
+import json as _json
 from collections.abc import AsyncIterator, Awaitable, Callable
+from datetime import UTC, datetime
 from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.sentral import (
-    AgentRuntimeEngine,
+from app.config import settings
+from app.models import Message
+from sentral import (
     AgentEvent as RuntimeAgentEvent,
+)
+from sentral import (
+    AgentRuntimeEngine,
     CompactionConfig,
     CompactionResult,
     Compactor,
     ConversationItem,
     GenerationConfig,
     ImageBlock,
+    Machine,
     RunTurnRequest,
-    Runtime,
     TextBlock,
-    TokenUsage,
-    ToolCallBlock,
-    ToolCallInterceptionResult,
     ToolResultBlock,
     TurnResult,
 )
-from app.config import settings
-from app.models import Message
 from app.services.agent.agent_modes import get_agent_mode_definition
-from app.services.agent.runtime_support import SentinelRuntimeSupport
-from app.services.agent_runtime_adapters.conversions import (
-    db_messages_to_runtime_items,
-    runtime_items_to_sentinel_messages,
+import app.services.agent.runtime_support as runtime_support_module
+from app.services.agent_runtime_adapters.conversions import db_messages_to_runtime_items
+from sentral.llm.runtime_conversions import (
     runtime_item_to_sentinel_message,
     sentinel_message_to_runtime_item,
 )
-from app.services.agent_runtime_adapters.provider import SentinelProviderAdapter
+from app.services.agent_runtime_adapters.presentation import RunPresentation
+from sentral.llm.runtime_adapter import SentinelProviderAdapter
 from app.services.agent_runtime_adapters.tools import SentinelToolRegistryAdapter
-from app.services.llm.generic.types import ImageContent, TextContent, UserMessage
+from sentral.llm.generic.transport_context import provider_transport_session
+from sentral.llm.generic.types import ImageContent, TextContent
 
 HistoryLoader = Callable[[AsyncSession, UUID], Awaitable[list[ConversationItem]]]
 
 
-class SentinelLoopRuntimeAdapter(Runtime):
+class SentinelLoopRuntimeAdapter(Machine):
     """Expose Sentinel execution through the standalone runtime contracts.
 
     This adapter is intentionally Sentinel-specific:
@@ -59,13 +62,14 @@ class SentinelLoopRuntimeAdapter(Runtime):
     def __init__(
         self,
         *,
-        loop: SentinelRuntimeSupport,
+        loop: runtime_support_module.SentinelRuntimeSupport,
         db: AsyncSession,
         session_id: UUID,
         runtime_session_id: UUID | None = None,
         compactor: Compactor | None = None,
         history_loader: HistoryLoader | None = None,
         persist_incremental: bool = False,
+        on_checkpoint: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         self._loop = loop
         self._db = db
@@ -74,6 +78,7 @@ class SentinelLoopRuntimeAdapter(Runtime):
         self._compactor = compactor
         self._history_loader = history_loader or self._load_runtime_history
         self._persist_incremental = persist_incremental
+        self._on_checkpoint = on_checkpoint
 
     async def run_turn(
         self,
@@ -134,10 +139,20 @@ class SentinelLoopRuntimeAdapter(Runtime):
         *,
         sink: Callable[[RuntimeAgentEvent], Awaitable[None]] | None = None,
     ) -> tuple[TurnResult, list[RuntimeAgentEvent]]:
+        with provider_transport_session(str(self._session_id)):
+            return await self._execute_in_transport_session(request, sink=sink)
+
+    async def _execute_in_transport_session(
+        self,
+        request: RunTurnRequest,
+        *,
+        sink: Callable[[RuntimeAgentEvent], Awaitable[None]] | None = None,
+    ) -> tuple[TurnResult, list[RuntimeAgentEvent]]:
         self._validate_request(request)
         config = request.config
         assert config is not None
 
+        presentation = RunPresentation()
         events: list[RuntimeAgentEvent] = []
         last_stop_reason: str | None = None
         pending_approval = None
@@ -148,6 +163,7 @@ class SentinelLoopRuntimeAdapter(Runtime):
 
         async def _emit_runtime_event(runtime_event: RuntimeAgentEvent) -> None:
             nonlocal last_stop_reason, pending_approval, deferred_done
+            presentation.event(runtime_event)
             if runtime_event.stop_reason:
                 last_stop_reason = runtime_event.stop_reason
             if runtime_event.approval_request is not None:
@@ -187,7 +203,6 @@ class SentinelLoopRuntimeAdapter(Runtime):
             This makes the streaming card turn rose (pending state) in real-time
             instead of waiting until the approval is resolved.
             """
-            import json as _json
 
             tool_call_id = tool_call_ids_by_name.get(tool_name, "")
             pending_metadata: dict = {"approval": approval_payload, "pending": True}
@@ -211,23 +226,17 @@ class SentinelLoopRuntimeAdapter(Runtime):
             )
 
         mode_definition = get_agent_mode_definition(config.provider_metadata.get("agent_mode"))
-        user_metadata = (
-            dict(config.provider_metadata.get("user_metadata"))
-            if isinstance(config.provider_metadata.get("user_metadata"), dict)
-            else {}
-        )
-        user_metadata["agent_mode"] = mode_definition.id.value
         user_payload = self._request_user_message(request)
         persist_user_message = bool(config.provider_metadata.get("persist_user_message", True))
-        user_message = UserMessage(content=user_payload, metadata=user_metadata)
-        created_seed = [user_message] if persist_user_message else []
         skipped_pre_persisted_new_items = 0 if persist_user_message else len(request.new_items)
 
         prepared = await self._loop.prepare_runtime_turn_context(
             self._db,
             self._session_id,
             system_prompt=config.system_prompt,
-            pending_user_message=SentinelRuntimeSupport.user_text(user_payload),
+            pending_user_message=runtime_support_module.SentinelRuntimeSupport.user_text(
+                user_payload
+            ),
             agent_mode=mode_definition.id,
             model=config.model,
             temperature=config.temperature,
@@ -238,12 +247,122 @@ class SentinelLoopRuntimeAdapter(Runtime):
         runtime_system_prompt = prepared.effective_system_prompt
         runtime_context_snapshot = prepared.runtime_context_snapshot
         context_snapshot_pending = True
-        timeout = request.timeout_seconds or settings.agent_loop_timeout
+        timeout = (
+            settings.agent_loop_timeout
+            if request.timeout_seconds is None
+            else request.timeout_seconds
+        )
         persisted_count = 0
         history = [
             sentinel_message_to_runtime_item(message, item_id=f"history-{index}")
             for index, message in enumerate(messages)
         ]
+
+        # Pending steering is injected once at the next model boundary, including
+        # persisted updates recovered when a previous run ended before consuming them.
+        pending_steering = [item for item in history if item.metadata.get("steering") == "pending"]
+        history = [
+            item
+            for item in history
+            if item.metadata.get("steering") not in {"pending", "cancelled"}
+        ]
+        delivered_steering: set[str] = set()
+
+        def _drain_updates() -> list[ConversationItem]:
+            queued = list(pending_steering)
+            pending_steering.clear()
+            if request.interjection_source is not None:
+                queued.extend(request.interjection_source())
+            updates = []
+            for item in queued:
+                steering_id = item.metadata.get("steering_id")
+                if steering_id:
+                    if steering_id in delivered_steering:
+                        continue
+                    delivered_steering.add(steering_id)
+                updates.append(item)
+            return updates
+
+        async def _deliver_steering(batch: list[ConversationItem]) -> None:
+            for item in batch:
+                record = None
+                steering_id = item.metadata.get("steering_id")
+                if steering_id:
+                    result = await self._db.execute(
+                        select(Message)
+                        .where(
+                            Message.id == UUID(steering_id),
+                            Message.session_id == self._session_id,
+                        )
+                        .execution_options(populate_existing=True)
+                    )
+                    record = result.scalars().first()
+                    if record is not None:
+                        result = await self._db.execute(
+                            select(Message).where(Message.session_id == self._session_id)
+                        )
+                        preceding = [
+                            row
+                            for row in result.scalars().all()
+                            if not (row.metadata_json or {}).get("steering_id")
+                        ]
+                        preceding.sort(
+                            key=lambda row: (
+                                row.created_at or datetime.min.replace(tzinfo=UTC),
+                                str(row.id),
+                            )
+                        )
+                        record.metadata_json = {
+                            **(record.metadata_json or {}),
+                            "steering": "delivered",
+                            "steering_after_message_id": (
+                                str(preceding[-1].id) if preceding else None
+                            ),
+                        }
+                        await self._db.commit()
+                    await _emit_runtime_event(
+                        RuntimeAgentEvent(type="steering_delivered", delta=steering_id)
+                    )
+                if item.metadata.get("notice"):
+                    # Runtime notices may not be saved until the turn ends. Give the live
+                    # row and its eventual persisted copy the same presentation identity.
+                    if record is not None:
+                        metadata = dict(record.metadata_json or {})
+                        message_id = str(record.id)
+                        created_at = record.created_at.isoformat()
+                        content = record.content
+                    else:
+                        item.metadata.setdefault(
+                            "presentation",
+                            {
+                                "id": item.id,
+                                "created_at": item.timestamp,
+                            },
+                        )
+                        metadata = dict(item.metadata)
+                        message_id = item.id
+                        created_at = item.timestamp
+                        content = "\n".join(
+                            block.text for block in item.content if isinstance(block, TextBlock)
+                        )
+                    await _emit_runtime_event(
+                        RuntimeAgentEvent(
+                            type="notice_message",
+                            metadata={
+                                "conversation_message": {
+                                    "id": message_id,
+                                    "session_id": str(self._session_id),
+                                    "role": item.role,
+                                    "content": content,
+                                    "metadata": metadata,
+                                    "created_at": created_at,
+                                    "token_count": None,
+                                    "tool_call_id": None,
+                                    "tool_name": None,
+                                }
+                            },
+                        )
+                    )
 
         async def _persist_runtime_batch(batch: list[ConversationItem]) -> None:
             nonlocal context_snapshot_pending, persisted_count, skipped_pre_persisted_new_items
@@ -257,6 +376,15 @@ class SentinelLoopRuntimeAdapter(Runtime):
             if not batch_to_persist:
                 persisted_count += len(batch)
                 return
+            await _deliver_steering(batch_to_persist)
+            batch_to_persist = [
+                item for item in batch_to_persist if not item.metadata.get("steering_id")
+            ]
+            if not batch_to_persist:
+                persisted_count += len(batch)
+                return
+            for item in batch_to_persist:
+                presentation.item(item)
             sentinel_batch = [runtime_item_to_sentinel_message(item) for item in batch_to_persist]
             assistant_iterations_batch = {
                 id(message): int(item.metadata.get("iteration") or 0)
@@ -279,8 +407,18 @@ class SentinelLoopRuntimeAdapter(Runtime):
             if snapshot is not None:
                 context_snapshot_pending = False
             persisted_count += len(batch)
+            if self._on_checkpoint is not None:
+                await self._on_checkpoint()
 
-        provider_adapter = SentinelProviderAdapter(self._loop.provider)
+        provider_adapter = SentinelProviderAdapter(
+            self._loop.provider,
+            image_policy=ToolImageReinjectionPolicy(
+                enabled=settings.tool_image_reinjection_enabled,
+                max_images_per_turn=settings.tool_image_reinjection_max_images,
+                max_bytes_per_image=settings.tool_image_reinjection_max_bytes_per_image,
+                max_total_bytes_per_turn=settings.tool_image_reinjection_max_total_bytes,
+            ),
+        )
         runtime = AgentRuntimeEngine(
             provider=provider_adapter,
             tool_registry=SentinelToolRegistryAdapter(
@@ -292,7 +430,6 @@ class SentinelLoopRuntimeAdapter(Runtime):
                 on_pending_tool_result=_on_pending_tool_result,
             ),
             compactor=self._compactor,
-            tool_call_interceptor=self._collaboration_tool_call_interceptor(provider_adapter),
         )
         runtime_result = await runtime.run_turn(
             RunTurnRequest(
@@ -310,15 +447,17 @@ class SentinelLoopRuntimeAdapter(Runtime):
                     provider_metadata=dict(config.provider_metadata),
                 ),
                 timeout_seconds=timeout,
-                interjection_source=request.interjection_source,
+                interjection_source=_drain_updates,
             ),
             sink=_emit_runtime_event,
-            checkpoint=_persist_runtime_batch if self._persist_incremental else None,
+            checkpoint=(_persist_runtime_batch if self._persist_incremental else _deliver_steering),
         )
         created_runtime_items = runtime_result.metadata.get("created_items")
         created_items = created_runtime_items if isinstance(created_runtime_items, list) else []
         all_sentinel_created = [runtime_item_to_sentinel_message(item) for item in created_items]
-        remaining_created = created_items[persisted_count:]
+        remaining_created = [
+            item for item in created_items[persisted_count:] if not item.metadata.get("steering_id")
+        ]
         sentinel_created = [runtime_item_to_sentinel_message(item) for item in remaining_created]
         assistant_iterations = {
             id(message): int(item.metadata.get("iteration") or 0)
@@ -385,7 +524,7 @@ class SentinelLoopRuntimeAdapter(Runtime):
             raise ValueError(
                 "RunTurnRequest.conversation_id must match the bound Sentinel session."
             )
-        if not request.new_items:
+        if not request.new_items and request.interjection_source is None:
             raise ValueError("RunTurnRequest.new_items must contain at least one user item.")
         for item in request.new_items:
             if item.role != "user":
@@ -421,255 +560,6 @@ class SentinelLoopRuntimeAdapter(Runtime):
         )
         messages = list(result.scalars().all())
         return db_messages_to_runtime_items(messages)
-
-    def _collaboration_tool_call_interceptor(
-        self,
-        provider: SentinelProviderAdapter,
-    ) -> Callable[
-        [list[ConversationItem], list[ToolCallBlock], GenerationConfig],
-        Awaitable[ToolCallInterceptionResult | None],
-    ]:
-        async def _intercept(
-            working_history: list[ConversationItem],
-            tool_calls: list[ToolCallBlock],
-            config: GenerationConfig,
-        ) -> ToolCallInterceptionResult | None:
-            spawn_calls = [
-                call
-                for call in tool_calls
-                if call.name == "delegate"
-                and str(call.arguments.get("command") or "").strip() == "spawn"
-            ]
-            if not spawn_calls:
-                return None
-            return await self._plan_delegate_spawn_calls(
-                provider=provider,
-                working_history=working_history,
-                tool_calls=tool_calls,
-                spawn_calls=spawn_calls,
-                config=config,
-            )
-
-        return _intercept
-
-    async def _plan_delegate_spawn_calls(
-        self,
-        *,
-        provider: SentinelProviderAdapter,
-        working_history: list[ConversationItem],
-        tool_calls: list[ToolCallBlock],
-        spawn_calls: list[ToolCallBlock],
-        config: GenerationConfig,
-    ) -> ToolCallInterceptionResult | None:
-        planner_messages = self._build_collaboration_planner_messages(
-            working_history=working_history,
-            tool_calls=tool_calls,
-            spawn_calls=spawn_calls,
-        )
-        try:
-            planner_response = await asyncio.wait_for(
-                provider.chat(
-                    messages=planner_messages,
-                    tools=[],
-                    config=GenerationConfig(
-                        model=config.model,
-                        temperature=0.0,
-                        max_iterations=1,
-                        stream=False,
-                        tool_choice="none",
-                    ),
-                ),
-                timeout=15.0,
-            )
-        except Exception:  # noqa: BLE001
-            return None
-
-        plan = self._parse_collaboration_plan_response(planner_response.item)
-        if not isinstance(plan, dict):
-            return None
-        decisions = plan.get("spawn_decisions")
-        if not isinstance(decisions, list):
-            return None
-
-        decision_by_call_id: dict[str, dict[str, object]] = {}
-        for decision in decisions:
-            if not isinstance(decision, dict):
-                continue
-            tool_call_id = str(decision.get("tool_call_id") or "").strip()
-            if tool_call_id:
-                decision_by_call_id[tool_call_id] = decision
-
-        blocked_results: list[ToolResultBlock] = []
-        allowed_calls: list[ToolCallBlock] = []
-        changed = False
-
-        for call in tool_calls:
-            if (
-                call.name != "delegate"
-                or str(call.arguments.get("command") or "").strip() != "spawn"
-            ):
-                allowed_calls.append(call)
-                continue
-            decision = decision_by_call_id.get(call.id)
-            if not isinstance(decision, dict) or bool(decision.get("allow", True)):
-                allowed_calls.append(call)
-                continue
-            changed = True
-            blocked_results.append(
-                ToolResultBlock(
-                    tool_call_id=call.id,
-                    tool_name=call.name,
-                    content=self._blocked_delegate_spawn_message(decision),
-                    is_error=True,
-                    metadata={
-                        "collaboration_plan": {
-                            "reason": str(decision.get("reason") or "").strip() or None,
-                            "missing_prerequisites": [
-                                str(item).strip()
-                                for item in (decision.get("missing_prerequisites") or [])
-                                if isinstance(item, str) and item.strip()
-                            ],
-                            "main_thread_task": str(decision.get("main_thread_task") or "").strip()
-                            or None,
-                        }
-                    },
-                    tool_arguments=dict(call.arguments),
-                )
-            )
-
-        if not changed:
-            return None
-        return ToolCallInterceptionResult(
-            tool_calls=allowed_calls,
-            synthetic_results=blocked_results,
-        )
-
-    def _build_collaboration_planner_messages(
-        self,
-        *,
-        working_history: list[ConversationItem],
-        tool_calls: list[ToolCallBlock],
-        spawn_calls: list[ToolCallBlock],
-    ) -> list[ConversationItem]:
-        history_tail = self._collaboration_history_tail(working_history)
-        current_calls = [
-            {
-                "tool_call_id": call.id,
-                "name": call.name,
-                "arguments": dict(call.arguments),
-            }
-            for call in tool_calls
-        ]
-        delegated_spawns = [
-            {
-                "tool_call_id": call.id,
-                "objective": str(call.arguments.get("objective") or "").strip(),
-                "scope": str(call.arguments.get("scope") or "").strip(),
-                "allowed_tools": list(call.arguments.get("allowed_tools") or []),
-            }
-            for call in spawn_calls
-        ]
-        system_text = (
-            "You are a collaboration harness for delegated work.\n"
-            "Decide whether each proposed delegate spawn may run now.\n"
-            "Block a spawn if the delegated branch depends on shared setup that is not yet established "
-            "(for example: repo not cloned or opened yet, workspace path not prepared yet, browser tab state not prepared yet), "
-            "or if the main thread would obviously duplicate the delegated branch.\n"
-            "Allow a spawn only when the branch is bounded and its prerequisites are satisfied.\n"
-            "Respond ONLY with valid JSON matching this schema:\n"
-            '{"spawn_decisions":[{"tool_call_id":"...","allow":true,"reason":"...","missing_prerequisites":["..."],"main_thread_task":"..."}]}'
-        )
-        user_text = (
-            "Recent runtime history tail:\n"
-            f"{history_tail}\n\n"
-            "Current assistant-step tool calls:\n"
-            f"{json.dumps(current_calls, ensure_ascii=False)}\n\n"
-            "Delegate spawn calls to evaluate:\n"
-            f"{json.dumps(delegated_spawns, ensure_ascii=False)}"
-        )
-        return [
-            ConversationItem(
-                id="collaboration-system",
-                role="system",
-                content=[TextBlock(text=system_text)],
-            ),
-            ConversationItem(
-                id="collaboration-user",
-                role="user",
-                content=[TextBlock(text=user_text)],
-            ),
-        ]
-
-    @staticmethod
-    def _parse_collaboration_plan_response(item: ConversationItem) -> dict[str, object] | None:
-        text = "\n".join(
-            block.text for block in item.content if isinstance(block, TextBlock) and block.text
-        ).strip()
-        if not text:
-            return None
-        if text.startswith("```"):
-            text = text.split("```")[1] if "```" in text[3:] else text
-            text = text.lstrip("json").strip()
-        try:
-            parsed = json.loads(text)
-        except Exception:  # noqa: BLE001
-            return None
-        return parsed if isinstance(parsed, dict) else None
-
-    @staticmethod
-    def _blocked_delegate_spawn_message(decision: dict[str, object]) -> str:
-        reason = (
-            str(decision.get("reason") or "").strip()
-            or "Do required shared setup first before delegating this branch."
-        )
-        missing = [
-            str(item).strip()
-            for item in (decision.get("missing_prerequisites") or [])
-            if isinstance(item, str) and item.strip()
-        ]
-        main_thread_task = str(decision.get("main_thread_task") or "").strip()
-        pieces = [f"Collaboration plan blocked delegate.spawn: {reason}"]
-        if missing:
-            pieces.append(f"Missing prerequisites: {', '.join(missing)}")
-        if main_thread_task:
-            pieces.append(f"Main-thread task first: {main_thread_task}")
-        return " ".join(pieces)
-
-    @staticmethod
-    def _collaboration_history_tail(working_history: list[ConversationItem]) -> str:
-        tail = working_history[-16:] if len(working_history) > 16 else list(working_history)
-        lines: list[str] = []
-        for item in tail:
-            if item.role == "user":
-                text = "\n".join(
-                    block.text
-                    for block in item.content
-                    if isinstance(block, TextBlock) and block.text
-                ).strip()
-                if text:
-                    lines.append(f"user: {text[:240]}")
-            elif item.role == "assistant":
-                text = "\n".join(
-                    block.text
-                    for block in item.content
-                    if isinstance(block, TextBlock) and block.text
-                ).strip()
-                tool_names = [
-                    block.name
-                    for block in item.content
-                    if isinstance(block, ToolCallBlock) and block.name
-                ]
-                if text:
-                    lines.append(f"assistant: {text[:240]}")
-                if tool_names:
-                    lines.append(f"assistant_tools: {', '.join(tool_names[:6])}")
-            elif item.role == "tool":
-                for block in item.content:
-                    if isinstance(block, ToolResultBlock):
-                        status = "error" if block.is_error else "ok"
-                        preview = (block.content or "").strip().replace("\n", " ")
-                        lines.append(f"tool_result[{block.tool_name}:{status}]: {preview[:220]}")
-        return "\n".join(lines[-24:])
 
     @staticmethod
     def _last_assistant_item(
