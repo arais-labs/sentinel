@@ -85,8 +85,8 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* Appearance is a single root-level system. Document zoom scales fixed pixel
-   and rem typography together; inherited tokens cover controls and portals. */
+/* Appearance is a single root-level typography system. Interface scale stays
+   with the browser's native page zoom so viewport geometry remains correct. */
 #root {
   font-family: var(--app-font-family, inherit);
   font-weight: var(--app-font-weight, inherit);
