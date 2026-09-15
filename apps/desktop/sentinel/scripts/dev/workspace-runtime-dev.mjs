@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildWorkspaceRuntime } from '../build/platforms/macos-arm64.mjs';
+import { buildWorkspaceRuntime } from '../packaging/platforms/macos-arm64.mjs';
 
 if (process.platform !== 'darwin' || process.arch !== 'arm64') {
   throw new Error('Workspace development requires an Apple silicon Mac with macOS 26 or newer.');

@@ -14,8 +14,8 @@ lifecycle. The web interface lives in `apps/frontend/sentinel`.
 | `native/macos/` | Swift runtime with standard `Sources/` and `Tests/` |
 | `native/graphics/guest/` | Graphics code installed into Linux workspaces |
 | `native/graphics/patches/` | Graphics compatibility source |
-| `scripts/build/` | Desktop, payload, native runtime, and graphics build tools |
-| `scripts/dev/`, `scripts/release/` | Development setup, release/signature tools |
+| `scripts/packaging/` | Desktop, payload, native runtime, and graphics build tools |
+| `scripts/dev/`, `scripts/publishing/` | Development setup, release/signature tools |
 | `packaging/macos/` | Signing entitlements |
 | `tests/unit/`, `tests/integration/`, `tests/fixtures/` | Checks and fixtures |
 | `assets/` | Application icons |
@@ -64,4 +64,15 @@ write distributable artifacts to `release/`.
 
 For internal ad-hoc signing, set `SENTINEL_INTERNAL_BUILD=1` for the desktop build.
 Public distribution requires the appropriate signing setup. Publishing is explicit
-through `scripts/release/publish-release.mjs`.
+through `scripts/publishing/publish-release.mjs`.
+
+Pull requests build an ad-hoc signed macOS installer and its matching payload.
+Download `sentinel-macos-arm64` from the workflow artifacts, install the DMG, then
+choose **Developer → Developer Mode**, then **Developer → Install PR app bundle…** and select the included
+payload tarball. These builds do not publish releases or change update channels.
+
+CI compiles both Linux graphics variants in containers on an ARM64 Linux runner,
+using the workspace's pinned images and graphics build script. The macOS 26 job
+uses Xcode 26.3 and receives those artifacts through `SENTINEL_GUEST_GRAPHICS_DIR`;
+their checksums and build inputs must match before packaging. Local Mac builds
+without that variable continue to use a disposable build VM.

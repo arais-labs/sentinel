@@ -1,8 +1,7 @@
 name: CI
 
-# Every push runs the test gate. Pushes to main/beta (and manual dispatch) also
-# build and publish the desktop release, but only after the gate passes — a red
-# CI never ships a DMG. main publishes stable; beta publishes beta.
+# PRs build downloadable installers after the test gate. Publishing is a
+# separate job, restricted to version bumps on main/beta or manual dispatch.
 on:
   push:
   pull_request:
@@ -31,6 +30,24 @@ jobs:
       - name: Drift guard
         # Every derived copy of the version must match the root VERSION file.
         run: scripts/sync-version.sh --check
+
+      - name: Require increasing versions on release branches
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          TARGET_BRANCH: ${{ github.base_ref }}
+          REF_NAME: ${{ github.ref_name }}
+          PREVIOUS_SHA: ${{ github.event.before }}
+        run: |
+          if [ "$EVENT_NAME" = pull_request ] && { [ "$TARGET_BRANCH" = main ] || [ "$TARGET_BRANCH" = beta ]; }; then
+            git fetch --no-tags origin "refs/heads/$TARGET_BRANCH"
+            scripts/sync-version.sh --check --greater-than FETCH_HEAD
+          elif [ "$EVENT_NAME" = push ] && { [ "$REF_NAME" = main ] || [ "$REF_NAME" = beta ]; }; then
+            if git cat-file -e "$PREVIOUS_SHA^{commit}" 2>/dev/null; then
+              scripts/sync-version.sh --check --greater-than "$PREVIOUS_SHA"
+            else
+              echo "Initial branch creation: no previous target version to compare."
+            fi
+          fi
 
       - name: Detect version bump
         id: bump
@@ -96,6 +113,10 @@ jobs:
         working-directory: apps/desktop/sentinel
         run: npx tsc -p tsconfig.json --noEmit
 
+      - name: Test graphics artifact handoff
+        working-directory: apps/desktop/sentinel
+        run: npm run test:graphics-build
+
   frontend-build:
     name: Frontend Build
     runs-on: ubuntu-latest
@@ -116,34 +137,56 @@ jobs:
         working-directory: apps/frontend/sentinel
         run: npm run build
 
-  desktop-release:
-    name: Build DMG + payload and publish
+  guest-graphics:
+    name: Build Linux ARM guest graphics
     needs: [version, backend-tests, desktop-typecheck, frontend-build]
-    # Ship only when VERSION was bumped on a main/beta push (stable from main,
-    # beta from beta), or on a manual dispatch. Pushes that don't change VERSION
-    # run the full gate but never publish — so each version ships exactly once.
     if: >-
+      github.event_name == 'pull_request' ||
       github.event_name == 'workflow_dispatch' ||
       ((github.ref == 'refs/heads/main' || github.ref == 'refs/heads/beta') &&
        needs.version.outputs.bumped == 'true')
-    runs-on: macos-15
-    permissions:
-      contents: write
-    # Serialize per ref so two pushes don't race on the same pointer release.
-    concurrency:
-      group: desktop-release-${{ github.ref }}
-      cancel-in-progress: false
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6
+      - name: Build both guest distributions
+        working-directory: apps/desktop/sentinel
+        run: |
+          python3 scripts/packaging/graphics/build-guest.py build/guest-graphics musl
+          python3 scripts/packaging/graphics/build-guest.py build/guest-graphics glibc
+      - uses: actions/upload-artifact@v4
+        with:
+          name: guest-graphics-arm64
+          path: apps/desktop/sentinel/build/guest-graphics/
+          if-no-files-found: error
+          retention-days: 7
+
+  desktop-build:
+    name: Build testable macOS installer and payload
+    needs: guest-graphics
+    runs-on: macos-26
+    timeout-minutes: 90
+    outputs:
+      channel: ${{ steps.channel.outputs.channel }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Select Xcode 26.3
+        run: |
+          sudo xcode-select --switch /Applications/Xcode_26.3.app/Contents/Developer
+          swift --version
+          test "$(uname -m)" = arm64
 
       - uses: actions/setup-node@v6
         with:
           node-version: '22'
 
-      - name: Install uv
-        run: |
-          curl -LsSf https://astral.sh/uv/install.sh | sh
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - uses: astral-sh/setup-uv@v7
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: guest-graphics-arm64
+          path: apps/desktop/sentinel/build/guest-graphics
 
       - name: Install native build tools
         run: brew install ninja pkg-config
@@ -159,19 +202,25 @@ jobs:
             channel="beta"
           fi
           echo "channel=$channel" >> "$GITHUB_OUTPUT"
-          echo "Publishing channel: $channel"
+          echo "Build channel: $channel"
 
       - name: Install desktop shell deps
         working-directory: apps/desktop/sentinel
         run: npm ci
 
-      - name: Build DMG shell (python + git + gh + postgres)
+      - name: Build ad-hoc signed DMG and native runtime
         working-directory: apps/desktop/sentinel
         env:
           SENTINEL_BUILD_CHANNEL: ${{ steps.channel.outputs.channel }}
-          # No signing certs on CI — produce an ad-hoc signed DMG.
+          SENTINEL_GUEST_GRAPHICS_DIR: ${{ github.workspace }}/apps/desktop/sentinel/build/guest-graphics
+          SENTINEL_INTERNAL_BUILD: '1'
+          # Explicit ad-hoc identity, with strict verification after signing.
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
         run: npm run desktop:build
+
+      - name: Verify DMG checksum
+        working-directory: apps/desktop/sentinel
+        run: hdiutil verify release/*.dmg
 
       - name: Build payload (frozen backend + frontend dist)
         working-directory: apps/desktop/sentinel
@@ -179,8 +228,56 @@ jobs:
           SENTINEL_BUILD_CHANNEL: ${{ steps.channel.outputs.channel }}
         run: npm run payload:build
 
+      - name: Write tester instructions
+        working-directory: apps/desktop/sentinel/release
+        run: |
+          cat > TESTING.txt <<'EOF'
+          Source commit: ${{ github.sha }}
+          Requires Apple Silicon and macOS 26 or later.
+          Install Sentinel from the DMG. If macOS blocks opening it, use
+          System Settings > Privacy & Security > Open Anyway.
+          In Sentinel, enable Developer > Developer Mode, then choose
+          Developer > Install PR app bundle…
+          and select the sentinel-payload-*.tar.gz included in this artifact.
+          This installs the matching backend and frontend for this build.
+          EOF
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sentinel-macos-arm64
+          path: |
+            apps/desktop/sentinel/release/*.dmg
+            apps/desktop/sentinel/release/sentinel-payload-*.tar.gz
+            apps/desktop/sentinel/release/latest-*.json
+            apps/desktop/sentinel/release/TESTING.txt
+          if-no-files-found: error
+          retention-days: 14
+
+  desktop-release:
+    name: Publish desktop release
+    needs: [version, desktop-build]
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' &&
+       (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/beta') &&
+       needs.version.outputs.bumped == 'true')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: desktop-release-${{ needs.desktop-build.outputs.channel }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      - uses: actions/download-artifact@v4
+        with:
+          name: sentinel-macos-arm64
+          path: apps/desktop/sentinel/release
       - name: Publish to GitHub Releases
         working-directory: apps/desktop/sentinel
         env:
           GH_TOKEN: ${{ github.token }}
-        run: node scripts/release/publish-release.mjs "${{ steps.channel.outputs.channel }}"
+        run: node scripts/publishing/publish-release.mjs "${{ needs.desktop-build.outputs.channel }}"

@@ -12,7 +12,7 @@ import {
   payloadStagingRoot,
 } from '../paths.js';
 
-// Mirrors the manifest written by scripts/build/payload-build.mjs.
+// Mirrors the manifest written by scripts/packaging/payload-build.mjs.
 interface PayloadManifest {
   schema: number;
   version: string;

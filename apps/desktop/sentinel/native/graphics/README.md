@@ -23,7 +23,7 @@ to stay within macOS's Unix socket address limit.
 
 ## Build and installation
 
-`npm run dev` and the macOS release build both run `scripts/build/graphics/build.py` before launching or
+`npm run dev` and the macOS release build both run `scripts/packaging/graphics/build.py` before launching or
 packaging the app. It bundles the host renderer and runs the adjacent `build-guest.py` to
 precompile Mesa in an owned build VM. The guest archive is cached by source and
 runtime-lock inputs. Build VMs are deleted on success or failure; only the build

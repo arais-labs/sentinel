@@ -5,7 +5,7 @@ TUI := apps/tui
 
 .DEFAULT_GOAL := help
 
-.PHONY: help dev tui logs setup lint format test typecheck check desktop-build
+.PHONY: help dev tui logs setup lint format test typecheck check desktop-build version
 
 help:
 	@echo "make setup         Install the complete local development environment"
@@ -14,10 +14,15 @@ help:
 	@echo "make logs          Follow local desktop and backend service logs"
 	@echo "make check         Run formatting, lint, tests, and TypeScript checks"
 	@echo "make desktop-build Build the distributable desktop app"
+	@echo "make version VERSION=2.0.0  Set the app release version and lock metadata"
 	@echo "Quit Electron or press Ctrl+C in make dev to stop; data is preserved."
 
 setup:
 	bash scripts/setup-dev.sh
+
+version:
+	@test -n "$(VERSION)" || (echo 'Usage: make version VERSION=2.0.0'; exit 1)
+	bash scripts/sync-version.sh --set "$(VERSION)"
 
 dev:
 	npm --prefix $(DESKTOP) run dev

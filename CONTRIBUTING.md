@@ -9,6 +9,25 @@ Thanks for contributing to Sentinel by ARAIS.
 3. Keep docs updated for user-facing changes.
 4. Preserve third-party notices and license files.
 
+## Release versions
+
+`VERSION` is the release number for the backend, frontend, desktop, and TUI.
+Run `make version VERSION=2.0.0` to update it together with app manifests,
+lockfile metadata, and the displayed app version. `scripts/sync-version.sh --check`
+is the read-only drift check used by CI. Dependency versions are not bumped by
+this command; the shared Sentral library and runtime protocol are versioned
+independently.
+
+Pull requests produce test artifacts without publishing. Releases retain the
+app version and identify the source commit; beta/stable select the distribution
+channel. A version bump on main or beta enables publishing after the build gate,
+and manual dispatch can publish a selected channel.
+PRs into main or beta must have a strictly higher app version than the target
+branch, including beta-to-main promotion. CI rejects equal versions and downgrades,
+and checks direct pushes against the previous commit. Make the **Version** check
+required and require branches to be up to date in the repository's branch rules
+so a failing check blocks merging.
+
 ## Development Setup
 
 On macOS, install [Homebrew](https://brew.sh) and Xcode Command Line Tools
