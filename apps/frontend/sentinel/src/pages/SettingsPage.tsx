@@ -627,12 +627,12 @@ export function SettingsPage({ initialSection = 'providers' }: { initialSection?
       <div className="settings-workspace">
         <nav className="settings-navigation" aria-label="Settings sections">
           <span>SETTINGS</span>
-          <button type="button" aria-current={section === 'providers' ? 'page' : undefined} onClick={() => setSection('providers')}><Bot size={16} />LLM Providers</button>
-          <button type="button" aria-current={section === 'backup' ? 'page' : undefined} onClick={() => setSection('backup')}><Archive size={16} />Backup & Restore</button>
-          <button type="button" aria-current={section === 'appearance' ? 'page' : undefined} onClick={() => setSection('appearance')}><Type size={16} />Appearance</button>
-          <button type="button" aria-current={section === 'git' ? 'page' : undefined} onClick={() => setSection('git')}><GitBranch size={16} />Git & GitHub</button>
-          <button type="button" aria-current={section === 'telegram' ? 'page' : undefined} onClick={() => setSection('telegram')}><Send size={16} />Telegram</button>
-          {window.sentinelDesktop && <><button type="button" aria-current={section === 'services' ? 'page' : undefined} onClick={() => setSection('services')}><Server size={16} />Services</button><button type="button" aria-current={section === 'updates' ? 'page' : undefined} onClick={() => setSection('updates')}><Download size={16} />Updates</button></>}
+          <button className="menu-selection-item" type="button" aria-current={section === 'providers' ? 'page' : undefined} onClick={() => setSection('providers')}><Bot size={16} />LLM Providers</button>
+          <button className="menu-selection-item" type="button" aria-current={section === 'backup' ? 'page' : undefined} onClick={() => setSection('backup')}><Archive size={16} />Backup & Restore</button>
+          <button className="menu-selection-item" type="button" aria-current={section === 'appearance' ? 'page' : undefined} onClick={() => setSection('appearance')}><Type size={16} />Appearance</button>
+          <button className="menu-selection-item" type="button" aria-current={section === 'git' ? 'page' : undefined} onClick={() => setSection('git')}><GitBranch size={16} />Git & GitHub</button>
+          <button className="menu-selection-item" type="button" aria-current={section === 'telegram' ? 'page' : undefined} onClick={() => setSection('telegram')}><Send size={16} />Telegram</button>
+          {window.sentinelDesktop && <><button className="menu-selection-item" type="button" aria-current={section === 'services' ? 'page' : undefined} onClick={() => setSection('services')}><Server size={16} />Services</button><button className="menu-selection-item" type="button" aria-current={section === 'updates' ? 'page' : undefined} onClick={() => setSection('updates')}><Download size={16} />Updates</button></>}
         </nav>
         <main className="settings-content"><div className="settings-layout">
         {section === 'git' && <GitPage embedded />}

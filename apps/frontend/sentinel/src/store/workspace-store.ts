@@ -102,6 +102,8 @@ export interface WorkspaceState {
    * Rebuilt from the active session's restored layout.
    */
   openTabs: Partial<Record<WorkspaceTabId, string>>;
+  /** Tab hosted by Dockview's currently active (keyboard-focused) pane. */
+  activeTabId: WorkspaceTabId | null;
 
   // --- actions ---------------------------------------------------------------
 
@@ -335,6 +337,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
       sessionLayouts: {},
       layout: null,
       openTabs: {},
+      activeTabId: null,
 
       bindApi: (api, layoutKey, restore = true) => {
         // Capture any pending resize before replacing the live session's API.
@@ -367,6 +370,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
           if (liveApi === api) get().syncFromApi();
         };
         const disposable = api.onDidLayoutChange(sync);
+        const activeDisposable = api.onDidActivePanelChange(sync);
         window.addEventListener('pagehide', sync);
         sync();
         const requestedTab = pendingTabRequests.get(layoutKey);
@@ -379,6 +383,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
           // before its React component disposes the panels.
           sync();
           disposable.dispose();
+          activeDisposable.dispose();
           window.removeEventListener('pagehide', sync);
           if (liveApi === api) { liveApi = null; liveLayoutKey = null; }
         };
@@ -394,6 +399,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
           layout,
           sessionLayouts: { ...get().sessionLayouts, [liveLayoutKey]: layout },
           openTabs: computeOpenTabs(liveApi),
+          activeTabId: liveApi.activePanel ? readPanelTabId(liveApi.activePanel) ?? null : null,
         });
       },
 

@@ -1476,10 +1476,10 @@ function ModulesSection() {
                 type="button"
                 onClick={() => setActiveModule(mod.name)}
                 aria-pressed={isActive}
-                className={`modules-catalog-item w-full text-left px-3 py-2.5 flex items-start gap-2.5 transition-colors ${
+                className={`menu-selection-item modules-catalog-item w-full text-left px-3 py-2.5 flex items-start gap-2.5 transition-colors ${
                   isActive
-                    ? 'bg-(--surface-2) border-l-2 border-(--accent-solid)'
-                    : 'border-l-2 border-transparent hover:bg-(--surface-1)'
+                    ? ''
+                    : 'hover:bg-(--surface-1)'
                 }`}
               >
                 <Icon size={14} className={`mt-0.5 shrink-0 ${isActive ? 'text-(--accent-solid)' : 'text-(--text-muted)'}`} />

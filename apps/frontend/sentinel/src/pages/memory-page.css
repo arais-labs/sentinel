@@ -10,6 +10,9 @@ html.dark .memory-page {
 }
 html.dark .memory-layout, html.dark .memory-inspector { background: #0c0c0e; }
 .memory-explorer {
+  --menu-selection-face: var(--memory-face);
+  --menu-selection-edge: var(--memory-edge);
+  --menu-selection-shadow: var(--memory-shadow);
   width: 260px;
   min-width: 0;
   flex-shrink: 0;
@@ -29,14 +32,10 @@ html.dark .memory-layout, html.dark .memory-inspector { background: #0c0c0e; }
 .memory-tree-row {
   min-height: 46px;
   border: 1px solid transparent;
-  border-radius: 14px;
+  border-radius: 16px;
   transition: background 180ms, border-color 180ms, box-shadow 180ms;
 }
-.memory-tree-row[aria-pressed="true"] {
-  background: color-mix(in srgb, var(--sentinel-blue) 9%, var(--memory-face));
-  border-color: color-mix(in srgb, var(--sentinel-blue) 15%, transparent);
-  box-shadow: var(--memory-shadow);
-}
+.memory-tree-row[aria-pressed="true"] > .w-6 svg { color: var(--sentinel-blue); }
 .memory-tree-row:focus-visible { outline: 1px solid var(--sentinel-blue); outline-offset: -1px; }
 .memory-inspector { min-width: 0; }
 .memory-detail { padding: clamp(20px, 3vw, 36px); }
@@ -92,5 +91,4 @@ html.dark .sentinel-pane-header[data-tour-pane='memory'] {
 .memory-explorer .input-field,.memory-explorer select { border-radius:999px; }
 .memory-explorer .input-field:focus-visible { outline:none; border-color:color-mix(in srgb,var(--sentinel-blue) 40%,var(--memory-edge)); }
 .memory-detail-actions .btn-secondary { text-transform:uppercase; font-size:10px; letter-spacing:.065em; }
-.memory-tree-row { min-height:36px; border-radius:8px; }
-.memory-tree-row[aria-pressed=true] { border-color:transparent; box-shadow:inset 2px 0 0 var(--sentinel-blue); }
+.memory-tree-row { min-height:36px; }

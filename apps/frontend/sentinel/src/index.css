@@ -63,6 +63,26 @@ html.dark {
   color-scheme: dark;
 }
 
+/* Shared in-pane selection treatment matching the desktop navigation. */
+.menu-selection-item {
+  position: relative;
+  border: 1px solid transparent;
+  border-radius: 16px;
+  transition: background-color 180ms ease, border-color 180ms ease, box-shadow 220ms ease, color 180ms ease;
+}
+.menu-selection-item:is([aria-current="page"], [aria-pressed="true"]) {
+  background: color-mix(in srgb, var(--sentinel-blue) 7%, var(--menu-selection-face, var(--surface-1)));
+  border-color: color-mix(in srgb, var(--sentinel-blue) 12%, var(--menu-selection-edge, transparent));
+  box-shadow: var(--menu-selection-shadow, none);
+  color: var(--text-primary);
+}
+.menu-selection-item:is([aria-current="page"], [aria-pressed="true"]) > svg {
+  color: var(--sentinel-blue);
+}
+@media (prefers-reduced-motion: reduce) {
+  .menu-selection-item { transition: none; }
+}
+
 * {
   box-sizing: border-box;
 }
