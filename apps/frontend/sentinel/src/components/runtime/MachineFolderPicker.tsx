@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { ArrowUp, FolderPlus, Folder, Loader2, Search, X } from 'lucide-react';
 import { api } from '../../lib/api';
+import { projectDirectoryError } from './workspaceValidation';
 
 type DirectoryListing = { path: string; parent: string; directories: string[] };
 
@@ -18,6 +19,7 @@ export function MachineFolderPicker({ machineId, machineName, initialPath, onSel
   const [createError, setCreateError] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const selectionError = listing ? projectDirectoryError(listing.path) : null;
   const request = useRef(0);
   const dialog = useRef<HTMLDialogElement>(null);
   async function open(directory: string) {
@@ -80,7 +82,8 @@ export function MachineFolderPicker({ machineId, machineName, initialPath, onSel
           {!listing?.directories.some(name => name.toLowerCase().includes(search.toLowerCase())) && <p className="p-3 text-sm text-(--text-secondary)">{search ? 'No matching folders' : 'No subfolders'}</p>}
         </>}
       </div>
-      <footer className="flex justify-end gap-3"><button type="button" disabled={creatingFolder} onClick={onClose} className="btn-secondary h-10 px-4 text-xs">Cancel</button><button type="button" disabled={creatingFolder || loading || !!error || !listing} onClick={() => listing && onSelect(listing.path)} className="btn-primary h-10 px-4 text-xs">Use this folder</button></footer>
+      {selectionError && <p role="alert" className="text-xs text-(--text-secondary)">{selectionError}</p>}
+      <footer className="flex justify-end gap-3"><button type="button" disabled={creatingFolder} onClick={onClose} className="btn-secondary h-10 px-4 text-xs">Cancel</button><button type="button" disabled={creatingFolder || loading || !!error || !listing || !!selectionError} onClick={() => listing && !selectionError && onSelect(listing.path)} className="btn-primary h-10 px-4 text-xs">Use this folder</button></footer>
     </div>
   </dialog>, document.body);
 }
