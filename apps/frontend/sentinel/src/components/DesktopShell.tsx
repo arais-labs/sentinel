@@ -6,6 +6,7 @@ import { GlobalSessionSelector } from './session/GlobalSessionSelector';
 import { InstancePickerPage } from '../pages/InstancePickerPage';
 import { DesktopManagement } from './DesktopManagement';
 import { WorkspacePreparation } from './WorkspacePreparation';
+import { shouldShowDesktopPreparation } from './desktop-preparation-state';
 import { useProductTourMenu } from './onboarding/useProductTourMenu';
 import { useThemeStore } from '../store/theme-store';
 import type { DesktopStatus } from '../../../../desktop/sentinel/src/shared/ipc';
@@ -29,8 +30,8 @@ export function DesktopShell({ children }: { children: ReactNode }) {
     return () => { active = false; off.forEach(fn => fn()); };
   }, [api, navigate]);
   if (!api) return <>{children}</>;
-  if (!status || (!status.ready && (status.preparing || status.operation === 'starting' || status.error || !status.payload.installed))) {
-    return <WorkspacePreparation preparing={Boolean(status && !status.development && (!status.payload.installed || status.payloadProgress))}
+  if (!status || shouldShowDesktopPreparation(status)) {
+    return <WorkspacePreparation preparing={Boolean(status && !status.development && (!status.payload.installed || (status.payloadProgress && status.payloadProgress.phase !== 'done')))}
       progress={status?.payloadProgress} error={startupError || status?.error}
       onRetry={() => { setStartupError(''); void api.startServices().then(setStatus).catch(error => setStartupError(String(error))); }} />;
   }
