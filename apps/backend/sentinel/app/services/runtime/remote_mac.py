@@ -146,16 +146,21 @@ async def fingerprint(machine: machines_module.ResolvedMachine) -> dict:
 
 async def inspect_installation(machine):
     """Read durable update state without starting or probing the service."""
-    if not machine.runtime_root:
-        return {}
     client = SSHClient(machine.credentials())
     try:
         conn = await client._ensure_conn()
+        root = machine.runtime_root
+        if not root:
+            home = await conn.run('printf "%s\\n" "$HOME"', check=True, timeout=10)
+            home = home.stdout.rstrip("\n")
+            if not home.startswith("/") or any(char in home for char in ("\0", "\n", "\r")):
+                raise RemoteMacError("SSH returned an invalid home directory")
+            root = home.rstrip("/") + "/.sentinel/runtime"
         async with conn.start_sftp_client() as sftp:
 
             async def read(name):
                 try:
-                    async with sftp.open(machine.runtime_root + "/" + name) as file:
+                    async with sftp.open(root + "/" + name) as file:
                         return json.loads(await file.read())
                 except asyncssh.SFTPNoSuchFile:
                     return {}
@@ -164,6 +169,7 @@ async def inspect_installation(machine):
             journal = await read("update.json")
             return {
                 "installed": bool(manifest),
+                "path": root,
                 "installed_version": manifest.get("version"),
                 "update_phase": journal.get("phase"),
                 "update_error": journal.get("error"),

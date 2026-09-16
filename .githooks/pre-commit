@@ -100,15 +100,19 @@ done <<< "$staged_files"
 backend_changed="$(echo "$staged_files" | grep -E '^apps/backend/sentinel/(app|tests)/.*\.py$' || true)"
 if [[ -n "$backend_changed" ]]; then
   echo "Backend changes detected — running backend test suite (mirrors CI)..."
-  if command -v uv >/dev/null 2>&1; then
-    ( cd apps/backend/sentinel && uv run pytest tests/ -q )
-  elif [[ -x apps/backend/sentinel/.venv/bin/python ]]; then
-    ( cd apps/backend/sentinel && .venv/bin/python -m pytest tests/ -q )
-  else
-    echo
-    echo "Pre-commit failed: need 'uv' or apps/backend/sentinel/.venv to run backend tests."
-    exit 1
-  fi
+  (
+    # Git exports these to hooks. Test subprocesses must resolve their own repositories.
+    for name in $(git rev-parse --local-env-vars); do unset "$name"; done
+    if command -v uv >/dev/null 2>&1; then
+      ( cd apps/backend/sentinel && uv run pytest tests/ -q )
+    elif [[ -x apps/backend/sentinel/.venv/bin/python ]]; then
+      ( cd apps/backend/sentinel && .venv/bin/python -m pytest tests/ -q )
+    else
+      echo
+      echo "Pre-commit failed: need 'uv' or apps/backend/sentinel/.venv to run backend tests."
+      exit 1
+    fi
+  )
 fi
 
 desktop_changed="$(echo "$staged_files" | grep -E '^apps/desktop/sentinel/.*\.ts$' || true)"

@@ -10,6 +10,7 @@ import { notificationPublisher } from '../../lib/notifications';
 import { MachinesPanel } from './MachinesPanel';
 import { WorkspaceEditor, type WorkspaceDraft } from './WorkspaceEditor';
 import { api } from '../../lib/api';
+import { workspaceSaveError } from './workspaceValidation';
 import { useInstanceName } from '../../lib/workspace-context';
 import type { Workspace } from '../../types/api';
 import './workspaces-panel.css';
@@ -42,7 +43,7 @@ export function WorkspacesPanel({ onboarding = false, onAddMachine, page = false
       else await api.patch(`/workspaces/${editor.id}`, { name: draft.name, directory: draft.directory, development_tools: draft.development_tools, resources: draft.resources });
       if (instanceName && editor !== 'new' && draft.directory !== editor.directory) resetWorkspaceBrowser(instanceName, editor.id);
       setEditor(null); await reload();
-    } catch (error) { notify.error(error instanceof Error ? error.message : 'Could not save workspace'); }
+    } catch (error) { notify.error(workspaceSaveError(error)); }
     finally { setSaving(false); }
   }
   const navigation = <div className="workspace-library-tabs" role="group" aria-label="Workspace management">

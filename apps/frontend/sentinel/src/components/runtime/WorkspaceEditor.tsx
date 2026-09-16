@@ -9,6 +9,7 @@ import alpineLogo from '../../assets/distro-logos/alpine.svg';
 import ubuntuLogo from '../../assets/distro-logos/ubuntu.svg';
 import debianLogo from '../../assets/distro-logos/debian.svg';
 import './workspace-editor.css';
+import { projectDirectoryError } from './workspaceValidation';
 
 const distributionLogos = { alpine: alpineLogo, ubuntu: ubuntuLogo, debian: debianLogo };
 
@@ -72,7 +73,8 @@ export function WorkspaceEditor({ workspace, machines, saving, onClose, onSave }
   const compatibleCatalog = catalog ? { ...catalog, tools: catalog.tools.filter(tool => supported(tool.id)), stacks: catalog.stacks.filter(stack => stack.tools.every(supported)) } : null;
   const installed = creating ? ['git'] : [...new Set(['git', ...(workspace.development_tools || [])])];
   const selected = catalog?.tools.filter(tool => tools.includes(tool.id)) ?? [];
-  const canContinue = name.trim() && machineId && directory.trim() && !detecting && !error && catalog;
+  const directoryError = projectDirectoryError(directory);
+  const canContinue = !directoryError && name.trim() && machineId && directory.trim() && !detecting && !error && catalog;
   function toggleStack(stack: Stack) {
     const chosen = stack.tools.every(id => tools.includes(id));
     setTools(current => {
@@ -130,7 +132,7 @@ export function WorkspaceEditor({ workspace, machines, saving, onClose, onSave }
           {tab === 'location' && <div className="workspace-editor-fields">
             {!creating && <p className="workspace-editor-note">Changing folders resets terminals and file views. If running, the workspace restarts. Installed tools and private disk data are kept; neither project folder is deleted. Active agents must finish first.</p>}
             {<><label>Machine<div className="workspace-editor-select"><Server size={16} /><select value={machineId} onChange={e => { setMachineId(e.target.value); setDirectory(''); setFurthestStep(0); }} disabled={saving || !creating}>{machines.map(host => <option key={host.id} value={host.id}>{host.name}</option>)}</select><ChevronDown size={15} /></div></label>
-              <label>Project folder<div className="workspace-editor-folder"><input required value={directory} onChange={e => setDirectory(e.target.value)} placeholder="Choose a folder or enter a path" disabled={saving} /><button type="button" onClick={() => setPicking(true)} disabled={!machineId || saving}><FolderOpen size={16} />Browse</button></div><small>Shared with your isolated Linux environment. Your original files stay in this folder.</small></label>
+              <label>Project folder<div className="workspace-editor-folder"><input required aria-invalid={!!directoryError} aria-describedby={`${tabId}-directory-help`} value={directory} onChange={e => setDirectory(e.target.value)} placeholder="Choose a folder or enter a path" disabled={saving} /><button type="button" onClick={() => setPicking(true)} disabled={!machineId || saving}><FolderOpen size={16} />Browse</button></div><small id={`${tabId}-directory-help`} role={directoryError ? 'alert' : undefined}>{directoryError ?? 'Shared with your isolated Linux environment. Your original files stay in this folder.'}</small></label>
               </>}
           </div>}
           {tab === 'os' && <div className="workspace-editor-fields">
