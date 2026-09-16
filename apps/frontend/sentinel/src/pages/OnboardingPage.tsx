@@ -10,10 +10,7 @@ import { Logo } from '../components/ui/Logo';
 import { MachinesStep, WorkspacesStep } from '../components/onboarding/EnvironmentSteps';
 import { api } from '../lib/api';
 import {
-  buildAgentIdentityMemoryContent,
-  buildUserProfileMemoryContent,
   resolveAgentIdentity,
-  resolveUserProfile,
 } from '../lib/onboarding-defaults';
 import { instanceRouteFromPath } from '../lib/routes';
 import '../components/onboarding/setup.css';
@@ -120,7 +117,7 @@ function ProviderCard({
   name, color, apiKey, setApiKey, oauthToken, setOauthToken,
   apiPlaceholder, oauthPlaceholder, apiHint, oauthInstructions,
   oauthHint, oauthInputKind = 'token', defaultMode = 'oauth',
-  canImportOauth = false, importedOauth = false, importingOauth = false, onImportOauth,
+  canSyncOauth = false, oauthSynced = false, syncingOauth = false, onSyncOauth,
 }: {
   name: string; color: string;
   apiKey: string; setApiKey: (v: string) => void;
@@ -131,16 +128,16 @@ function ProviderCard({
   oauthHint: React.ReactNode;
   oauthInputKind?: 'token' | 'json';
   defaultMode?: 'oauth' | 'api';
-  canImportOauth?: boolean;
-  importedOauth?: boolean;
-  importingOauth?: boolean;
-  onImportOauth?: () => void;
+  canSyncOauth?: boolean;
+  oauthSynced?: boolean;
+  syncingOauth?: boolean;
+  onSyncOauth?: () => void;
 }) {
   const [showKey, setShowKey] = useState(false);
   const [showToken, setShowToken] = useState(false);
   const [mode, setMode] = useState<'oauth' | 'api'>(defaultMode);
   const [showHelp, setShowHelp] = useState(false);
-  const hasValue = !!(apiKey || oauthToken || importedOauth);
+  const hasValue = !!(apiKey || oauthToken || oauthSynced);
   const oauthLabel = oauthInputKind === 'json' ? 'OAuth Credentials' : 'OAuth Token';
 
   return (
@@ -148,7 +145,7 @@ function ProviderCard({
       <div className="flex items-center gap-3 px-4 py-2.5 border-b border-(--border-subtle)">
         <div className="h-2 w-2 rounded-full" style={{ backgroundColor: color }} />
         <span className="text-xs font-medium tracking-wide">{name}</span>
-        {hasValue && <span className="setup-credential-state">{importedOauth ? 'Imported' : 'Added'}</span>}
+        {hasValue && <span className="setup-credential-state">{oauthSynced ? 'Auto-sync' : 'Added'}</span>}
       </div>
       <div className="px-4 py-2.5 space-y-2">
         {/* Auth mode toggle */}
@@ -182,15 +179,15 @@ function ProviderCard({
                 </button>
               </div>
             )}
-            {canImportOauth && onImportOauth && (
+            {canSyncOauth && onSyncOauth && (
               <button
                 type="button"
-                onClick={onImportOauth}
-                disabled={importingOauth}
+                onClick={onSyncOauth}
+                disabled={syncingOauth}
                 className="btn-secondary h-9 w-full justify-center gap-2 text-[10px] font-bold uppercase tracking-widest"
               >
-                {importingOauth ? <Loader2 size={13} className="animate-spin" /> : <KeyRound size={13} />}
-                {importedOauth ? `${name === 'Anthropic' ? 'Claude' : name === 'Google Gemini' ? 'Antigravity' : 'Codex'} Token Imported` : `Import from ${name === 'Anthropic' ? 'Claude' : name === 'Google Gemini' ? 'Antigravity' : 'Codex'} CLI`}
+                {syncingOauth ? <Loader2 size={13} className="animate-spin" /> : <KeyRound size={13} />}
+                {oauthSynced ? `${name === 'Anthropic' ? 'Claude' : name === 'Google Gemini' ? 'Antigravity' : 'Codex'} Auto-sync Enabled` : `Use ${name === 'Anthropic' ? 'Claude' : name === 'Google Gemini' ? 'Antigravity' : 'Codex'} CLI Automatically`}
               </button>
             )}
             <div className="flex items-center justify-between">
@@ -281,7 +278,7 @@ function LLMStep({
       </div>
       <div className="flex items-center gap-2 px-3 py-1.5">
         <span className="text-[9px] font-black text-(--accent-solid)">2.</span>
-        <p className="text-[10px] text-(--text-muted)">Sign in, then click Import from Claude CLI above. You can also paste an OAuth token manually.</p>
+        <p className="text-[10px] text-(--text-muted)">Sign in, then enable CLI auto-sync above. You can also paste an OAuth token manually.</p>
       </div>
     </div>
   );
@@ -303,7 +300,7 @@ function LLMStep({
       </div>
       <div className="flex items-center gap-2 px-3 py-1.5">
         <span className="text-[9px] font-black" style={{ color: '#10A37F' }}>3.</span>
-        <p className="text-[10px] text-(--text-muted)">Copy token from <span className="font-mono text-(--text-primary)">~/.codex/auth.json</span>, paste above.</p>
+        <p className="text-[10px] text-(--text-muted)">Enable CLI auto-sync above, or paste a token manually.</p>
       </div>
     </div>
   );
@@ -325,7 +322,7 @@ function LLMStep({
       </div>
       <div className="flex items-center gap-2 px-3 py-1.5">
         <span className="text-[9px] font-black" style={{ color: '#4285F4' }}>3.</span>
-        <p className="text-[10px] text-(--text-muted)">On macOS, click Import from Antigravity CLI. You can also paste an exported Antigravity OAuth credential bundle.</p>
+        <p className="text-[10px] text-(--text-muted)">On macOS, enable CLI auto-sync above. You can also paste an exported Antigravity OAuth credential bundle.</p>
       </div>
     </div>
   );
@@ -342,10 +339,10 @@ function LLMStep({
       <div className="flex flex-col gap-4">
         <ProviderCard
           name="Anthropic"
-          canImportOauth
-          importedOauth={claudeOauthImported}
-          importingOauth={importingClaudeOauth}
-          onImportOauth={onImportClaudeOauth}
+          canSyncOauth
+          oauthSynced={claudeOauthImported}
+          syncingOauth={importingClaudeOauth}
+          onSyncOauth={onImportClaudeOauth}
           color="#D97706"
           apiKey={apiKey} setApiKey={setApiKey}
           oauthToken={oauthToken} setOauthToken={setOauthToken}
@@ -365,17 +362,17 @@ function LLMStep({
           apiHint="Get your key at platform.openai.com/api-keys"
           oauthHint={<>Starts with <span className="font-mono text-(--text-primary)">eyJhbG...</span></>}
           oauthInstructions={openaiOauthInstructions}
-          canImportOauth={codexOauthImportAvailable}
-          importedOauth={openaiOauthImported}
-          importingOauth={importingCodexOauth}
-          onImportOauth={onImportCodexOauth}
+          canSyncOauth={codexOauthImportAvailable}
+          oauthSynced={openaiOauthImported}
+          syncingOauth={importingCodexOauth}
+          onSyncOauth={onImportCodexOauth}
         />
         <ProviderCard
           name="Google Gemini"
-          canImportOauth
-          importedOauth={geminiOauthImported}
-          importingOauth={importingGeminiOauth}
-          onImportOauth={onImportGeminiOauth}
+          canSyncOauth
+          oauthSynced={geminiOauthImported}
+          syncingOauth={importingGeminiOauth}
+          onSyncOauth={onImportGeminiOauth}
           color="#4285F4"
           apiKey={geminiApiKey} setApiKey={setGeminiApiKey}
           oauthToken={geminiOauthCredentials} setOauthToken={setGeminiOauthCredentials}
@@ -575,12 +572,12 @@ export function OnboardingPage() {
   async function handleImportClaudeOauth() {
     setImportingClaudeOauth(true);
     try {
-      await api.post('/settings/desktop-claude-oauth/import');
+      await api.post('/settings/desktop-claude-oauth/connect');
       setOauthToken('');
       setClaudeOauthImported(true);
-      notify.success('Claude OAuth token imported');
+      notify.success('Claude CLI auto-sync enabled');
     } catch (error) {
-      notify.error(error instanceof Error ? error.message : 'Failed to import Claude OAuth token');
+      notify.error(error instanceof Error ? error.message : 'Failed to enable Claude CLI auto-sync');
     } finally {
       setImportingClaudeOauth(false);
     }
@@ -589,12 +586,12 @@ export function OnboardingPage() {
   async function handleImportGeminiOauth() {
     setImportingGeminiOauth(true);
     try {
-      await api.post('/settings/desktop-gemini-oauth/import');
+      await api.post('/settings/desktop-gemini-oauth/connect');
       setGeminiOauthCredentials('');
       setGeminiOauthImported(true);
-      notify.success('Antigravity OAuth credentials imported');
+      notify.success('Antigravity auto-sync enabled');
     } catch (error) {
-      notify.error(error instanceof Error ? error.message : 'Failed to import Antigravity OAuth credentials');
+      notify.error(error instanceof Error ? error.message : 'Failed to enable Antigravity auto-sync');
     } finally {
       setImportingGeminiOauth(false);
     }
@@ -603,11 +600,11 @@ export function OnboardingPage() {
   async function handleImportCodexOauth() {
     setImportingCodexOauth(true);
     try {
-      await api.post('/settings/desktop-codex-oauth/import');
+      await api.post('/settings/desktop-codex-oauth/connect');
       setOpenaiOauthImported(true);
-      notify.success('Codex OAuth token imported');
+      notify.success('Codex CLI auto-sync enabled');
     } catch (error) {
-      notify.error(error instanceof Error ? error.message : 'Failed to import Codex OAuth token');
+      notify.error(error instanceof Error ? error.message : 'Failed to enable Codex CLI auto-sync');
     } finally {
       setImportingCodexOauth(false);
     }
@@ -623,7 +620,6 @@ export function OnboardingPage() {
 
     try {
       const identity = resolveAgentIdentity(agentName, agentRole, agentPersonality);
-      const userProfile = resolveUserProfile(userName, userContext);
 
       // 1. Save API keys
       const hasAnthropic = !!(apiKey || oauthToken || claudeOauthImported);
@@ -646,35 +642,15 @@ export function OnboardingPage() {
         setCompletedItems([...items]);
       }
 
-      // 2. Agent identity memory
-      await api.post('/memory', {
-        content: buildAgentIdentityMemoryContent(identity),
-        title: 'Agent Identity',
-        category: 'core',
-        importance: 100,
-        pinned: true,
-      });
-      items.push('Agent identity memory created');
-      setCompletedItems([...items]);
-
-      // 3. User profile memory
-      await api.post('/memory', {
-        content: buildUserProfileMemoryContent(userProfile),
-        title: 'User Profile',
-        category: 'core',
-        importance: 90,
-        pinned: true,
-      });
-      items.push('User profile memory created');
-      setCompletedItems([...items]);
-
-      // 4. Mark onboarding complete; backend composes and persists system prompt
+      // Persist the prompt and protected setup memories as one idempotent operation.
       await api.post('/onboarding/complete', {
         agent_name: identity.rawName || undefined,
         agent_role: identity.rawRole || undefined,
         agent_personality: identity.rawPersonality || undefined,
+        user_name: userName.trim() || undefined,
+        user_context: userContext.trim() || undefined,
       });
-      items.push('Instance ready');
+      items.push('Agent identity memory created', 'User profile memory created', 'Instance ready');
       setCompletedItems([...items]);
 
       await new Promise(r => setTimeout(r, 600)); // brief pause so user sees the checkmarks

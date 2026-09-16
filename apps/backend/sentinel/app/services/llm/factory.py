@@ -11,7 +11,10 @@ from sentral.llm.generic.types import ReasoningConfig
 from sentral.llm.ids import ProviderChoice, TierName, parse_provider_choice
 from sentral.llm.providers.gemini_oauth import GeminiOAuthProvider
 from app.config import Settings
-from sentral.llm.claude_credentials import renew_claude_access_token
+from sentral.llm.antigravity_credentials import read_antigravity_credentials
+from sentral.llm.claude_credentials import read_claude_access_token, renew_claude_access_token
+from sentral.llm.codex_credentials import read_codex_access_token
+from app.services.llm.live_credentials import LiveCredentialProvider
 
 DEFAULT_TIER_NAME = TierName.NORMAL
 
@@ -121,15 +124,31 @@ def _build_enabled_providers(settings: Settings) -> tuple[dict[ProviderChoice, L
 
     anthropic_token = settings.anthropic_oauth_token or settings.anthropic_api_key
     if anthropic_token:
-        providers[ProviderChoice.ANTHROPIC] = AnthropicProvider(
-            anthropic_token, renew_credentials=renew_claude_access_token
-        )
+        if settings.anthropic_oauth_source == "cli":
+            providers[ProviderChoice.ANTHROPIC] = LiveCredentialProvider(
+                anthropic_token,
+                load=read_claude_access_token,
+                build=lambda token: AnthropicProvider(
+                    token, renew_credentials=renew_claude_access_token
+                ),
+                unavailable_message="Claude CLI login is unavailable. Sign in with Claude CLI or choose a manual credential in Settings.",
+            )
+        else:
+            providers[ProviderChoice.ANTHROPIC] = AnthropicProvider(anthropic_token)
 
     openai_uses_codex = False
     openai_oauth_token = settings.openai_oauth_token
     openai_api_key = settings.openai_api_key
     if openai_oauth_token:
-        providers[ProviderChoice.OPENAI] = CodexProvider(openai_oauth_token)
+        if settings.openai_oauth_source == "cli":
+            providers[ProviderChoice.OPENAI] = LiveCredentialProvider(
+                openai_oauth_token,
+                load=read_codex_access_token,
+                build=CodexProvider,
+                unavailable_message="Codex CLI login is unavailable. Sign in with Codex CLI or choose a manual credential in Settings.",
+            )
+        else:
+            providers[ProviderChoice.OPENAI] = CodexProvider(openai_oauth_token)
         openai_uses_codex = True
     elif openai_api_key:
         providers[ProviderChoice.OPENAI] = OpenAIProvider(
@@ -140,7 +159,15 @@ def _build_enabled_providers(settings: Settings) -> tuple[dict[ProviderChoice, L
     gemini_api_key = settings.gemini_api_key
     gemini_oauth_credentials = settings.gemini_oauth_credentials
     if gemini_oauth_credentials:
-        providers[ProviderChoice.GEMINI] = GeminiOAuthProvider(gemini_oauth_credentials)
+        if settings.gemini_oauth_source == "cli":
+            providers[ProviderChoice.GEMINI] = LiveCredentialProvider(
+                gemini_oauth_credentials,
+                load=read_antigravity_credentials,
+                build=GeminiOAuthProvider,
+                unavailable_message="Antigravity login is unavailable. Sign in with agy or choose manual OAuth credentials in Settings.",
+            )
+        else:
+            providers[ProviderChoice.GEMINI] = GeminiOAuthProvider(gemini_oauth_credentials)
     elif gemini_api_key:
         providers[ProviderChoice.GEMINI] = GeminiProvider(gemini_api_key)
 

@@ -147,12 +147,11 @@ async def browse_workspace(
     workspace = await db.get(Workspace, workspace_id)
     if workspace is None:
         raise HTTPException(404, "Workspace not found")
-    request = {
-        "operation": OPERATIONS[operation],
-        "workspace": workspace.directory,
-        "session_id": str(workspace_id),
-        "session_root": "/var/lib/sentinel",
-        "payload": {
+    await db.close()
+    return await _file_operation(
+        workspace,
+        OPERATIONS[operation],
+        {
             "path": path,
             "query": query,
             "base_ref": base_ref,
@@ -163,8 +162,32 @@ async def browse_workspace(
             "include_worktrees": include_worktrees,
             "group_worktrees": operation == "repositories",
         },
-    }
+    )
+
+
+@router.delete("/workspaces/{workspace_id}/browse/path")
+async def delete_workspace_path(
+    workspace_id: UUID,
+    path: str = Query(min_length=1),
+    db: AsyncSession = Depends(get_db),
+):
+    workspace = await db.get(Workspace, workspace_id)
+    if workspace is None:
+        raise HTTPException(404, "Workspace not found")
     await db.close()
+    return await _file_operation(workspace, "delete_path", {"path": path})
+
+
+async def _file_operation(workspace: Workspace, operation: str, payload: dict):
+    workspace_id = workspace.id
+    containers.bind(workspace.id, workspace.machine_id, workspace.distribution)
+    request = {
+        "operation": operation,
+        "workspace": workspace.directory,
+        "session_id": str(workspace_id),
+        "session_root": "/var/lib/sentinel",
+        "payload": payload,
+    }
     try:
         async with asyncio.timeout(35):
             state = (await containers.statuses()).get(str(workspace_id), {})

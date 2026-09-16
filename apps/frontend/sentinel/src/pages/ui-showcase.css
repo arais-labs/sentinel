@@ -42,12 +42,11 @@ html.dark .ui-showcase .chat-header-actions { --chat-header-face:#101012; --chat
 .showcase-local[aria-pressed=true] { color:var(--sentinel-blue); background:color-mix(in srgb,var(--sentinel-blue) 8%,transparent); }
 .showcase-field { display:block; margin-top:18px; font-size:10px; letter-spacing:.065em; color:var(--text-muted); }
 .showcase-field textarea { display:block; width:100%; margin-top:8px; border:1px solid var(--showcase-edge); border-radius:12px; background:var(--app-bg); padding:10px; font-size:12px; letter-spacing:normal; resize:vertical; }
-.showcase-catalog { height:230px; overflow-y:auto; scrollbar-width:thin; scrollbar-gutter:stable; padding-right:8px; }
-.showcase-catalog-item { display:flex; align-items:flex-start; gap:12px; width:100%; padding:14px 12px; text-align:left; border-radius:12px; color:var(--text-secondary); }
+.showcase-catalog { --menu-selection-face:var(--showcase-face); --menu-selection-edge:var(--showcase-edge); --menu-selection-shadow:var(--showcase-shadow); height:230px; overflow-y:auto; scrollbar-width:thin; scrollbar-gutter:stable; padding-right:8px; }
+.showcase-catalog-item { display:flex; align-items:flex-start; gap:12px; width:100%; padding:14px 12px; text-align:left; border-radius:16px; color:var(--text-secondary); }
 .showcase-catalog-item svg { flex-shrink:0; margin-top:2px; }
 .showcase-catalog-item strong { font-size:12px; font-weight:550; }
 .showcase-catalog-item small { display:block; font-size:11px; line-height:1.5; margin-top:4px; color:var(--text-muted); }
-.showcase-catalog-item[aria-pressed=true] { background:color-mix(in srgb,var(--sentinel-blue) 8%,transparent); box-shadow:inset 2px 0 var(--sentinel-blue); }
 .showcase-event { border:1px solid var(--showcase-edge); border-radius:5px 20px 20px 20px; padding:14px; font-size:12px; }
 .showcase-event header { display:flex; align-items:center; gap:8px; border-bottom:1px solid var(--showcase-edge); padding-bottom:8px; font-size:9px; }
 .showcase-event header strong { margin-right:auto; letter-spacing:.065em; }

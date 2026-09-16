@@ -85,6 +85,8 @@ def test_onboarding_prompt_when_user_inputs_everything():
                     "actionable."
                 ),
                 "agent_personality": "Direct, pragmatic, and highly solution-oriented.",
+                "user_name": "Morgan",
+                "user_context": "Builds reliable autonomous systems.",
             },
             headers=headers,
         )
@@ -101,6 +103,33 @@ def test_onboarding_prompt_when_user_inputs_everything():
         )
         assert persisted_prompt == expected_prompt
         assert settings.default_system_prompt == expected_prompt
+
+        roots = client.get(f"{MEMORY_API}/roots?category=core", headers=headers)
+        assert roots.status_code == 200
+        memories = roots.json()["items"]
+        agent_identity = next(item for item in memories if item["system_key"] == "agent_identity")
+        user_profile = next(item for item in memories if item["system_key"] == "user_profile")
+        assert "You are Atlas." in agent_identity["content"]
+        assert "The user's name is Morgan." in user_profile["content"]
+        assert "Builds reliable autonomous systems." in user_profile["content"]
+
+        repeated = client.post(
+            f"{ONBOARDING_API}/complete",
+            json={
+                "agent_name": "Atlas",
+                "agent_role": (
+                    "You are a senior product-and-engineering copilot. Drive execution proactively and keep plans "
+                    "actionable."
+                ),
+                "agent_personality": "Direct, pragmatic, and highly solution-oriented.",
+                "user_name": "Morgan",
+                "user_context": "Builds reliable autonomous systems.",
+            },
+            headers=headers,
+        )
+        assert repeated.status_code == 200
+        repeated_roots = client.get(f"{MEMORY_API}/roots?category=core", headers=headers)
+        assert len(repeated_roots.json()["items"]) == 2
         print(f"FULL_INPUT_PROMPT: {persisted_prompt}")
     finally:
         settings.default_system_prompt = old_prompt

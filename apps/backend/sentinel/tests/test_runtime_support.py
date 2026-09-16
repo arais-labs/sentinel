@@ -5,7 +5,7 @@ import json
 
 from app.models import Message, Session
 from app.services.agent.runtime_support import SentinelRuntimeSupport
-from app.services.agent.runtime_support import humanize_error
+from app.services.agent.runtime_support import humanize_error, settings
 from sentral.llm.generic.types import (
     AssistantMessage,
     ImageContent,
@@ -16,6 +16,8 @@ from sentral.llm.generic.types import (
     UserMessage,
 )
 from tests.fake_db import FakeDB
+from app.services.modules.builtins.form.module import present
+from app.services.modules.builtins.form.contract import validate_response
 
 
 def _run(coro):
@@ -230,3 +232,67 @@ def test_execution_snapshot_records_only_its_first_request_usage():
         )
         assert context.metadata_json["run_context"]["request_usage"] == first_usage
         assert "estimated_context_tokens" not in context.metadata_json["run_context"]
+
+
+def test_large_form_survives_persistence_and_can_be_answered(monkeypatch):
+    monkeypatch.setattr(settings, "stored_tool_result_max_chars", 200)
+    monkeypatch.setattr(settings, "stored_tool_call_args_max_chars", 200)
+    db = FakeDB()
+    session = _new_session(db)
+    definition = {
+        "title": "Review deployment options",
+        "questions": [
+            {
+                "id": f"question-{index}",
+                "question": "Describe the tradeoffs. " * 30,
+                "options": [
+                    {
+                        "id": "accept",
+                        "label": "Accept",
+                        "description": "Detailed explanation. " * 30,
+                    }
+                ],
+            }
+            for index in range(12)
+        ],
+    }
+
+    async def persist_and_answer():
+        result = await present(definition)
+        content = json.dumps(result)
+        arguments = {"action": "present", **definition}
+        await _support()._persist_messages(
+            db,
+            session.id,
+            [
+                AssistantMessage(
+                    content=[ToolCallContent(id="form-call", name="form", arguments=arguments)]
+                ),
+                ToolResultMessage(
+                    tool_call_id="form-call", tool_name="form", content=content, is_error=False
+                ),
+            ],
+            {},
+            requested_tier="normal",
+            temperature=0.7,
+            max_iterations=50,
+        )
+        messages = [m for m in db.storage[Message] if m.session_id == session.id]
+        assistant = next(m for m in messages if m.role == "assistant")
+        saved = next(m for m in messages if m.role == "tool_result")
+        assert assistant.metadata_json["tool_calls"][0]["arguments"] == arguments
+        assert saved.content == content
+        assert json.loads(saved.content) == result
+        assert not saved.metadata_json.get("storage_truncated")
+        answers = [{"question_id": q["id"], "option_id": "accept"} for q in definition["questions"]]
+        _, response = await validate_response(
+            db,
+            session.id,
+            {
+                "form_id": result["form_id"],
+                "answers": answers,
+            },
+        )
+        assert len(response["answers"]) == 12
+
+    _run(persist_and_answer())

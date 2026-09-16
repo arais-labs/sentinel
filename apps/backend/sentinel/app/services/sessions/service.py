@@ -40,6 +40,7 @@ from sentral import (
 from app.services.agent.agent_modes import AgentMode, get_default_agent_mode
 import app.services.agent_runtime_adapters.runtime as runtime_adapter_module
 from sentral.llm.ids import TierName
+from sentral.llm.model_limits import model_context
 from app.services.llm.session_selection import selection_model
 from app.services.messages import (
     normalize_generation_metadata,
@@ -351,6 +352,23 @@ class SessionService:
         )
         latest = latest_result.scalar_one_or_none()
         measured = (latest.metadata_json or {}).get("provider_usage") if latest else None
+        if measured:
+            # The run snapshot records the same resolved model budget exposed by
+            # the model picker, including its configured output reservation.
+            snapshot_result = await db.execute(
+                select(Message)
+                .where(Message.session_id == session.id, Message.role == "system")
+                .order_by(Message.created_at.desc(), Message.id.desc())
+                .limit(1)
+            )
+            snapshot = snapshot_result.scalar_one_or_none()
+            context = (snapshot.metadata_json or {}).get("run_context", {}) if snapshot else {}
+            recorded_budget = context.get("context_token_budget")
+            budget = normalize_context_budget(
+                recorded_budget
+                if type(recorded_budget) is int and recorded_budget > 0
+                else model_context(measured.get("model"))["context_token_budget"]
+            )
         return {
             "session_id": session.id,
             "context_token_budget": budget,

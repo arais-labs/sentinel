@@ -8,6 +8,7 @@ import { createServer } from 'vite';
 function dock() {
   let value = { panels: {} };
   const listeners = new Set();
+  const activeListeners = new Set();
   return {
     groups: [],
     get panels() { return Object.values(value.panels); },
@@ -16,6 +17,7 @@ function dock() {
     addPanel(panel) { value.panels[panel.id] = panel; },
     clear() { value = { panels: {} }; },
     onDidLayoutChange(listener) { listeners.add(listener); return { dispose: () => listeners.delete(listener) }; },
+    onDidActivePanelChange(listener) { activeListeners.add(listener); return { dispose: () => activeListeners.delete(listener) }; },
     edit(next) { value = structuredClone(next); },
     pendingEvent() { const pending = [...listeners]; return () => pending.forEach(listener => listener()); },
   };

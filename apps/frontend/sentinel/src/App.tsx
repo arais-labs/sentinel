@@ -1,4 +1,4 @@
-import { applyChatAppearance } from './components/ChatAppearanceControls';
+import { applyAppearance } from './components/AppearanceControls';
 import { InstancePickerPage } from './pages/InstancePickerPage';
 import { ProductTourHost } from './components/onboarding/ProductTourHost';
 import { Loader2 } from 'lucide-react';
@@ -125,7 +125,7 @@ function ApplicationRoutes() {
 
   useEffect(() => {
     initializeTheme();
-    applyChatAppearance();
+    applyAppearance();
   }, [initializeTheme]);
 
   return (

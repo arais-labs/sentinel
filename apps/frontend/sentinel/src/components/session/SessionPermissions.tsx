@@ -1,3 +1,4 @@
+import { ChevronDown, ShieldCheck } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../../lib/api';
 import { SESSION_PERMISSIONS_CHANGED } from '../../lib/approvals';
@@ -6,6 +7,7 @@ import './approval-actions.css';
 type Grant = { id: string; action: string; session_id: string };
 
 export function SessionPermissions({ instanceName, sessionId }: { instanceName: string; sessionId: string }) {
+  const [expanded, setExpanded] = useState(false);
   const [grants, setGrants] = useState<Grant[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -43,7 +45,13 @@ export function SessionPermissions({ instanceName, sessionId }: { instanceName: 
   }
 
   return <section className="run-settings-section session-permissions">
-    <h3>Session permissions</h3>
+    <button type="button" className="run-settings-section-toggle" aria-expanded={expanded} onClick={() => setExpanded(value => !value)}>
+      <span className="text-(--text-secondary)"><ShieldCheck size={11} /></span>
+      <span className="run-settings-section-label">Session permissions</span>
+      <span className="run-settings-section-value">{loading ? '…' : grants.length}</span>
+      <ChevronDown size={11} className={`transition-transform duration-300 opacity-40 ${expanded ? 'rotate-180' : ''}`} />
+    </button>
+    <div className="session-permissions-body" hidden={!expanded}>
     {loading ? <p role="status">Loading…</p> : <>
       <p>{grants.length ? 'These actions can run without asking in this conversation.' : 'No actions automatically approved for this conversation.'}</p>
       <ul>{grants.map(grant => <li key={grant.id}>
@@ -53,5 +61,6 @@ export function SessionPermissions({ instanceName, sessionId }: { instanceName: 
       </li>)}</ul>
     </>}
     {error && <p role="alert">{error} <button type="button" onClick={() => setRevision(value => value + 1)}>Retry</button></p>}
+    </div>
   </section>;
 }

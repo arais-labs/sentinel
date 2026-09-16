@@ -9,6 +9,8 @@ from fastapi import HTTPException
 from app.config import settings
 from app.models.system import SystemSetting
 from app.services.llm.factory import _build_enabled_providers
+from app.services.llm.live_credentials import LiveCredentialProvider
+from sentral.llm.codex_credentials import read_codex_access_token
 from sentral.llm.ids import ProviderChoice
 from sentral.llm.providers.gemini_oauth import GeminiOAuthProvider
 from app.services.settings.settings_service import SettingsService
@@ -79,6 +81,14 @@ async def test_set_api_keys_normalizes_gemini_oauth_credentials(
         _fake_upsert,
     )
 
+    async def _fake_delete(_db, *, key: str) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "app.services.settings.settings_service.delete_system_setting",
+        _fake_delete,
+    )
+
     service = SettingsService()
     await service.set_api_keys(
         None,
@@ -136,10 +146,29 @@ def test_get_api_keys_status_marks_gemini_oauth() -> None:
         gemini = status.providers[ProviderChoice.GEMINI]
         assert gemini.configured is True
         assert gemini.auth_method == "oauth"
+        assert gemini.auth_source == "manual"
         assert gemini.masked_key == "refr...oken"
     finally:
         settings.gemini_oauth_credentials = old_oauth
         settings.gemini_api_key = old_api_key
+
+
+def test_get_api_keys_status_keeps_unavailable_cli_source_selected() -> None:
+    instance_settings = settings.model_copy(
+        update={
+            "openai_api_key": None,
+            "openai_oauth_token": None,
+            "openai_oauth_source": "cli",
+        }
+    )
+
+    status = (
+        SettingsService().get_api_keys_status(instance_settings).providers[ProviderChoice.OPENAI]
+    )
+
+    assert status.configured is False
+    assert status.auth_method == "oauth"
+    assert status.auth_source == "cli"
 
 
 def test_build_enabled_providers_prefers_gemini_oauth() -> None:
@@ -174,6 +203,25 @@ def test_build_enabled_providers_prefers_gemini_oauth() -> None:
             settings.gemini_api_key,
             settings.gemini_oauth_credentials,
         ) = old_values
+
+
+def test_build_enabled_providers_wraps_cli_oauth_for_live_reload() -> None:
+    instance_settings = settings.model_copy(
+        update={
+            "anthropic_api_key": None,
+            "anthropic_oauth_token": None,
+            "openai_api_key": None,
+            "openai_oauth_token": "codex-token",
+            "openai_oauth_source": "cli",
+            "gemini_api_key": None,
+            "gemini_oauth_credentials": None,
+        }
+    )
+
+    providers, uses_codex = _build_enabled_providers(instance_settings)
+
+    assert uses_codex is True
+    assert isinstance(providers[ProviderChoice.OPENAI], LiveCredentialProvider)
 
 
 def test_extract_codex_access_token_from_cli_auth_json() -> None:
@@ -213,22 +261,31 @@ def test_desktop_codex_oauth_status_finds_auth_file(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_import_desktop_codex_oauth_token_persists_openai_oauth(tmp_path: Path) -> None:
+async def test_codex_reader_picks_up_auth_file_changes(tmp_path: Path) -> None:
+    auth_path = tmp_path / "auth.json"
+    auth_path.write_text('{"tokens":{"access_token":"first"}}', encoding="utf-8")
+    assert await read_codex_access_token(auth_path) == "first"
+
+    auth_path.write_text('{"tokens":{"access_token":"second-token"}}', encoding="utf-8")
+    assert await read_codex_access_token(auth_path) == "second-token"
+
+
+@pytest.mark.asyncio
+async def test_connect_desktop_codex_oauth_persists_live_source_only(tmp_path: Path) -> None:
     auth_path = tmp_path / "auth.json"
     auth_path.write_text('{"tokens":{"access_token":"codex-access-token"}}', encoding="utf-8")
     fake_db = FakeDB()
 
-    result = await SettingsService().import_desktop_codex_oauth_token(fake_db, auth_path=auth_path)
+    result = await SettingsService().connect_desktop_codex_oauth(fake_db, auth_path=auth_path)
 
     assert result.masked_key == "code...oken"
-    persisted = next(
-        row.value for row in fake_db.storage[SystemSetting] if row.key == "openai_oauth_token"
-    )
-    assert persisted == "codex-access-token"
+    rows = {row.key: row.value for row in fake_db.storage[SystemSetting]}
+    assert rows["openai_oauth_source"] == "cli"
+    assert "openai_oauth_token" not in rows
 
 
 @pytest.mark.asyncio
-async def test_import_claude_oauth_persists_only_backend_token(monkeypatch):
+async def test_connect_claude_oauth_persists_live_source_only(monkeypatch):
     from sentral.llm import claude_credentials
 
     async def read():
@@ -236,12 +293,11 @@ async def test_import_claude_oauth_persists_only_backend_token(monkeypatch):
 
     monkeypatch.setattr(claude_credentials, "read_claude_access_token", read)
     db = FakeDB()
-    result = await SettingsService().import_desktop_claude_oauth_token(db)
+    result = await SettingsService().connect_desktop_claude_oauth(db)
     assert result.masked_key == "sk-a...oken"
-    assert (
-        next(row.value for row in db.storage[SystemSetting] if row.key == "anthropic_oauth_token")
-        == "sk-ant-oat-example-token"
-    )
+    rows = {row.key: row.value for row in db.storage[SystemSetting]}
+    assert rows["anthropic_oauth_source"] == "cli"
+    assert "anthropic_oauth_token" not in rows
 
 
 @pytest.mark.asyncio
@@ -257,13 +313,13 @@ async def test_import_claude_oauth_failure_leaves_settings_untouched(monkeypatch
     monkeypatch.setattr(claude_credentials, "read_claude_access_token", read)
     db = FakeDB()
     with pytest.raises(HTTPException) as caught:
-        await SettingsService().import_desktop_claude_oauth_token(db)
+        await SettingsService().connect_desktop_claude_oauth(db)
     assert caught.value.status_code == (422 if failure else 404)
     assert not db.storage.get(SystemSetting)
 
 
 @pytest.mark.asyncio
-async def test_antigravity_import_persists_refreshable_bundle(monkeypatch):
+async def test_antigravity_connection_persists_live_source_only(monkeypatch):
     from sentral.llm.providers.gemini_oauth import GeminiOAuthCredentials
 
     credentials = GeminiOAuthCredentials.parse_input({"refresh_token": "refresh-token"})
@@ -271,15 +327,29 @@ async def test_antigravity_import_persists_refreshable_bundle(monkeypatch):
     async def read():
         return credentials
 
-    persisted = []
-
-    async def upsert(db, *, key, value):
-        persisted.append((key, json.loads(value)))
-
     monkeypatch.setattr("sentral.llm.antigravity_credentials.read_antigravity_credentials", read)
-    monkeypatch.setattr("app.services.settings.settings_service.upsert_system_setting", upsert)
-    result = await SettingsService().import_desktop_gemini_oauth_token(None)
+    db = FakeDB()
+    result = await SettingsService().connect_desktop_gemini_oauth(db)
     assert result.masked_key == "refr...oken"
-    assert persisted[0][0] == "gemini_oauth_credentials"
-    assert persisted[0][1]["refresh_token"] == "refresh-token"
-    assert persisted[0][1]["client_id"].startswith("1071006060591-")
+    rows = {row.key: row.value for row in db.storage[SystemSetting]}
+    assert rows["gemini_oauth_source"] == "cli"
+    assert "gemini_oauth_credentials" not in rows
+
+
+@pytest.mark.asyncio
+async def test_build_instance_settings_reads_latest_cli_credential(monkeypatch) -> None:
+    tokens = iter(["first-token", "second-token"])
+
+    async def read():
+        return next(tokens)
+
+    monkeypatch.setattr("sentral.llm.claude_credentials.read_claude_access_token", read)
+    db = _FakeSettingsDb([SystemSetting(key="anthropic_oauth_source", value="cli")])
+    service = SettingsService()
+
+    first = await service.build_instance_settings(db)
+    second = await service.build_instance_settings(db)
+
+    assert first.anthropic_oauth_token == "first-token"
+    assert second.anthropic_oauth_token == "second-token"
+    assert first.anthropic_oauth_source == second.anthropic_oauth_source == "cli"
