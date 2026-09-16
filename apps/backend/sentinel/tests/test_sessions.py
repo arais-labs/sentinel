@@ -2,14 +2,13 @@ import asyncio
 import pytest
 from types import SimpleNamespace
 import mimetypes
-import subprocess
 import tempfile
 import uuid
 import zipfile
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
 from sqlalchemy.dialects import sqlite
@@ -59,8 +58,9 @@ class _TestDownload:
 
 
 class _LocalRuntimeWorkspaceFiles:
-    def __init__(self, runtime_base: Path) -> None:
+    def __init__(self, runtime_base: Path, *, git_roots=()) -> None:
         self._runtime_base = runtime_base
+        self._git_roots = set(git_roots)
 
     def _workspace(self, session_id: uuid.UUID | str) -> Path:
         return (self._runtime_base / str(session_id) / "workspace").resolve()
@@ -78,7 +78,7 @@ class _LocalRuntimeWorkspaceFiles:
 
     def _entry(self, workspace: Path, path: Path) -> dict:
         rel = path.relative_to(workspace).as_posix()
-        is_git_root = path.is_dir() and (path / ".git").exists()
+        is_git_root = path.is_dir() and rel in self._git_roots
         return {
             "name": path.name,
             "path": rel,
@@ -156,57 +156,6 @@ class _LocalRuntimeWorkspaceFiles:
             download_name=f"{target.name}.zip",
             media_type="application/zip",
         )
-
-    async def git_diff(
-        self,
-        session_id: uuid.UUID | str,
-        *,
-        path: str,
-        base_ref: str = "HEAD",
-        staged: bool = False,
-        context_lines: int = 3,
-        max_bytes: int = 120_000,
-    ) -> dict:
-        workspace = self._workspace(session_id)
-        target = self._resolve(session_id, path, must_exist=False)
-        probe = target if target.exists() and target.is_dir() else target.parent
-        root = subprocess.run(
-            ["git", "-C", str(probe), "rev-parse", "--show-toplevel"],
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
-        file_rel = target.relative_to(Path(root)).as_posix()
-        command = ["git", "-C", root, "diff", f"--unified={context_lines}"]
-        if staged:
-            command.append("--staged")
-        command.extend([base_ref, "--", file_rel])
-        completed = subprocess.run(command, check=True, capture_output=True, text=True)
-        diff = completed.stdout
-        if not diff and target.exists():
-            tracked = subprocess.run(
-                ["git", "-C", root, "ls-files", "--error-unmatch", "--", file_rel],
-                check=False,
-                capture_output=True,
-                text=True,
-            )
-            if tracked.returncode != 0:
-                diff = f"--- /dev/null\n+++ b/{file_rel}\n@@ -0,0 +1 @@\n+{target.read_text(encoding='utf-8').rstrip()}\n"
-        return {
-            "session_id": str(session_id),
-            "runtime_exists": workspace.parent.exists(),
-            "workspace_exists": workspace.exists(),
-            "path": path,
-            "git_root": Path(root).relative_to(workspace).as_posix(),
-            "branch": "main",
-            "detached_head": False,
-            "base_ref": base_ref,
-            "staged": staged,
-            "context_lines": context_lines,
-            "diff": diff[:max_bytes],
-            "truncated": len(diff.encode("utf-8")) > max_bytes,
-            "max_bytes": max_bytes,
-        }
 
 
 def test_mark_session_read_preserves_updated_at():
@@ -972,11 +921,10 @@ def test_runtime_file_explorer_endpoints():
             (workspace / "src" / "main.py").write_text("print('ok')\n", encoding="utf-8")
             (workspace / "README.md").write_text("# demo\n", encoding="utf-8")
             (workspace / "repo").mkdir(parents=True, exist_ok=True)
-            subprocess.run(["git", "-C", str(workspace / "repo"), "init"], check=False)
 
             with patch(
                 "app.routers.sessions.get_runtime_workspace_files",
-                return_value=_LocalRuntimeWorkspaceFiles(runtime_base),
+                return_value=_LocalRuntimeWorkspaceFiles(runtime_base, git_roots={"repo"}),
             ):
                 files_root = client.get(
                     f"{SESSIONS_API}/{session_id}/runtime/files", headers=headers
@@ -1037,59 +985,51 @@ def test_runtime_git_diff_supports_deleted_and_untracked_files():
         assert created.status_code == 200
         session_id = created.json()["id"]
 
-        with tempfile.TemporaryDirectory() as temp_dir:
-            runtime_base = Path(temp_dir)
-            repo_dir = runtime_base / session_id / "workspace" / "repo"
-            repo_dir.mkdir(parents=True, exist_ok=True)
-
-            subprocess.run(["git", "-C", str(repo_dir), "init"], check=True)
-            subprocess.run(
-                ["git", "-C", str(repo_dir), "config", "user.name", "Test User"],
-                check=True,
-            )
-            subprocess.run(
-                [
-                    "git",
-                    "-C",
-                    str(repo_dir),
-                    "config",
-                    "user.email",
-                    "test-user@example.com",
-                ],
-                check=True,
-            )
-
-            deleted_file = repo_dir / "old.txt"
-            deleted_file.write_text("before\n", encoding="utf-8")
-            subprocess.run(["git", "-C", str(repo_dir), "add", "old.txt"], check=True)
-            subprocess.run(["git", "-C", str(repo_dir), "commit", "-m", "seed"], check=True)
-            deleted_file.unlink()
-
-            added_file = repo_dir / "new.txt"
-            added_file.write_text("after\n", encoding="utf-8")
-
-            with patch(
-                "app.routers.sessions.get_runtime_workspace_files",
-                return_value=_LocalRuntimeWorkspaceFiles(runtime_base),
-            ):
-                deleted_resp = client.get(
-                    f"{SESSIONS_API}/{session_id}/runtime/git/diff?path=repo/old.txt&base_ref=HEAD&staged=false&context_lines=3&max_bytes=120000",
+        deleted = {
+            "session_id": session_id,
+            "runtime_exists": True,
+            "workspace_exists": True,
+            "path": "repo/old.txt",
+            "git_root": "repo",
+            "branch": "main",
+            "detached_head": False,
+            "base_ref": "HEAD",
+            "staged": False,
+            "context_lines": 3,
+            "max_bytes": 120000,
+            "truncated": False,
+            "diff": "deleted file mode 100644\n--- a/old.txt\n+++ /dev/null\n@@ -1 +0,0 @@\n-before\n",
+        }
+        added = {
+            **deleted,
+            "path": "repo/new.txt",
+            "diff": "--- /dev/null\n+++ b/new.txt\n@@ -0,0 +1 @@\n+after\n",
+        }
+        runtime = SimpleNamespace(git_diff=AsyncMock(side_effect=[deleted, added]))
+        with patch("app.routers.sessions.get_runtime_workspace_files", return_value=runtime):
+            for expected in (deleted, added):
+                response = client.get(
+                    f"{SESSIONS_API}/{session_id}/runtime/git/diff",
+                    params={
+                        "path": expected["path"],
+                        "base_ref": "HEAD",
+                        "staged": "false",
+                        "context_lines": 3,
+                        "max_bytes": 120000,
+                    },
                     headers=headers,
                 )
-                assert deleted_resp.status_code == 200
-                deleted_payload = deleted_resp.json()
-                assert deleted_payload["path"] == "repo/old.txt"
-                assert "deleted file mode" in deleted_payload["diff"]
-
-                added_resp = client.get(
-                    f"{SESSIONS_API}/{session_id}/runtime/git/diff?path=repo/new.txt&base_ref=HEAD&staged=false&context_lines=3&max_bytes=120000",
-                    headers=headers,
+                assert response.status_code == 200
+                assert response.json()["path"] == expected["path"]
+                assert response.json()["diff"] == expected["diff"]
+                runtime.git_diff.assert_awaited_with(
+                    session_id,
+                    path=expected["path"],
+                    base_ref="HEAD",
+                    staged=False,
+                    context_lines=3,
+                    max_bytes=120000,
                 )
-                assert added_resp.status_code == 200
-                added_payload = added_resp.json()
-                assert added_payload["path"] == "repo/new.txt"
-                assert "+++ b/new.txt" in added_payload["diff"]
-                assert "+after" in added_payload["diff"]
     finally:
         restore_test_app(old_init)
 

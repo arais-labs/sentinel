@@ -1,6 +1,7 @@
 """Release commands update app versions without changing dependency versions."""
 
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -18,9 +19,19 @@ def test_release_version_sync_and_drift(tmp_path):
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(root / name, dest)
 
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_git = fake_bin / "git"
+    fake_git.write_text('#!/bin/sh\n[ "$*" = "show HEAD:VERSION" ] || exit 1\nprintf "3.2.1\\n"\n')
+    fake_git.chmod(0o755)
+
     def run(*args):
         return subprocess.run(
-            ["bash", "scripts/sync-version.sh", *args], cwd=tmp_path, capture_output=True, text=True
+            ["bash", "scripts/sync-version.sh", *args],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            env={**os.environ, "PATH": str(fake_bin) + os.pathsep + os.environ["PATH"]},
         )
 
     original = {name: (tmp_path / name).read_bytes() for name in files}
@@ -54,12 +65,6 @@ def test_release_version_sync_and_drift(tmp_path):
     assert run().returncode == 0
     assert run("--check").returncode == 0
 
-    def git(*args):
-        subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)
-
-    git("init", "--quiet")
-    git("add", "VERSION")
-    git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "base")
     assert run("--check", "--greater-than", "HEAD").returncode != 0
     assert run("--set", "3.2.0").returncode == 0
     assert run("--check", "--greater-than", "HEAD").returncode != 0

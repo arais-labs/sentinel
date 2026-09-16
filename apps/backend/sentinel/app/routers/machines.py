@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from pathlib import PurePosixPath
 from shlex import quote
 from uuid import UUID
@@ -60,9 +61,12 @@ async def inspect_remote_runtime(machine_id: UUID, db: AsyncSession = Depends(ge
             raise HTTPException(422, "This machine uses the local runtime")
         identity = await asyncio.wait_for(remote_mac_module.fingerprint(machine), 15)
         installation = {}
-        if machine.host_key and machine.host_key == identity["host_key"]:
+        if not machine.host_key or machine.host_key == identity["host_key"]:
             installation = await asyncio.wait_for(
-                remote_mac_module.inspect_installation(machine), 15
+                remote_mac_module.inspect_installation(
+                    replace(machine, host_key=identity["host_key"])
+                ),
+                15,
             )
         return {
             **identity,
@@ -73,7 +77,7 @@ async def inspect_remote_runtime(machine_id: UUID, db: AsyncSession = Depends(ge
             "identity_verified": bool(
                 machine.host_key and machine.host_key == identity["host_key"]
             ),
-            "path": machine.runtime_root or "~/.sentinel/runtime",
+            "path": installation.get("path") or machine.runtime_root or "~/.sentinel/runtime",
             "host_key_changed": bool(machine.host_key and machine.host_key != identity["host_key"]),
         }
     except machines_module.MachineNotFound as exc:
