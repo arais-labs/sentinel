@@ -36,6 +36,13 @@ npm run dev
 Development prepares the pinned native runtime before starting Electron and the
 renderer. The Swift runtime requires macOS 26 or newer.
 
+Development sets the stable application identity **Sentinel Dev** before Electron
+is ready. This isolates both its data directory and its macOS Keychain service
+(`Sentinel Dev Safe Storage`) from the packaged application. Changing only
+`userData` does not isolate Keychain encryption. Do not rename either application
+identity or delete its Safe Storage entry during app cleanup: existing encrypted
+data depends on that key. Startup never replaces an unreadable encryption key.
+
 ```sh
 npm test
 npm run test:graphics-build

@@ -8,6 +8,7 @@ import { Panel } from '../components/ui/Panel';
 import { SolidInstanceIcon } from '../components/ui/SolidInstanceIcon';
 import { InstanceClouds } from '../components/ui/InstanceClouds';
 import { api } from '../lib/api';
+import { instanceColor, instanceColors } from '../lib/instance-appearance';
 
 const notify = notificationPublisher('Instances');
 
@@ -18,7 +19,6 @@ interface SentinelInstance {
   appearance?: { color?: string | null; icon?: string };
 }
 
-const instanceColors = ['#8ebaff', '#82d9bb', '#c1a5f5', '#efbd80', '#ef9daa', '#a7b4ca'];
 const colorNames = ['Blue', 'Mint', 'Lavender', 'Amber', 'Rose', 'Slate'];
 const availableIcons = new Set<string>(iconNames);
 const iconLabel = (name: string) => name.replace(/-/g, ' ');
@@ -29,11 +29,6 @@ function InstanceIcon({ icon, label, size }: { icon?: string; label: string; siz
   return name && availableIcons.has(name)
     ? <DynamicIcon name={name as IconName} size={size} strokeWidth={1.5} />
     : <>{label.slice(0, 1).toUpperCase()}</>;
-}
-
-function instanceColor(id: string) {
-  const hash = Array.from(id).reduce((value, char) => (value * 31 + char.charCodeAt(0)) >>> 0, 0);
-  return instanceColors[hash % instanceColors.length];
 }
 
 export function InstancePickerPage() {
