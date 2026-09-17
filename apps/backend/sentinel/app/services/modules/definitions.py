@@ -84,6 +84,8 @@ class ActionDefinition:
     approval: bool = False
     permission_default: str | None = None
     requires_runtime_context: bool = False
+    # Only the Voice agent may see and call this action; chats never receive it.
+    voice_only: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {

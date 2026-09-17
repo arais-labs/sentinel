@@ -70,6 +70,8 @@ export function readTourSnapshot(instance: string) {
     runSettings: present('[role="dialog"][aria-label="Run settings"]'),
     connection: present('[role="dialog"][aria-label="Connection and context details"]'),
     subagents: present('.subagent-float[data-open="true"]'),
+    voiceSettings: present('.voice-settings'),
+    voiceOpen: present('.topbar-voice-trigger[aria-expanded="true"]'),
   };
 }
 export type TourSnapshot = ReturnType<typeof readTourSnapshot>;
@@ -219,6 +221,12 @@ export function taskSucceeded(
       return !before.connection && after.connection;
     case 'subagents':
       return !before.subagents && after.subagents;
+    case 'voice-settings':
+      return !before.voiceSettings && after.voiceSettings;
+    case 'voice-open':
+      return !before.voiceOpen && after.voiceOpen;
+    case 'voice-close':
+      return before.voiceOpen && !after.voiceOpen;
   }
 }
 

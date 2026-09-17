@@ -9,7 +9,7 @@ import type { Workspace, Machine } from '../../types/api';
 
 const notify = notificationPublisher('Workspaces');
 
-export function WorkspaceAttachment({ sessionId, instanceName, busy }: { sessionId: string | null; instanceName: string | null; busy: boolean }) {
+export function WorkspaceAttachment({ sessionId, instanceName, busy, compact = false, className }: { sessionId: string | null; instanceName: string | null; busy: boolean; compact?: boolean; className?: string }) {
   const { workspace } = useSessionWorkspace(sessionId, instanceName);
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -40,7 +40,8 @@ export function WorkspaceAttachment({ sessionId, instanceName, busy }: { session
   }
   const rows = spaces.filter(w => `${w.name} ${w.directory}`.toLowerCase().includes(query.toLowerCase()));
   return <>
-    <button data-tour="workspace-attachment" disabled={!sessionId || busy} title={workspace ? `${workspace.name} · ${workspace.directory}` : 'Attach a workspace'} onClick={() => setOpen(true)} className="chat-header-pill inline-flex h-7 items-center gap-2 rounded-full border border-(--border-subtle) bg-(--surface-1) px-3 text-[10px] font-bold uppercase tracking-widest text-(--text-secondary) hover:text-(--text-primary) hover:bg-(--surface-2) disabled:opacity-50 transition-colors"><Monitor size={14} className={workspace ? 'text-(--accent-solid)' : ''} /><span className="max-w-36 truncate">{workspace?.name ?? 'Attach'}</span></button>
+    {compact ? <button type="button" disabled={!sessionId || busy} aria-label={workspace ? `Workspace: ${workspace.name}` : 'Attach a workspace'} title={workspace ? `${workspace.name} · ${workspace.directory}` : 'Attach a workspace'} data-attached={workspace ? 'true' : undefined} onClick={() => setOpen(true)} className={className}><Monitor size={16} className={workspace ? 'text-(--accent-solid)' : ''} /></button>
+    : <button data-tour="workspace-attachment" disabled={!sessionId || busy} title={workspace ? `${workspace.name} · ${workspace.directory}` : 'Attach a workspace'} onClick={() => setOpen(true)} className="chat-header-pill inline-flex h-7 items-center gap-2 rounded-full border border-(--border-subtle) bg-(--surface-1) px-3 text-[10px] font-bold uppercase tracking-widest text-(--text-secondary) hover:text-(--text-primary) hover:bg-(--surface-2) disabled:opacity-50 transition-colors"><Monitor size={14} className={workspace ? 'text-(--accent-solid)' : ''} /><span className="max-w-36 truncate">{workspace?.name ?? 'Attach'}</span></button>}
     {open && createPortal(<dialog ref={dialog} onCancel={() => setOpen(false)} onClick={e => { if (e.target === e.currentTarget && !saving) setOpen(false); }} className="m-auto w-[min(560px,calc(100vw-48px))] rounded-2xl border border-(--border-subtle) bg-(--surface-0) text-(--text-primary) p-0 shadow-2xl backdrop:bg-black/50 backdrop:backdrop-blur-xs" aria-label="Attach a workspace"><div className="p-5 space-y-4">
       <div className="flex justify-between items-center"><h2 className="text-sm font-semibold">Attach a workspace</h2><button aria-label="Close" onClick={() => setOpen(false)}><X size={18} /></button></div>
       <div className="relative"><Search size={15} className="absolute left-3 top-3 text-(--text-muted)" /><input autoFocus className="w-full h-10 pl-9 pr-3 rounded-full bg-(--surface-1) border border-(--border-subtle) text-sm outline-hidden focus:border-(--accent-solid)" placeholder="Search workspaces…" value={query} onChange={e => setQuery(e.target.value)} /></div>

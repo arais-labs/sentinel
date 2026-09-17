@@ -32,6 +32,7 @@ from app.services.sessions.agent_run_registry import AgentRunRegistry
 from app.services.sessions.compaction import CompactionService
 from app.services.sessions.session_naming import SessionNamingService
 from app.services.ws.ws_manager import ConnectionManager
+from app.services.agent.agent_modes import effective_agent_mode
 from app.services.ws.ws_stream_parser import parse_ws_message
 from app.services.ws.ws_stream_service import (
     build_user_payload,
@@ -206,6 +207,9 @@ async def stream_session(
             if parsed is None:
                 await websocket.send_json({"type": "error", "code": "invalid_payload"})
                 continue
+            parsed = replace(
+                parsed, agent_mode=effective_agent_mode(session.kind, parsed.agent_mode)
+            )
 
             if (
                 parsed.provider_id is not None

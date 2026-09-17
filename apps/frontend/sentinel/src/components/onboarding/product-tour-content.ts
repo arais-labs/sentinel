@@ -24,6 +24,9 @@ export type TourCheck =
   | 'tool-input'
   | 'run-settings'
   | 'connection'
+  | 'voice-settings'
+  | 'voice-open'
+  | 'voice-close'
   | 'subagents';
 export type ShortcutId =
   | 'new'
@@ -49,7 +52,7 @@ export interface TourTask {
 }
 export interface TourStep {
   id: string;
-  chapter: 'Conversations' | 'Your workspace' | 'Follow the work';
+  chapter: 'Conversations' | 'Your workspace' | 'Voice' | 'Follow the work';
   title: string;
   instruction: string;
   detail: string;
@@ -58,7 +61,7 @@ export interface TourStep {
   unavailable: string;
   tasks: TourTask[];
 }
-export const tourChapters = ['Conversations', 'Your workspace', 'Follow the work'] as const;
+export const tourChapters = ['Conversations', 'Your workspace', 'Voice', 'Follow the work'] as const;
 
 // Completion is checked against live state. Nothing here sends messages,
 // provisions tools, changes settings, or confirms a deletion for the user.
@@ -362,6 +365,36 @@ export const tourSteps: TourStep[] = [
         check: 'find-file',
         shortcut: 'file',
       },
+    ],
+  },
+  {
+    id: 'voice-settings',
+    chapter: 'Voice',
+    title: 'Make Voice yours.',
+    instruction:
+      'Open Settings, then select Voice. Inspect Model & reasoning, speech speed, local voice setup, and Activity & traces.',
+    detail:
+      'Voice uses your existing providers, including Ollama, with its own model settings. Speech recognition and playback run locally; transcripts and requested chat context go to the selected provider. You can explore these settings without installing anything or turning on the microphone.',
+    target: '.settings-navigation, [data-tour-nav="settings"]',
+    preparePane: 'settings',
+    unavailable: 'Open Settings from the sidebar, then choose Voice.',
+    tasks: [
+      { id: 'settings', label: 'Open the Voice settings section', success: 'Voice settings opened', check: 'voice-settings' },
+    ],
+  },
+  {
+    id: 'voice-controls',
+    chapter: 'Voice',
+    title: 'One voice. All your chats.',
+    instruction:
+      'When you’re ready, click the waveform in the top bar. Opening Voice starts a connection and may ask for microphone access. You can skip this exercise and return later.',
+    detail:
+      'Voice is not another chat: it knows your open and focused chats. Try “What’s running?” or ask it to switch chats or arrange your workspace. The top-bar island holds microphone, connection, speaker, and settings controls. Closing the overlay keeps Voice connected; use Disconnect to stop listening.',
+    target: '.topbar-voice-island',
+    unavailable: 'Voice is available in the desktop top bar. You can return to this lesson after setup.',
+    tasks: [
+      { id: 'open', label: 'Open Voice from the top bar', success: 'Voice controls opened', check: 'voice-open' },
+      { id: 'close', label: 'Close the overlay with its × button; disconnect first if you tried Voice', success: 'Overlay closed', check: 'voice-close' },
     ],
   },
   {

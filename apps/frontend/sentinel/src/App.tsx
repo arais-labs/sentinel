@@ -73,6 +73,11 @@ function WorkspaceTabRedirect({ tabId }: { tabId: WorkspaceTabId }) {
   return null;
 }
 
+function VoiceRedirect() {
+  const { instanceName } = useParams<{ instanceName: string }>();
+  return <Navigate to={`/instances/${encodeURIComponent(instanceName ?? '')}/workspace?voice=1`} replace />;
+}
+
 /**
  * Instance workspace: the tiling container fills the AppShell content area and
  * the left nav acts as a tab launcher (see AppShell launcher mode). The header
@@ -136,6 +141,7 @@ function ApplicationRoutes() {
           <Route path="/" element={<Navigate to="/desktop/instances" replace />} />
           <Route path="/instances/:instanceName" element={<Navigate to="workspace" replace />} />
           <Route path="/instances/:instanceName/workspace" element={<WorkspaceRoute />} />
+          <Route path="/instances/:instanceName/voice" element={<VoiceRedirect />} />
           {WORKSPACE_TAB_IDS.map(tabId => (
             <Route key={tabId} path={`/instances/:instanceName/${tabId}`} element={<WorkspaceTabRedirect tabId={tabId} />} />
           ))}

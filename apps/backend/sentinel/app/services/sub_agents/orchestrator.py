@@ -119,7 +119,7 @@ class SubAgentOrchestrator:
             if previous and not previous.done():
                 if not previous.cancelling():
                     raise ToolValidationError(
-                        "Sub-agent is already active; use agent_messages to steer it"
+                        "Sub-agent is already active; use chats.send to steer it"
                     )
                 # Let cancellation finish persisting the old turn before adding
                 # new steering, which otherwise could be discarded by cleanup.
@@ -132,7 +132,7 @@ class SubAgentOrchestrator:
                     raise ToolValidationError("Sub-agent task not found for this session")
                 if task.status not in {"cancelled", "failed", "completed"}:
                     raise ToolValidationError(
-                        "Sub-agent is already active; use agent_messages to steer it"
+                        "Sub-agent is already active; use chats.send to steer it"
                     )
                 child_id = (task.result or {}).get("child_session_id")
                 if not child_id or await db.get(Session, UUID(child_id)) is None:
@@ -376,7 +376,7 @@ class SubAgentOrchestrator:
         allowed = set(
             task.allowed_tools or [tool.name for tool in self._base_tool_registry.list_all()]
         )
-        allowed.add("agent_messages")
+        allowed.add("chats")
         registry = ToolRegistry()
         for tool in self._base_tool_registry.list_all():
             if tool.name in allowed and tool.name not in _SUB_AGENT_EXCLUDED_TOOLS:
@@ -413,7 +413,7 @@ class SubAgentOrchestrator:
     def _sub_agent_system_prompt(self, task):
         return (
             "You are a fully capable delegated peer. Complete the objective within its scope. "
-            "Report your findings and any unresolved concerns clearly. Use agent_messages to ask the parent "
+            "Report your findings and any unresolved concerns clearly. Use chats.send to ask the parent "
             "or another peer a focused question or share relevant findings. You share the parent's workspace; "
             "preserve unrelated work and use your own terminal pane.\n"
             f"Scope: {task.context or 'No additional scope.'}"

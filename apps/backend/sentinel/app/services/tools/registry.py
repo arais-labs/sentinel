@@ -17,6 +17,7 @@ class ToolRuntimeContext:
     instance_name: str | None = None
     db_session_factory: async_sessionmaker[AsyncSession] | None = None
     sub_agent_orchestrator: Any | None = None
+    agent_mode: str | None = None
 
 
 ToolExecutorFn = Callable[[dict[str, Any], ToolRuntimeContext], Awaitable[Any]]
@@ -98,6 +99,13 @@ class ToolDefinition:
     execute: ToolExecutorFn
     enabled: bool = True
     approval_check: ToolApprovalCheckFn | None = None
+    # Schema including Voice-only actions; None when the tool has no such actions.
+    voice_parameters_schema: dict[str, Any] | None = None
+
+    def schema_for(self, agent_mode: Any) -> dict[str, Any]:
+        if self.voice_parameters_schema is not None and str(agent_mode or "") == "voice":
+            return self.voice_parameters_schema
+        return self.parameters_schema
 
 
 class ToolRegistry:
@@ -117,7 +125,7 @@ class ToolRegistry:
         tool = self.get(name)
         return bool(tool and tool.enabled)
 
-    def list_schemas(self) -> list[ToolSchema]:
+    def list_schemas(self, agent_mode: Any = None) -> list[ToolSchema]:
         """Snapshot the enabled tools as the schema records the agent loop
         feeds to the LLM. Living here (next to the registry it walks) means a
         single source of truth — the previous home on ``ToolAdapter`` was
@@ -128,7 +136,7 @@ class ToolRegistry:
             ToolSchema(
                 name=tool.name,
                 description=tool.description,
-                parameters=tool.parameters_schema,
+                parameters=tool.schema_for(agent_mode),
             )
             for tool in self.list_all()
             if tool.enabled

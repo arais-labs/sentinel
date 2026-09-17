@@ -1,0 +1,25 @@
+.voice-settings .appearance-setting-row { min-height:84px; padding-block:18px; }
+.voice-settings .appearance-setting-row:last-child { border-bottom:0; }
+.voice-cues-switch { accent-color:var(--sentinel-blue); width:17px; height:17px; cursor:pointer; }
+.voice-settings-actions { display:flex; justify-content:flex-end; align-items:center; flex-wrap:wrap; gap:10px; min-width:0; font-size:11px; }
+.voice-settings :is(.btn-primary,.btn-secondary) { display:inline-flex; align-items:center; justify-content:center; gap:7px; min-height:34px; padding:7px 14px; border-radius:999px; }
+.voice-settings-maintenance { display:flex; justify-content:flex-end; padding:18px 0; }
+.voice-settings-maintenance p { margin-bottom:14px; font-size:12px; line-height:1.65; color:var(--text-secondary); }
+.voice-settings .voice-settings-danger { color:var(--status-error); }
+.voice-settings-files { padding:14px 0; font-size:11px; color:var(--text-muted); }
+.voice-settings-files summary { cursor:pointer; width:fit-content; }
+.voice-settings-files code { display:block; margin-top:10px; overflow-wrap:anywhere; }
+.voice-settings-note { margin:16px 8px 0; font-size:11px; line-height:1.7; color:var(--text-muted); }
+.voice-model-setting { border-bottom:1px solid color-mix(in srgb,var(--text-primary) 5%,transparent); }
+.voice-settings .voice-model-toggle { padding:18px 0; min-height:76px; gap:12px; border-radius:8px; }
+.voice-model-label { font-size:13px; font-weight:550; flex-shrink:0; }
+.voice-model-summary { margin-left:auto; min-width:0; display:flex; align-items:center; justify-content:flex-end; gap:8px; font-size:11px; }
+.voice-model-summary > svg { flex-shrink:0; }
+.voice-model-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text-secondary); }
+.voice-model-effort { flex-shrink:0; color:var(--text-muted); font-size:10px; text-transform:capitalize; }
+.voice-model-details { max-width:420px; margin-left:auto; padding:0 0 16px; }
+.voice-model-details .session-model-providers { padding-inline:0; }
+.voice-model-details .session-model-slider { padding-inline:0; }
+.voice-model-details .session-fast-mode { padding-inline:0; }
+@container settings-content (max-width:520px) { .voice-settings .voice-model-toggle { flex-wrap:wrap; } .voice-model-label { flex:1; } .voice-model-summary { order:3; flex-basis:100%; justify-content:flex-start; } }
+@container settings-content (max-width:680px) { .voice-settings-actions { justify-content:flex-start; } }

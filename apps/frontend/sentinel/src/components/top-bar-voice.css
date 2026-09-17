@@ -1,0 +1,33 @@
+.topbar-voice-island { -webkit-app-region:no-drag; position:absolute; z-index:20; left:50%; top:50%; transform:translate(-50%,-50%); display:flex; align-items:center; width:48px; height:34px; padding:2px; border:1px solid transparent; border-radius:999px; background:transparent; overflow:hidden; transition:width 340ms cubic-bezier(.22,1,.36,1),background-color 220ms,border-color 220ms,box-shadow 220ms; }
+.topbar-voice-island[data-open=true] { width:calc(48px + var(--voice-actions-width,171px)); max-width:calc(100vw - 120px); background:var(--surface-0); border-color:var(--border-subtle); box-shadow:0 3px 14px #0003,inset 0 1px 0 #ffffff08; }
+.topbar-voice-trigger { -webkit-app-region:no-drag; flex:0 0 42px; height:28px; display:grid; place-items:center; border-radius:999px; color:var(--sentinel-blue); cursor:pointer; }
+.topbar-voice-trigger > svg { position:relative; z-index:1; }
+.topbar-voice-trigger[data-phase=offline] { color:var(--text-muted); }
+.topbar-voice-trigger:is([data-phase=error],[data-phase=permission],[data-phase=setup]) { color:#d4a66b; }
+.topbar-voice-trigger:hover { background:var(--surface-2); }
+.topbar-voice-island button:focus-visible { outline:2px solid var(--sentinel-blue); outline-offset:-2px; }
+.topbar-voice-island-actions { display:flex; flex-shrink:0; width:max-content; align-items:center; gap:3px; padding-left:5px; margin-left:3px; border-left:1px solid var(--border-subtle); opacity:0; visibility:hidden; transition:opacity 120ms,visibility 120ms; }
+.topbar-voice-island[data-open=true] .topbar-voice-island-actions { opacity:1; visibility:visible; transition-delay:100ms; }
+.topbar-voice-controls-slot { display:flex; }
+.topbar-voice-island .voice-controls-dock { display:flex; align-items:center; width:auto; padding:0; }
+.topbar-voice-island .voice-controls { gap:3px; }
+.topbar-voice-island :is(.voice-controls button,.voice-interrupt,.topbar-voice-settings,.topbar-voice-close) { position:static; display:grid; place-items:center; width:30px; height:28px; min-width:30px; padding:0; border:0; border-radius:999px; box-shadow:none; transform:none; background:transparent; color:var(--text-secondary); cursor:pointer; }
+.topbar-voice-island .voice-controls button svg { width:16px; height:16px; }
+.topbar-voice-island :is(.voice-controls button[aria-pressed=true],.voice-interrupt,.topbar-voice-settings[data-attached]) { color:var(--sentinel-blue); }
+.topbar-voice-island button:hover { background:var(--surface-2); color:var(--text-primary); }
+.topbar-voice-island button:disabled { opacity:.35; cursor:default; }
+.topbar-voice-popover { -webkit-app-region:no-drag; isolation:isolate; position:fixed; inset:50% auto auto 50%; margin:0; width:min(440px,33.333vw); height:min(400px,max(320px,30vw),calc(100dvh - 64px)); box-sizing:border-box; padding:0; overflow:visible; pointer-events:none; color:var(--text-primary); background:transparent; border:0; box-shadow:none; transform:translate(-50%,calc(-50% - 8px)); opacity:0; transition:opacity 220ms ease,transform 300ms cubic-bezier(.16,1,.3,1),display 300ms allow-discrete,overlay 300ms allow-discrete; }
+.topbar-voice-popover::before { display:none; }
+.topbar-voice-popover:popover-open { opacity:1; transform:translate(-50%,-50%); }
+@starting-style { .topbar-voice-popover:popover-open { opacity:0; transform:translate(-50%,calc(-50% - 8px)); } }
+.topbar-voice-popover::backdrop { background:rgb(0 0 0 / 0%); pointer-events:none; transition:background-color 220ms ease,display 300ms allow-discrete,overlay 300ms allow-discrete; }
+.topbar-voice-popover:popover-open::backdrop { background:rgb(0 0 0 / 45%); }
+@starting-style { .topbar-voice-popover:popover-open::backdrop { background:rgb(0 0 0 / 0%); } }
+.topbar-voice-popover .voice-pane { background:transparent; overflow:visible; }
+.topbar-voice-popover .voice-orbit { overflow:visible; }
+.topbar-voice-popover .voice-orbit > .instance-clouds { inset:-5%; }
+.topbar-voice-popover .voice-heading { display:none; }
+.topbar-voice-popover .voice-stage { padding:0 16px; }
+.topbar-voice-popover :is(.voice-setup,.voice-error) { pointer-events:auto; }
+@media (max-width:700px) { .topbar-voice-popover { width:min(440px,calc(100vw - 24px)); } }
+@media (prefers-reduced-motion:reduce) { .topbar-voice-popover,.topbar-voice-popover::backdrop,.topbar-voice-island,.topbar-voice-island-actions { transition:none; } }
