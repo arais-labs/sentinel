@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from typing import Any, Literal
 from uuid import UUID
@@ -28,6 +27,7 @@ from app.dependencies import (
     get_request_db_factory,
     get_request_instance_runtime_context,
     get_request_run_registry,
+    get_request_session_service as _resolve_session_service,
 )
 from app.models import Message, Session
 from app.schemas.runtime import (
@@ -56,8 +56,7 @@ from app.services.agent.agent_modes import (
     get_default_agent_mode,
     parse_agent_mode,
 )
-from app.services.agent_runtime_adapters.conversions import db_messages_to_runtime_items
-from sentral.llm.generic.types import ImageContent, TextContent, UserMessage
+from sentral.llm.generic.types import AssistantMessage, ImageContent, TextContent, UserMessage
 from sentral.llm.ids import TierName, parse_tier_name
 from app.services.llm.session_selection import selection_model
 from app.services.modules.builtins.form.contract import pending_form_sessions
@@ -84,10 +83,12 @@ from app.services.sessions.errors import (
     SessionNotFoundError,
     SessionRenameNotAllowedError,
     SessionWorkspaceCleanupError,
+    SteeringConflictError,
+    SteeringValidationError,
 )
 from app.services.sessions.service import SessionService
-from app.services.ws.ws_stream_parser import parse_ws_message
-from app.services.ws.ws_stream_service import persist_user_message, run_agent_once
+from app.services.sessions.steering import enqueue_session_steering
+from app.services.ws.ws_stream_service import run_agent_once
 
 router = APIRouter()
 
@@ -105,20 +106,11 @@ _HOP_BY_HOP_HEADERS = {
 _SENTINEL_PRIVATE_HEADERS = {"authorization", "cookie", "host", "content-length"}
 
 
-def _resolve_session_service(request: Request) -> SessionService:
-    run_registry = get_request_run_registry(request)
-    try:
-        agent_runtime_support = get_request_instance_runtime_context(request).agent_runtime_support
-    except RuntimeError:
-        agent_runtime_support = None
-    return SessionService(
-        run_registry=run_registry,
-        agent_runtime_support=agent_runtime_support,
-        db_factory=get_request_db_factory(request),
-    )
-
-
 def _raise_http_for_session_error(exc: Exception) -> None:
+    if isinstance(exc, SteeringValidationError):
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if isinstance(exc, SteeringConflictError):
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     if isinstance(exc, SessionNotFoundError):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Session not found"
@@ -135,7 +127,7 @@ def _raise_http_for_session_error(exc: Exception) -> None:
     if isinstance(exc, AgentRuntimeUnavailableError):
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="No LLM provider configured",
+            detail=str(exc) or "No LLM provider configured",
         ) from exc
     if isinstance(exc, SessionWorkspaceCleanupError):
         detail = "Machine workspace cleanup failed; session was not deleted."
@@ -498,6 +490,9 @@ async def check_model_context(
     )
     if content:
         messages.append(UserMessage(content=content))
+    if not any(isinstance(item, (UserMessage, AssistantMessage)) for item in messages):
+        # Nothing has been said yet, so no conversation can overflow the new model.
+        return {**limits, "input_tokens": 0, "count_source": "empty", "requires_compaction": False}
     tools = support.tool_registry.list_schemas()
     count = None
     try:
@@ -902,21 +897,7 @@ async def stop_session_generation(
 ) -> dict[str, str]:
     service = _resolve_session_service(request)
     try:
-        await service.get_session(db, session_id=id, user_id="local")
-        registry = get_request_run_registry(request)
-        async with registry.idle_guard(str(id)):
-            registry.discard_steering(str(id))
-            result = await db.execute(
-                select(Message).where(Message.session_id == id, Message.role == "user")
-            )
-            for message in result.scalars().all():
-                if (message.metadata_json or {}).get("steering") == "pending":
-                    message.metadata_json = {
-                        **message.metadata_json,
-                        "steering": "cancelled",
-                    }
-            await db.commit()
-        cancelled = await service.stop_generation(db, session_id=id, user_id="local")
+        cancelled = await service.stop_session(db, session_id=id, user_id="local")
     except Exception as exc:  # noqa: BLE001
         _raise_http_for_session_error(exc)
         raise
@@ -1101,72 +1082,21 @@ async def steer_session(
     request: Request,
     db: AsyncSession = Depends(get_db),
 ) -> MessageResponse:
-
-    service = _resolve_session_service(request)
+    support = get_request_instance_runtime_context(request).agent_runtime_support
     try:
-        session = await service.get_session(db, session_id=id, user_id="local")
+        message = await enqueue_session_steering(
+            db,
+            session_id=id,
+            user_id="local",
+            payload=payload,
+            sessions=_resolve_session_service(request),
+            provider=support.provider if support else None,
+            registry=get_request_run_registry(request),
+            manager=getattr(request.app.state, "ws_manager", None),
+        )
     except Exception as exc:
         _raise_http_for_session_error(exc)
         raise
-    support = get_request_instance_runtime_context(request).agent_runtime_support
-    manager = getattr(request.app.state, "ws_manager", None)
-    if support is None or manager is None:
-        raise HTTPException(status_code=503, detail="Agent runtime unavailable")
-    parsed = parse_ws_message(json.dumps({**payload.model_dump(mode="json"), "type": "message"}))
-    if parsed is None:
-        raise HTTPException(status_code=422, detail="Invalid steering message or attachments")
-    try:
-        support.provider.model_context(
-            selection_model(
-                parsed.tier,
-                parsed.provider_id,
-                parsed.reasoning_level,
-                parsed.fast_mode,
-            )
-        )
-    except (ValueError, KeyError) as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    registry = get_request_run_registry(request)
-    key = str(id)
-    # Serialize enqueue against run completion and other submissions. A message
-    # arriving after completion is picked up by the existing idle wakeup worker.
-    async with registry.idle_guard(key):
-        result = await db.execute(select(Message).where(Message.id == payload.message_id))
-        message = result.scalars().first()
-        if message is not None:
-            if message.session_id != id or not (message.metadata_json or {}).get("steering_id"):
-                raise HTTPException(status_code=409, detail="Message ID already in use")
-        else:
-            message = await persist_user_message(
-                db,
-                session_id=id,
-                session=session,
-                content=parsed.content,
-                attachments=parsed.attachments,
-                requested_tier=parsed.tier,
-                provider_id=parsed.provider_id,
-                reasoning_level=parsed.reasoning_level,
-                fast_mode=parsed.fast_mode,
-                temperature=0.7,
-                max_iterations=parsed.max_iterations,
-                agent_mode=parsed.agent_mode,
-                message_id=payload.message_id,
-                steering=True,
-            )
-        await manager.broadcast_message_ack(
-            key,
-            str(message.id),
-            message.content,
-            message.created_at,
-            metadata=message.metadata_json or {},
-        )
-        if (message.metadata_json or {}).get("steering") == "pending":
-            if not any(
-                item.metadata.get("steering_id") == str(message.id)
-                for item in registry.peek_interjections(key)
-            ):
-                registry.enqueue_interjection(key, db_messages_to_runtime_items([message])[0])
-    await registry.notify_idle_interjections(key)
     return _message_response(message)
 
 

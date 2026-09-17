@@ -14,6 +14,8 @@ import app.services.runtime.container_transport as container_transport
 from app.services.runtime.tmux import build_pane_feed_script, tmux_host_socket_path
 from app.services.runtime.workspace import workspace_paths
 
+FOREGROUND_WAIT_SECONDS = 20
+
 
 def validate_target(value: str, prefix: str) -> str:
     if not isinstance(value, str) or not re.fullmatch(re.escape(prefix) + r"[0-9]+", value):
@@ -233,7 +235,7 @@ class TmuxPanes:
         pane_id=None,
         cwd=None,
         env=None,
-        timeout=300,
+        timeout=FOREGROUND_WAIT_SECONDS,
         background=False,
         on_complete=None,
     ):
@@ -283,30 +285,23 @@ class TmuxPanes:
             lock.release()
             raise
         job_id = uuid4().hex
+        owns_lock = True
+
+        def release_lock():
+            nonlocal owns_lock
+            if owns_lock:
+                owns_lock = False
+                lock.release()
 
         async def finish():
-
             try:
                 result = await self.manager._await_command_complete(
-                    session_id, since_offset=offset, timeout=timeout, log_path=log, pane_id=pane_id
+                    session_id, since_offset=offset, log_path=log, pane_id=pane_id
                 )
             except Exception as exc:
                 result = RuntimeExecResult(exit_status=-1, stdout="", stderr=str(exc))
             finally:
-                lock.release()
-            if background and on_complete:
-                await on_complete(
-                    {
-                        "id": job_id,
-                        "pane_id": pane_id,
-                        "window_id": pane["window_id"],
-                        "command": command,
-                        "status": "completed" if result.exit_status == 0 else "failed",
-                        "returncode": result.exit_status,
-                    },
-                    result.stdout,
-                    result.stderr,
-                )
+                release_lock()
             return {
                 "pane_id": pane_id,
                 "window_id": pane["window_id"],
@@ -315,13 +310,46 @@ class TmuxPanes:
                 "stderr": result.stderr,
             }
 
-        if background:
-            task = asyncio.create_task(finish())
-            self.manager._track_background_task((session_id, pane_id), task)
-            return {
-                "job_id": job_id,
-                "pane_id": pane_id,
-                "window_id": pane["window_id"],
-                "status": "running",
-            }
-        return await finish()
+        # The manager owns the watcher, not the tool call waiting for it. A wait
+        # expiry or agent interruption must not cancel monitoring of a live pane.
+        task = asyncio.create_task(finish())
+        task.add_done_callback(lambda _: release_lock())  # Also covers cancellation before start.
+        key = (session_id, pane_id)
+        self.manager._track_background_task(key, task)
+
+        async def report_completion():
+            result = await task
+            if on_complete:
+                await on_complete(
+                    {
+                        "id": job_id,
+                        "pane_id": pane_id,
+                        "window_id": pane["window_id"],
+                        "command": command,
+                        "status": "completed" if result["exit_status"] == 0 else "failed",
+                        "returncode": result["exit_status"],
+                    },
+                    result["stdout"],
+                    result["stderr"],
+                )
+
+        def detach():
+            self.manager._track_background_task(key, asyncio.create_task(report_completion()))
+
+        if not background:
+            try:
+                done, _ = await asyncio.wait({task}, timeout=min(timeout, FOREGROUND_WAIT_SECONDS))
+            except asyncio.CancelledError:
+                # Sentral cancels pending tool waits when interrupted; the shell
+                # itself is still running and its eventual result must not be lost.
+                detach()
+                raise
+            if done:
+                return task.result()
+        detach()
+        return {
+            "job_id": job_id,
+            "pane_id": pane_id,
+            "window_id": pane["window_id"],
+            "status": "running",
+        }

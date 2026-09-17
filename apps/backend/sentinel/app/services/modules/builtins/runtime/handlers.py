@@ -8,7 +8,7 @@ from sqlalchemy import select
 
 from app.models import Session, Workspace
 from app.services.modules.runtime_services import get_ws_manager, notify_runtime_job_completed
-from app.services.runtime.panes import TmuxPanes
+from app.services.runtime.panes import FOREGROUND_WAIT_SECONDS, TmuxPanes
 from app.services.runtime.ssh_runtime import get_runtime_terminal_manager
 from sentral.errors import ToolValidationError
 
@@ -78,13 +78,16 @@ async def handle_tmux(payload, runtime):
         elif action == "exec":
 
             async def completed(job, stdout, stderr):
-                await publish()
-                await notify_runtime_job_completed(
-                    session_id,
-                    job,
-                    stdout_tail=stdout[-8000:],
-                    stderr_tail=stderr[-8000:],
-                )
+                try:
+                    await publish()
+                finally:
+                    # A failed UI refresh must not suppress the agent's report.
+                    await notify_runtime_job_completed(
+                        session_id,
+                        job,
+                        stdout_tail=stdout[-8000:],
+                        stderr_tail=stderr[-8000:],
+                    )
 
             return await bridge.execute(
                 session_id,
@@ -92,7 +95,7 @@ async def handle_tmux(payload, runtime):
                 pane_id=payload.get("pane_id"),
                 cwd=payload.get("cwd"),
                 env=payload.get("env"),
-                timeout=payload.get("timeout_seconds", 300),
+                timeout=payload.get("timeout_seconds", FOREGROUND_WAIT_SECONDS),
                 background=payload.get("background", False),
                 on_complete=completed,
             )
