@@ -38,6 +38,7 @@ const sidebars = {
         'guides/runtime-exec-security',
         'guides/multi-instance',
         'guides/telegram',
+        'guides/voice',
       ],
     },
     {

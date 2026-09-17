@@ -15,6 +15,10 @@ os.environ["DATA_ENCRYPTION_KEY"] = "test-data-key-with-32-bytes-minimum"
 os.environ["TOOL_FILE_READ_BASE_DIR"] = _test_storage.name
 os.environ.pop("SENTINEL_WORKSPACE_RUNTIME_SOCKET", None)
 
+# The runtime package has an import cycle that only resolves when the instance runtime
+# context loads before module registries. Anchor that order for every test module.
+import app.services.instance_runtime_context  # noqa: E402,F401
+
 
 @pytest.fixture(autouse=True)
 def _fake_runtime_manager_db(monkeypatch):

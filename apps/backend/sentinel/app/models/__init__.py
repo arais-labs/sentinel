@@ -9,12 +9,13 @@ from app.models.modules import (
     ModuleSecret,
 )
 from app.models.session_bindings import SessionBinding
-from app.models.sessions import Message, Session
+from app.models.sessions import Message, Session, SessionKind
 from app.models.sub_agents import SubAgentTask
 from app.models.system import SystemSetting
 from app.models.tool_approvals import SessionActionGrant, ToolApproval
 from app.models.triggers import Trigger, TriggerLog
 from app.models.workspaces import SessionRuntimeCleanup, Workspace
+from app.models.voice import VoiceTrace, VoiceTraceEvent
 
 __all__ = [
     "Module",
@@ -27,6 +28,9 @@ __all__ = [
     "Memory",
     "Message",
     "Session",
+    "SessionKind",
+    "VoiceTrace",
+    "VoiceTraceEvent",
     "Workspace",
     "SessionRuntimeCleanup",
     "SessionBinding",

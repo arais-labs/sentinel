@@ -7,7 +7,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Session, SessionBinding
+from app.models import Session, SessionBinding, SessionKind
 
 OWNER_ACTIVE_BINDING_TYPE = "owner_active"
 OWNER_ACTIVE_BINDING_KEY = "owner"
@@ -55,6 +55,7 @@ async def get_active_binding_session(
             SessionBinding.binding_key == binding_key,
             SessionBinding.is_active.is_(True),
             Session.parent_session_id.is_(None),
+            Session.kind == SessionKind.CHAT,
         )
     )
     return result.scalars().first()
@@ -200,6 +201,7 @@ async def _get_root_session(db: AsyncSession, *, user_id: str, session_id: UUID)
         select(Session).where(
             Session.id == session_id,
             Session.parent_session_id.is_(None),
+            Session.kind == SessionKind.CHAT,
         )
     )
     return result.scalars().first()
@@ -227,6 +229,7 @@ async def _root_sessions(
 ) -> list[Session]:
     query = select(Session).where(
         Session.parent_session_id.is_(None),
+        Session.kind == SessionKind.CHAT,
     )
     result = await db.execute(query)
     return result.scalars().all()

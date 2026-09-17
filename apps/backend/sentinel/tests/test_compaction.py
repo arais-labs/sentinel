@@ -7,9 +7,9 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.models import Message, Session, SessionSummary
 from app.services.sessions.compaction import CompactionService
-from sentral.llm.generic.base import LLMProvider
-from sentral.llm.generic.types import AgentEvent, AssistantMessage, TextContent
+from sentral.llm.generic.types import AssistantMessage, TextContent
 from tests.fake_db import FakeDB
+from tests.compaction_fixtures import HandoffProvider, handoff_response
 from tests.helpers import (
     install_fake_db_overrides,
     make_fake_instance_context,
@@ -21,33 +21,12 @@ def _run(coro):
     return asyncio.run(coro)
 
 
-class _NoopProvider(LLMProvider):
-    @property
-    def name(self) -> str:
-        return "noop"
-
-    async def chat(
-        self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None
-    ):
-        return AssistantMessage(
-            content=[TextContent(text='{"context_summary":"Summary of earlier turns"}')],
-            model=model,
-            provider=self.name,
-        )
-
-    async def stream(
-        self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None
-    ):
-        yield AgentEvent(type="start")
-        yield AgentEvent(type="done", stop_reason="stop")
-
-
 def test_compaction_create_idempotent():
     fake_db = FakeDB()
 
     fake_context = make_fake_instance_context(
         app_db=fake_db,
-        agent_runtime_support=SimpleNamespace(provider=_NoopProvider()),
+        agent_runtime_support=SimpleNamespace(provider=HandoffProvider()),
     )
     old_init = install_fake_db_overrides(app_db=fake_db, instance_context=fake_context)
 
@@ -105,7 +84,7 @@ def test_compaction_noop_when_context_is_small():
 
     fake_context = make_fake_instance_context(
         app_db=fake_db,
-        agent_runtime_support=SimpleNamespace(provider=_NoopProvider()),
+        agent_runtime_support=SimpleNamespace(provider=HandoffProvider()),
     )
     old_init = install_fake_db_overrides(app_db=fake_db, instance_context=fake_context)
 
@@ -176,7 +155,7 @@ def test_compaction_retains_coherent_recent_turn_not_just_last_10_rows():
         )
     )
 
-    service = CompactionService(provider=None)
+    service = CompactionService(provider=HandoffProvider())
     result = _run(service.compact_session(fake_db, session_id=session.id, user_id="dev-admin"))
     assert result.compacted is True
 
@@ -203,7 +182,7 @@ def test_compaction_preserves_full_history_and_prior_summary_and_failure_boundar
     import pytest
     from app.services.sessions.history import context_history
 
-    class Summarizer(_NoopProvider):
+    class Summarizer(HandoffProvider):
         prompts = []
         fail = False
 
@@ -214,7 +193,7 @@ def test_compaction_preserves_full_history_and_prior_summary_and_failure_boundar
                     content=[TextContent(text="invalid")], model=model, provider=self.name
                 )
             return AssistantMessage(
-                content=[TextContent(text='{"context_summary":"' + "retained detail " * 30 + '"}')],
+                content=[TextContent(text=handoff_response(messages))],
                 model=model,
                 provider=self.name,
             )
@@ -251,12 +230,14 @@ def test_compaction_preserves_full_history_and_prior_summary_and_failure_boundar
     previous = summary.summary["summary_text"]
     add_turns(6)
     _run(service.compact_session(db, session_id=session.id, user_id="local"))
-    assert previous in provider.prompts[-1]
+    import json
+
+    assert previous == json.loads(provider.prompts[-1])["previous_handoff"]
     saved = copy.deepcopy(summary.summary)
     add_turns(6)
     before = list(db.storage[Message])
     provider.fail = True
-    with pytest.raises(ValueError, match="empty summary"):
+    with pytest.raises(ValueError, match="Compaction failed"):
         _run(service.compact_session(db, session_id=session.id, user_id="local"))
     assert summary.summary == saved
     assert db.storage[Message] == before
@@ -302,6 +283,12 @@ def test_model_switch_preflight_reserves_output_and_uses_full_context():
         assert result["count_source"] == "unavailable"
         assert result["input_tokens"] is None
         assert result["requires_compaction"] is None
+        builder.build.return_value = []
+        provider.count_input_tokens.reset_mock()
+        result = client.post(path, json={"tier": "normal"}).json()
+        assert result["count_source"] == "empty"
+        assert result["requires_compaction"] is False
+        provider.count_input_tokens.assert_not_called()
         assert not db.storage.get(SessionSummary)
     finally:
         restore_test_app(old)

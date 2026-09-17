@@ -23,7 +23,8 @@ _BUILTIN_MODULE_NAMES = (
     "module_manager",
     "tasks",
     "documents",
-    "agent_messages",
+    "chats",
+    "conversation_history",
     "form",
     "notification",
 )

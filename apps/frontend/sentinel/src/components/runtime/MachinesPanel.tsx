@@ -167,7 +167,6 @@ export function MachinesPanel() {
       : machineForm.password;
     const body = {
       name: machineForm.name.trim(),
-      provider: 'ssh',
       host: machineForm.host.trim(),
       port: Number(machineForm.port || 22),
       username: machineForm.username.trim(),
@@ -190,10 +189,9 @@ export function MachinesPanel() {
       }
       setTestingMachine(true);
       try {
-        const { provider: _provider, ...testBody } = body;
         const result = await api.post<MachineTestResponse>(
           '/machines/test',
-          { ...testBody, auth_type: machineForm.auth_type },
+          { ...body, auth_type: machineForm.auth_type },
           { timeoutMs: 20_000 },
         );
         if (result.ok) {
@@ -226,7 +224,7 @@ export function MachinesPanel() {
     try {
       const target = isEditing
         ? await api.patch<Machine>(`/machines/${editingMachineId}`, body)
-        : await api.post<Machine>('/machines', body);
+        : await api.post<Machine>('/machines', { ...body, provider: 'ssh' });
       resetMachineForm();
       await fetchMachines();
       notify.success(isEditing ? 'Machine updated' : 'Machine saved');

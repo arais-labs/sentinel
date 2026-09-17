@@ -68,6 +68,16 @@ class FakeDB:
             obj.updated_at = now
         if hasattr(obj, "started_at") and getattr(obj, "started_at", None) is None:
             obj.started_at = now
+        # Scalar column defaults (status, kind, counters) apply on insert in a real DB.
+        for column in getattr(getattr(obj, "__table__", None), "columns", []):
+            default = column.default
+            if (
+                default is not None
+                and not callable(getattr(default, "arg", None))
+                and hasattr(obj, column.name)
+                and getattr(obj, column.name, None) is None
+            ):
+                setattr(obj, column.name, default.arg)
         self.storage[type(obj)].append(obj)
 
     async def delete(self, obj):

@@ -145,6 +145,8 @@ export function ProductTour({ instanceName, onClose }: { instanceName: string; o
                   ? 'Write, switch, organize'
                   : chapter === 'Your workspace'
                     ? 'Arrange, connect, navigate'
+                    : chapter === 'Voice'
+                      ? 'Set up, speak, coordinate'
                     : 'Inspect, tune, automate'}
               </small>
             </span>
@@ -194,7 +196,7 @@ export function ProductTour({ instanceName, onClose }: { instanceName: string; o
             <p>
               {summary
                 ? `${progress.verified.length} of ${total} actions verified in your workspace. ${remaining.length ? 'Skipped actions stay open, so you can return when the right chat or workspace is ready.' : 'You have practiced the controls and shortcuts in the actual app.'}`
-                : 'A hands-on introduction to your conversations, workspaces, and the work happening inside them. Try the controls yourself; the guide checks the result.'}
+                : 'A hands-on introduction to your conversations, workspace, Voice, and agent activity. Try the controls yourself; the guide checks the result.'}
             </p>
             {chapters}
             <div className="tour-invitation-note">

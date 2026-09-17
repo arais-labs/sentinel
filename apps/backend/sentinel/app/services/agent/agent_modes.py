@@ -4,12 +4,15 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
+from app.models.sessions import SessionKind
+
 from app.services.agent.policies import (
     AgentModePolicy,
     FULL_PERMISSION_POLICY,
     READ_ONLY_POLICY,
     CODE_REVIEW_POLICY,
     INTERACTIVE_OUTPUT_POLICY,
+    VOICE_POLICY,
 )
 
 
@@ -19,6 +22,7 @@ class AgentMode(StrEnum):
     READ_ONLY = "read_only"
     CODE_REVIEW = "code_review"
     INTERACTIVE_OUTPUT = "interactive_output"
+    VOICE = "voice"
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,6 +32,8 @@ class AgentModeDefinition:
     description: str
     auto_approve_tool_gates: bool
     policy: AgentModePolicy | None = None
+    # Modes a user may pick for a chat; Voice is assigned by the session kind.
+    selectable: bool = True
 
 
 _DEFAULT_AGENT_MODE = AgentMode.NORMAL
@@ -69,6 +75,14 @@ _AGENT_MODE_DEFINITIONS: tuple[AgentModeDefinition, ...] = (
         auto_approve_tool_gates=False,
         policy=INTERACTIVE_OUTPUT_POLICY,
     ),
+    AgentModeDefinition(
+        id=AgentMode.VOICE,
+        label="Voice",
+        description="The instance's Voice agent: spoken replies, full tools, on-screen approvals.",
+        auto_approve_tool_gates=False,
+        policy=VOICE_POLICY,
+        selectable=False,
+    ),
 )
 
 _AGENT_MODE_MAP: dict[AgentMode, AgentModeDefinition] = {
@@ -102,7 +116,14 @@ def get_agent_mode_definition(value: AgentMode | str | None) -> AgentModeDefinit
 
 
 def list_agent_mode_definitions() -> list[AgentModeDefinition]:
-    return list(_AGENT_MODE_DEFINITIONS)
+    return [item for item in _AGENT_MODE_DEFINITIONS if item.selectable]
+
+
+def effective_agent_mode(session_kind: str | None, requested: AgentMode | str | None) -> AgentMode:
+    """A Voice session always runs as Voice, whatever a client or queued message asks for."""
+    if session_kind == SessionKind.VOICE:
+        return AgentMode.VOICE
+    return parse_agent_mode(requested) or _DEFAULT_AGENT_MODE
 
 
 def normalize_agent_mode_value(value: AgentMode | str | None) -> str:

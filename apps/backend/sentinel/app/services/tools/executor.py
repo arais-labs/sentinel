@@ -83,7 +83,9 @@ class ToolExecutor:
             runtime_context.sub_agent_orchestrator = self._sub_agent_orchestrator
         if runtime_context.instance_name is None:
             runtime_context.instance_name = self._instance_name
-        validate_payload(tool.parameters_schema or {}, payload)
+        if runtime_context.agent_mode is None and agent_mode is not None:
+            runtime_context.agent_mode = str(getattr(agent_mode, "value", agent_mode))
+        validate_payload(tool.schema_for(runtime_context.agent_mode) or {}, payload)
         with runtime_db_session_factory(runtime_context.db_session_factory):
             mode_definition = get_agent_mode_definition(agent_mode)
             approved_metadata = await self._resolve_tool_approval(

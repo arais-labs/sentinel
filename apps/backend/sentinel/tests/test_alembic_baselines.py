@@ -28,8 +28,8 @@ def test_fresh_schema_matches_models(tmp_path, kind, metadata):
     path = tmp_path / f"{kind}.sqlite"
     config = migration_config(kind, path)
     scripts = ScriptDirectory.from_config(config)
-    assert scripts.get_heads() == [f"0001_{kind}_initial"]
-    assert len(list(scripts.walk_revisions())) == 1
+    assert scripts.get_bases() == [f"0001_{kind}_initial"]
+    assert len(scripts.get_heads()) == 1
     command.upgrade(config, "head")
     engine = create_engine(f"sqlite:///{path}")
     try:

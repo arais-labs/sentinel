@@ -23,11 +23,12 @@ from sqlalchemy import (
     func as sa_func,
 )
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from app.services.sessions.handoff import remap_summary_sources
 from sqlalchemy.orm import aliased, with_expression
 
 from app.config import settings
 from app.database import AsyncSessionLocal
-from app.models import Message, Session, SessionSummary, ToolApproval
+from app.models import Message, Session, SessionKind, SessionSummary, ToolApproval
 from app.models.session_bindings import SessionBinding
 from app.models.triggers import Trigger
 from sentral import (
@@ -37,7 +38,7 @@ from sentral import (
     RunTurnRequest,
     TextBlock,
 )
-from app.services.agent.agent_modes import AgentMode, get_default_agent_mode
+from app.services.agent.agent_modes import AgentMode, effective_agent_mode
 import app.services.agent_runtime_adapters.runtime as runtime_adapter_module
 from sentral.llm.ids import TierName
 from sentral.llm.model_limits import model_context
@@ -139,7 +140,7 @@ class SessionService:
         limit: int,
         offset: int,
     ) -> SessionPage:
-        query = select(Session)
+        query = select(Session).where(Session.kind == SessionKind.CHAT)
         if not include_sub_agents:
             query = query.where(Session.parent_session_id.is_(None))
         query = query.order_by(
@@ -248,6 +249,7 @@ class SessionService:
             )
         for summary in summaries:
             payload = deepcopy(summary.summary or {})
+            remap_summary_sources(payload, identifiers)
             boundary = payload.get("through_message_id")
             if boundary in identifiers:
                 payload["through_message_id"] = str(identifiers[boundary])
@@ -429,6 +431,7 @@ class SessionService:
                 Session.id == session_id,
                 Session.user_id == user_id,
                 Session.parent_session_id.is_(None),
+                Session.kind == SessionKind.CHAT,
                 (Session.initial_prompt.is_(None) | (Session.initial_prompt == "")),
                 Session.conversation_message_count == 0,
                 ~select(Message.id).where(Message.session_id == session_id).exists(),
@@ -451,6 +454,20 @@ class SessionService:
                     db.add(record)
             await db.commit()
             return deleted is not None
+
+    async def stop_session(self, db: AsyncSession, *, session_id: UUID, user_id: str) -> bool:
+        """Cancel pending steering before stopping the current generation."""
+        await self.get_session(db, session_id=session_id, user_id=user_id)
+        async with self._run_registry.idle_guard(str(session_id)):
+            self._run_registry.discard_steering(str(session_id))
+            result = await db.execute(
+                select(Message).where(Message.session_id == session_id, Message.role == "user")
+            )
+            for message in result.scalars().all():
+                if (message.metadata_json or {}).get("steering") == "pending":
+                    message.metadata_json = {**message.metadata_json, "steering": "cancelled"}
+            await db.commit()
+        return await self.stop_generation(db, session_id=session_id, user_id=user_id)
 
     async def stop_generation(
         self,
@@ -749,7 +766,7 @@ class SessionService:
         else:
             user_blocks_payload = [TextBlock(text=text)]
 
-        mode = agent_mode or get_default_agent_mode()
+        mode = effective_agent_mode(session.kind, agent_mode)
 
         runtime = runtime_adapter_module.SentinelLoopRuntimeAdapter(
             loop=self._agent_runtime_support,

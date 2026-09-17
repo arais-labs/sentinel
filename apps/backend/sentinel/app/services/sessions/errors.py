@@ -31,3 +31,11 @@ class ChatPayloadRequiredError(SessionServiceError):
 
 class SessionRenameNotAllowedError(SessionServiceError):
     """Session title cannot be changed for this session type."""
+
+
+class SteeringValidationError(SessionServiceError):
+    """Steering content or model selection is invalid."""
+
+
+class SteeringConflictError(SessionServiceError):
+    """A steering message ID is already owned by another message."""

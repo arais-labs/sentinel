@@ -100,8 +100,24 @@ Sentinel summarizes older context and keeps a coherent recent tail, recording a
 message boundary for future requests. **Original messages remain in the database
 and in the conversation history.** Compaction is not conversation deletion.
 
-The summary and boundary advance together. If the provider fails or returns an
-empty summary, the existing context is left unchanged. The context indicator
+The strongest configured tier on the selected provider creates a structured
+handoff, then a separate model call checks it against the source. The current
+chat model is the fallback. Large histories are processed in bounded batches,
+carrying the complete handoff forward. Every continuation receives its constraints,
+decisions, workstreams, observed results, next steps and reporting obligations—not
+just an overview paragraph. Compaction may take multiple model calls; their usage
+is recorded separately, including returned responses from rejected attempts.
+
+Handoff facts cite original message UUIDs. The read-only `conversation_history`
+tool can search the current session's original text and tool arguments, or read a
+cited message with neighboring messages. Long messages are paginated, not silently
+truncated. It cannot access other sessions. Historical evidence is not a new
+instruction or permission to replay an action.
+
+The summary and boundary advance together only after schema, citation and quality
+checks pass and the source snapshot still matches. If generation or verification
+fails, the existing context is left unchanged. Legacy summaries are upgraded from
+their original history. The context indicator
 reflects provider usage when available; a previous pre-compaction request is not
 a measurement of the newly compacted context.
 

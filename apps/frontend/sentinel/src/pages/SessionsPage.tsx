@@ -1,4 +1,5 @@
 import { useSubAgentApprovals } from '../components/session/useSubAgentApprovals';
+import { hasMeaningfulToolArguments, mergeStreamingToolArguments, serializeToolArguments } from '../lib/tool-arguments';
 import { RetainedSessionContext } from '../lib/workspace-context-values';
 import { SessionPermissions } from '../components/session/SessionPermissions';
 import { SESSION_PERMISSIONS_CHANGED, type ApprovalScope } from '../lib/approvals';
@@ -13,10 +14,13 @@ import '../components/session/chat-header.css';
 import '../components/session/session-activity.css';
 import { ComposerActivityPills } from '../components/session/ComposerActivityPills';
 import { ComposerTerminalPills } from '../components/session/ComposerTerminalPills';
+import { ComposerDictation } from '../components/session/ComposerDictation';
 import { StreamToolCard } from '../components/session/StreamToolCard';
 import { WorkspaceRuntimeStats, WorkspaceMetricsProvider } from '../components/session/WorkspaceRuntimeStats';
 import { ModelSwitchDialog } from '../components/session/ModelSwitchDialog';
-import { SessionModelControls, type SessionModelChoice } from '../components/session/SessionModelControls';
+import { SessionModelControls, SessionTierOptions, providerLabel } from '../components/session/SessionModelControls';
+import { resolveModelSelection, type SessionModelChoice } from '../lib/model-selection';
+import { useModelCatalog } from '../hooks/useModelCatalog';
 import { isSessionRunActive } from '../lib/session-stream';
 import { WorkspaceAttachment } from '../components/session/WorkspaceAttachment';
 import { EmptySessionLogo } from '../components/session/EmptySessionLogo';
@@ -92,7 +96,6 @@ import type {
   MessageAttachment,
   MessageListResponse,
   ModelOption,
-  ModelsResponse,
   Session,
   SessionContextUsage,
   SessionListResponse,
@@ -275,16 +278,6 @@ function parseTier(value: string | null): ModelOption['tier'] | null {
   return null;
 }
 
-function serializeToolArguments(value: unknown): string {
-  if (value == null) return '';
-  if (typeof value === 'string') return value;
-  try {
-    return JSON.stringify(value, null, 2);
-  } catch {
-    return String(value);
-  }
-}
-
 function toolArgumentsFromToolResultPayload(payload: Record<string, unknown>): string {
   const fromPayload = payload.tool_arguments;
   if (fromPayload != null) {
@@ -297,34 +290,6 @@ function toolArgumentsFromToolResultPayload(payload: Record<string, unknown>): s
   return '';
 }
 
-function hasMeaningfulToolArguments(raw: string): boolean {
-  const trimmed = raw.trim();
-  if (!trimmed) return false;
-  if (trimmed === '{}' || trimmed === 'null') return false;
-  return true;
-}
-
-function mergeStreamingToolArguments(current: string, delta: string): string {
-  if (!delta) return current;
-  const trimmedCurrent = current.trim();
-  const trimmedDelta = delta.trim();
-
-  if (!hasMeaningfulToolArguments(current) || trimmedCurrent === '{}') {
-    return delta;
-  }
-
-  const currentLooksCompleteJson =
-    (trimmedCurrent.startsWith('{') && trimmedCurrent.endsWith('}')) ||
-    (trimmedCurrent.startsWith('[') && trimmedCurrent.endsWith(']'));
-  const deltaLooksLikeFreshJson =
-    trimmedDelta.startsWith('{') || trimmedDelta.startsWith('[');
-
-  if (currentLooksCompleteJson && deltaLooksLikeFreshJson) {
-    return delta;
-  }
-
-  return `${current}${delta}`;
-}
 
 function isSyntheticToolCallId(id: string): boolean {
   const normalized = id.trim().toLowerCase();
@@ -393,7 +358,8 @@ export function SessionsPage() {
 
   const [pendingFirstMessage, setPendingFirstMessage] = useState<{ instance: string; session: string; payload: unknown } | null>(null);
 
-  const [models, setModels] = useState<ModelOption[]>([]);
+  const [runSettingsOpen, setRunSettingsOpen] = useState(false);
+  const { models, default_tier: defaultTier } = useModelCatalog(activeInstanceName, viewVisible, runSettingsOpen);
   const [agentModes, setAgentModes] = useState<AgentModeOption[]>([]);
   const [selectedAgentMode, setSelectedAgentMode] = useState<string | null>(() => {
     const raw = localStorage.getItem(AGENT_MODE_STORAGE_KEY);
@@ -406,19 +372,17 @@ export function SessionsPage() {
     try { return JSON.parse(localStorage.getItem('sentinel-session-model-choices') ?? '{}'); } catch { return {}; }
   });
   const modelChoiceKey = `${activeInstanceName ?? ''}:${activeSessionId ?? 'new'}`;
-  const selectedChoice = sessionModelChoices[modelChoiceKey]?.[selectedTier] ?? {};
+  const activeModelOption = models.find(model => model.tier === selectedTier);
+  const { choice: selectedChoice, provider: selectedProviderOption } = resolveModelSelection(activeModelOption, sessionModelChoices[modelChoiceKey]?.[selectedTier] ?? {});
   const [modelPreview, setModelPreview] = useState<{ key: string; tier: ModelOption['tier']; choice: SessionModelChoice } | null>(null);
   const modelCheckSequence = useRef(0);
   const visiblePreview = modelPreview?.key === modelChoiceKey ? modelPreview : null;
   const displayedTier = visiblePreview?.tier ?? selectedTier;
   const displayedChoice = visiblePreview?.choice ?? selectedChoice;
-  const activeModelOption = models.find(model => model.tier === selectedTier);
-  const selectedProviderOption = activeModelOption?.provider_options?.find(option => option.provider_id === selectedChoice.provider_id) ?? activeModelOption?.provider_options?.[0];
   useEffect(() => { localStorage.setItem('sentinel-session-model-choices', JSON.stringify(sessionModelChoices)); }, [sessionModelChoices]);
   const [isAgentModeDropdownOpen, setIsAgentModeDropdownOpen] = useState(false);
   const [isMaxDropdownOpen, setIsMaxDropdownOpen] = useState(false);
   const [isEffortDropdownOpen, setIsEffortDropdownOpen] = useState(false);
-  const [runSettingsOpen, setRunSettingsOpen] = useState(false);
   const runSettingsTrigger = useRef<HTMLButtonElement>(null);
   const runSettingsControlRef = useRef<HTMLDivElement>(null);
   const runSettingsMenu = useRef<HTMLDivElement>(null);
@@ -439,6 +403,7 @@ export function SessionsPage() {
   const [hasMoreMessages, setHasMoreMessages] = useState(false);
   const [isPinnedToBottom, setIsPinnedToBottom] = useState(true);
   const [composer, setComposer] = useState('');
+  const [dictating, setDictating] = useState(false);
   const [composerAttachments, setComposerAttachments] = useState<MessageAttachment[]>([]);
   const [retryCandidate, setRetryCandidate] = useState<{ messageId: string; error: string } | null>(null);
   const [retryingMessageId, setRetryingMessageId] = useState<string | null>(null);
@@ -914,7 +879,6 @@ export function SessionsPage() {
 
   useEffect(() => {
     void fetchSessions({ autoSelectIfEmpty: true });
-    void fetchModels();
     void fetchAgentModes();
     // Live-view + runtime-status fetching (incl. the session-change re-fetch, the
     // booting poll, and the desktop-visibility status refresh) is owned by
@@ -1056,26 +1020,11 @@ export function SessionsPage() {
     }
   }
 
-  async function fetchModels() {
-    try {
-      const payload = await api.get<ModelsResponse>('/models');
-      setModels(payload.models);
-      if (payload.models.length === 0) return;
-      const availableTiers = new Set(payload.models.map((m) => m.tier));
-      const saved = parseTier(localStorage.getItem('sentinel-selected-tier'));
-      if (!saved) {
-        if (payload.default_tier) {
-          setSelectedTier(payload.default_tier);
-        }
-      } else if (!availableTiers.has(saved)) {
-        if (payload.default_tier) {
-          setSelectedTier(payload.default_tier);
-        }
-      }
-    } catch {
-      setModels([]);
-    }
-  }
+  useEffect(() => {
+    if (!models.length || !defaultTier) return;
+    const saved = parseTier(localStorage.getItem('sentinel-selected-tier'));
+    if (!saved || !models.some(model => model.tier === saved)) setSelectedTier(defaultTier);
+  }, [models, defaultTier]);
 
   async function fetchAgentModes() {
     try {
@@ -1109,7 +1058,8 @@ export function SessionsPage() {
 
   async function switchModel(tier: ModelOption['tier'], approved = false, requestedChoice?: SessionModelChoice) {
     const savedChoice = sessionModelChoices[modelChoiceKey]?.[tier] ?? {};
-    const choice = requestedChoice ?? { ...savedChoice, provider_id: displayedChoice.provider_id ?? savedChoice.provider_id };
+    const target = models.find(model => model.tier === tier);
+    const { choice, provider } = resolveModelSelection(target, requestedChoice ?? { ...savedChoice, provider_id: displayedChoice.provider_id ?? savedChoice.provider_id });
     const requestId = ++modelCheckSequence.current;
     const apply = () => {
       setSelectedTier(tier);
@@ -1118,15 +1068,13 @@ export function SessionsPage() {
       setModelPreview(null);
     };
     const sessionId = activeSessionId;
-    const target = models.find(model => model.tier === tier);
-    const provider = target?.provider_options?.find(option => option.provider_id === choice.provider_id) ?? target?.provider_options?.[0];
-    if (!provider?.supports_fast_mode) choice.fast_mode = false;
+    if (!provider) { apply(); return; }
     const speedOnly = tier === selectedTier && provider?.provider_id === selectedProviderOption?.provider_id && choice.reasoning_level === selectedChoice.reasoning_level;
     if (speedOnly) { apply(); return; }
     // Codex handles a real overflow through native compaction during generation.
     // Its OAuth transport does not offer preflight counts; unknown is not overflow.
-    const codexToCodex = selectedProviderOption?.provider_id === 'openai-codex' && provider?.provider_id === 'openai-codex';
-    if (approved || !sessionId || codexToCodex) { apply(); return; }
+    const nativeCodexContext = provider.provider_id === 'openai-codex' && (!selectedProviderOption || selectedProviderOption.provider_id === 'openai-codex');
+    if (approved || !sessionId || nativeCodexContext) { apply(); return; }
     setModelPreview({ key: modelChoiceKey, tier, choice });
     setModelSwitch(null);
     try {
@@ -1482,7 +1430,16 @@ export function SessionsPage() {
     });
   }
 
+  function requireModelSelection() {
+    if (selectedProviderOption) return true;
+    notify.error(selectedChoice.provider_id ? `${providerLabel(selectedChoice.provider_id)} is unavailable. Choose a provider in Run settings.` : 'Choose a configured provider in Run settings.');
+    setRunSettingsOpen(true);
+    setIsEffortDropdownOpen(true);
+    return false;
+  }
+
   async function retryFailedMessage(message: Message) {
+    if (!requireModelSelection()) return;
     if (!activeSessionId) return;
     const fallbackError = retryCandidate?.messageId === message.id ? retryCandidate.error : 'Retry failed';
     setRetryingMessageId(message.id);
@@ -1507,9 +1464,9 @@ export function SessionsPage() {
     try {
       await api.post<{ status: string }>(`/sessions/${activeSessionId}/messages/${message.id}/retry`, {
         tier: selectedTier,
-        provider_id: selectedProviderOption?.provider_id ?? null,
+        provider_id: selectedChoice.provider_id ?? null,
         reasoning_level: selectedChoice.reasoning_level ?? null,
-        fast_mode: !!selectedChoice.fast_mode && !!selectedProviderOption?.supports_fast_mode,
+        fast_mode: !!selectedChoice.fast_mode,
         agent_mode: selectedAgentMode ?? null,
         max_iterations: maxIterations,
       });
@@ -2049,8 +2006,10 @@ export function SessionsPage() {
 
   async function sendMessage(event: FormEvent) {
     event.preventDefault();
+    if (dictating) return;
     const content = composer.trim();
     if ((!content && composerAttachments.length === 0) || sendingSteeringRef.current || creatingChat || creatingChatRef.current || !activeInstanceName || isCompacting || streaming.isCompactingContext) return;
+    if (!requireModelSelection()) return;
     const steeringKey = JSON.stringify([activeInstanceName, activeSessionId, content, composerAttachments]);
     if (activeSessionId && (streamBusy || steeringSubmissionRef.current?.key === steeringKey)) {
       sendingSteeringRef.current = true;
@@ -2542,61 +2501,8 @@ export function SessionsPage() {
 
                         className="run-settings-options"
                       >
-                        <SessionModelControls models={models} tier={displayedTier} choice={displayedChoice} disabled={streamBusy} onSelect={(tier, choice) => void switchModel(tier, false, Object.keys(choice).length ? choice : undefined)}>
-                        {models.map(m => {
-                          const active = displayedTier === m.tier;
-                          const providerOption = m.provider_options?.find(option => option.provider_id === displayedChoice.provider_id) ?? m.provider_options?.[0];
-                          const tier = m.tier ?? 'normal';
-                          const TierIcon = {
-                            fast: Zap,
-                            normal: Sparkles,
-                            hard: Brain,
-                          }[tier as string] || Activity;
-
-                          const tierColor = {
-                            fast: 'text-emerald-500',
-                            normal: 'text-sky-500',
-                            hard: 'text-rose-500',
-                          }[tier as string] || 'text-(--text-muted)';
-
-                          return (
-                            <button
-                              key={m.tier}
-                              disabled={streamBusy}
-                              onClick={() => { void switchModel(m.tier); }}
-                              className={`w-full flex items-start gap-3.5 px-4 py-3 transition-all text-left group ${
-                                active
-                                  ? 'bg-(--accent-solid) text-(--app-bg)'
-                                  : 'hover:bg-(--surface-1)'
-                              }`}
-                            >
-                              <div className={`mt-0.5 shrink-0 transition-transform group-hover:scale-110 duration-200 ${active ? 'text-(--app-bg) opacity-90' : tierColor}`}>
-                                <TierIcon size={14} />
-                              </div>
-                              <div className="flex flex-col gap-0.5 min-w-0">
-                                <div className={`text-[10px] font-bold uppercase tracking-widest ${active ? 'text-(--app-bg)' : 'text-(--text-primary)'}`}>
-                                  {m.label}
-                                </div>
-                                <div className={`text-[9px] font-medium leading-tight ${active ? 'text-(--app-bg) opacity-70' : 'text-(--text-muted)'}`}>
-                                  {m.description}
-                                </div>
-                                {m.primary_provider_id && (
-                                  <div className="mt-2 flex items-center gap-1.5">
-                                    <span className={`text-[8px] font-mono px-1 rounded uppercase tracking-wider ${active ? 'bg-(--app-bg)/10 text-(--app-bg) border border-(--app-bg)/20' : 'bg-(--surface-2) text-(--text-secondary) border border-(--border-subtle)'}`}>
-                                      {providerOption?.provider_id ?? m.primary_provider_id}
-                                    </span>
-                                    <span className={`text-[8px] font-mono truncate tracking-tight ${active ? 'text-(--app-bg) opacity-80' : 'text-(--text-secondary)'}`}>
-                                      {providerOption?.model ?? m.primary_model_id}
-                                    </span>
-                                  </div>
-                                )}
-                              </div>
-                              {active && (
-                                <div className="ml-auto w-1 h-6 rounded-full bg-(--app-bg)/20 my-auto shadow-xs" />
-                              )}
-                            </button>
-                          );
-                        })}
+                        <SessionModelControls models={models} tier={displayedTier} choice={displayedChoice} disabled={isCompacting || streaming.isCompactingContext} onSelect={(tier, choice) => void switchModel(tier, false, Object.keys(choice).length ? choice : undefined)}>
+                        <SessionTierOptions models={models} tier={displayedTier} choice={displayedChoice} disabled={isCompacting || streaming.isCompactingContext} onSelect={tier => { void switchModel(tier); }} />
                         </SessionModelControls>
                       </div>
                   )}
@@ -2843,7 +2749,7 @@ export function SessionsPage() {
             <ConversationNavigator key={activeSessionId ?? 'draft'} scrollRef={scrollRef} revision={chatTimeline} />
 
             {activeForm && <AgentForm key={activeForm.form_id} form={activeForm} disabled={streamBusy} onSubmit={response => {
-              if (streamBusy || !isStreamOpen()) return false;
+              if (streamBusy || !isStreamOpen() || !requireModelSelection()) return false;
               return sendStreamMessage({ type: 'message', content: 'Form answers', form_response: response, tier: selectedTier, ...selectedChoice, max_iterations: maxIterations, agent_mode: selectedAgentMode ?? undefined });
             }} />}
 
@@ -2923,7 +2829,7 @@ export function SessionsPage() {
                         onKeyDown={(e) => {
                           if (e.key === 'Enter' && !e.shiftKey) {
                             e.preventDefault();
-                            sendMessage(e as any);
+                            if (!dictating) sendMessage(e as any);
                           }
                         }}
                         disabled={!activeInstanceName || creatingChat || isCompacting || streaming.isCompactingContext}
@@ -2942,13 +2848,18 @@ export function SessionsPage() {
                           <Paperclip size={16} />
                           <span>Attach</span>
                         </button>
+                        <ComposerDictation key={`${activeInstanceName}:${activeSessionId ?? 'new'}`}
+                          instance={activeInstanceName ?? ''}
+                          disabled={!activeInstanceName || !viewVisible || creatingChat || isCompacting || streaming.isCompactingContext}
+                          onBusy={setDictating}
+                          onText={text => { setComposer(value => `${value}${value && !/\s$/.test(value) ? ' ' : ''}${text}`); composerRef.current?.focus(); }} />
                         <div className="chat-composer-actions">
                           <span className="chat-composer-shortcuts"><kbd>↵</kbd> {streamBusy ? 'Steer' : 'Send'} <span>·</span> <kbd>⇧ ↵</kbd> New line</span>
                           <button
                               type={stopVisible ? 'button' : 'submit'}
                               onClick={stopVisible ? stopCurrent : undefined}
                               aria-label={stopVisible ? (isStopping ? 'Stopping generation' : 'Stop generation') : creatingChat ? 'Starting chat' : streamBusy ? 'Steer agent' : 'Send message'}
-                              disabled={stopVisible ? isStopping : !activeInstanceName || creatingChat || sendingSteering || isCompacting || streaming.isCompactingContext || (composer.trim().length === 0 && composerAttachments.length === 0)}
+                              disabled={stopVisible ? isStopping : dictating || !activeInstanceName || creatingChat || sendingSteering || isCompacting || streaming.isCompactingContext || (composer.trim().length === 0 && composerAttachments.length === 0)}
                               className="chat-composer-send"
                               data-running={stopVisible || undefined}
                               data-stopping={isStopping || undefined}

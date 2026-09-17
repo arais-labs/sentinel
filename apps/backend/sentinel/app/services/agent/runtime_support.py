@@ -118,7 +118,7 @@ class SentinelRuntimeSupport:
             agent_mode=agent_mode,
             **context_options,
         )
-        tools = self.tool_registry.list_schemas()
+        tools = self.tool_registry.list_schemas(agent_mode)
         return PreparedRuntimeTurnContext(
             messages=messages,
             tools=tools,

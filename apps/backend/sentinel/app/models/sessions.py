@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from sqlalchemy import JSON, ForeignKey, Integer, String, Text, Uuid, func, text
@@ -9,6 +10,14 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
 from app.models.column_types import UTCDateTime
+
+
+class SessionKind(StrEnum):
+    # Chats are listed and owned by the user; the Voice session is the instance's
+    # single Voice agent and is never shown as a chat.
+    CHAT = "chat"
+    VOICE = "voice"
+
 
 if TYPE_CHECKING:
     from app.models.memory import SessionSummary
@@ -38,6 +47,12 @@ class Session(Base):
     latest_system_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(
         String(20), default="active", server_default=text("'active'"), index=True
+    )
+    kind: Mapped[str] = mapped_column(
+        String(16),
+        default=SessionKind.CHAT,
+        server_default=text(f"'{SessionKind.CHAT}'"),
+        index=True,
     )
     started_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=func.now())
     ended_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)

@@ -1,7 +1,7 @@
 {
   "name": "sentinel-desktop",
   "private": true,
-  "version": "2.0.4",
+  "version": "2.1.0",
   "description": "Sentinel desktop management app",
   "type": "module",
   "main": "dist/main/main.js",
@@ -46,6 +46,9 @@
     ],
     "extraResources": [],
     "mac": {
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "Sentinel uses the microphone in the Voice pane to control your chats with speech."
+      },
       "category": "public.app-category.developer-tools",
       "icon": "assets/icon.png",
       "target": [

@@ -43,6 +43,7 @@ test('machine runtime actions match state and preserve both Sentinel themes', { 
     const names = ['mac-primary', 'mac-new', 'mac-recovery', 'mac-current'];
     const calls = [];
     const installs = [];
+    const credentialUpdates = [];
     let verifyFails = false;
     let identityChanged = false;
     let requireNewApproval = false;
@@ -53,6 +54,19 @@ test('machine runtime actions match state and preserve both Sentinel themes', { 
       calls.push({ method: request.method(), pathname });
       const id = pathname.split('/')[4];
       let payload;
+      if (request.method() === 'PATCH' && pathname.includes('/machines/')) {
+        const body = request.postDataJSON();
+        credentialUpdates.push(body);
+        // The update schema forbids provider: it is only accepted on creation.
+        await route.fulfill(Object.hasOwn(body, 'provider')
+          ? { status: 422, json: { detail: 'Request validation failed' } }
+          : { json: { id, ...body } });
+        return;
+      }
+      if (pathname.endsWith('/machines/test')) {
+        await route.fulfill({ json: { ok: true, detail: 'Machine is reachable.' } });
+        return;
+      }
       if (pathname.endsWith('/runtime/verify') && verifyFails) {
         await route.fulfill({ status: 502, json: { detail: 'Runtime verification unavailable' } });
         return;
@@ -164,6 +178,22 @@ test('machine runtime actions match state and preserve both Sentinel themes', { 
     await dialog.getByRole('heading', {name: 'Runtime ready'}).waitFor();
     assert.deepEqual(installs[2].approved_workspaces, ['second-workspace']);
     await dialog.getByRole('button', {name: 'Done'}).click();
+    await current.getByRole('button', {name: 'Edit machine'}).click();
+    await page.locator('input[type="password"]').fill('replacement-test-password');
+    await page.getByRole('button', {name: 'Test connection', exact: true}).click();
+    const save = page.getByRole('button', {name: 'Save changes', exact: true});
+    await page.waitForFunction(() => [...document.querySelectorAll('button')]
+      .some(button => button.textContent.trim() === 'Save changes' && !button.disabled));
+    await save.click();
+    await save.waitFor({state: 'hidden'});
+    assert.deepEqual(credentialUpdates, [{name: 'mac-current', host: '192.0.2.10',
+      port: 22, username: 'tester', auth_type: 'password', password: 'replacement-test-password'}]);
+    // A metadata-only save must keep the existing secret untouched.
+    await current.getByRole('button', {name: 'Edit machine'}).click();
+    await save.click();
+    await save.waitFor({state: 'hidden'});
+    assert.deepEqual(credentialUpdates[1], {name: 'mac-current', host: '192.0.2.10',
+      port: 22, username: 'tester'});
     assert.deepEqual(errors, []);
   } finally { await browser?.close(); await server.close(); }
 });

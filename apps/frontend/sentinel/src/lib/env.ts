@@ -5,7 +5,7 @@ export const SESSION_DEBUG_PANEL_ENABLED = rawSessionDebugPanel === '1' || rawSe
 
 export const WS_BASE_URL = 'sentinel://app';
 
-export const APP_VERSION = '2.0.4';
+export const APP_VERSION = '2.1.0';
 
 export function wsSessionsBaseUrl(instanceName: string): string {
   return `${WS_BASE_URL}/ws/instances/${encodeURIComponent(instanceName)}/sessions`;

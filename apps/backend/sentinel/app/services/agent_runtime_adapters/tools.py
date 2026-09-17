@@ -154,7 +154,7 @@ class SentinelToolRegistryAdapter(RuntimeToolRegistry):
         return RuntimeToolDefinition(
             name=tool.name,
             description=tool.description,
-            parameters_schema=tool.parameters_schema,
+            parameters_schema=tool.schema_for(self._agent_mode),
             enabled=tool.enabled,
             execute=_execute,
         )

@@ -86,6 +86,18 @@ test('layout retains panels, positions, sizes and focus across refresh and brows
     await page.reload();
     await page.waitForFunction(() => window.layoutTest).catch(error => { throw new Error(errors.join('\n') || error.message); });
     assert.deepEqual(await page.evaluate(() => window.layoutTest.snapshot()), normalized);
+    // Existing Voice panels disappear without disturbing the remaining layout.
+    const legacyVoice = structuredClone(normalized);
+    const oldVoiceId = Object.keys(legacyVoice.panels)[0];
+    legacyVoice.panels[oldVoiceId].params = {...legacyVoice.panels[oldVoiceId].params, tabId:'voice'};
+    await page.evaluate(layout => sessionStorage.setItem('legacy-focus-layout', JSON.stringify(layout)), legacyVoice);
+    await page.reload();
+    await page.waitForFunction(() => window.layoutTest);
+    const migrated = await page.evaluate(() => window.layoutTest.snapshot());
+    assert.equal(migrated.panels[oldVoiceId], undefined);
+    for (const [id, panel] of Object.entries(normalized.panels)) {
+      if (id !== oldVoiceId) assert.deepEqual(migrated.panels[id], panel);
+    }
     await page.evaluate(() => window.layoutTest.closeAll());
     await page.reload();
     await page.waitForFunction(() => window.layoutTest).catch(error => { throw new Error(errors.join('\n') || error.message); });

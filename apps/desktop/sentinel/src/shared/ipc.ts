@@ -88,7 +88,17 @@ export interface SessionCompletion { sessionId: string; completionId: string | n
 
 export interface PendingFormWindow { sessionId: string; formId: string; title: string; }
 
+export interface MicrophonePermission {
+  status: 'not-determined' | 'granted' | 'denied' | 'restricted' | 'unknown';
+  platform: string;
+  appName: string;
+  canOpenSettings: boolean;
+}
+
 export interface DesktopApi {
+  getMicrophonePermission(): Promise<MicrophonePermission>;
+  requestMicrophonePermission(): Promise<MicrophonePermission>;
+  openMicrophoneSettings(): Promise<void>;
   getNotifications(): Promise<AppNotification[]>;
   publishNotification(input: NotificationInput): Promise<AppNotification>;
   onNotificationPublished(listener: (publication: NotificationPublication) => void): () => void;
@@ -130,6 +140,9 @@ export interface DesktopApi {
 }
 
 export const IPC = {
+  getMicrophonePermission: 'desktop:getMicrophonePermission',
+  requestMicrophonePermission: 'desktop:requestMicrophonePermission',
+  openMicrophoneSettings: 'desktop:openMicrophoneSettings',
   getNotifications: 'desktop:getNotifications',
   publishNotification: 'desktop:publishNotification',
   notificationPublished: 'desktop:notificationPublished',

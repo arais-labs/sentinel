@@ -7,7 +7,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Session
+from app.models import Session, SessionKind
 
 
 class AgentMessageRouteError(ValueError):
@@ -102,6 +102,7 @@ async def _get_root_session(
         select(Session).where(
             Session.id == session_id,
             Session.parent_session_id.is_(None),
+            Session.kind == SessionKind.CHAT,
         )
     )
     return result.scalars().first()

@@ -8,6 +8,7 @@ from app.services.sessions.compaction import CompactionService
 from sentral.llm.generic.base import LLMProvider
 from sentral.llm.generic.types import AgentEvent, AssistantMessage, TextContent, TokenUsage
 from tests.fake_db import FakeDB
+from tests.compaction_fixtures import handoff_response
 
 
 def _run(coro):
@@ -22,14 +23,12 @@ class _MockSummaryProvider(LLMProvider):
     def name(self) -> str:
         return "mock-summary"
 
-    async def chat(self, messages, model, tools=None, temperature=0.7, reasoning_config=None):
+    async def chat(
+        self, messages, model, tools=None, temperature=0.7, reasoning_config=None, tool_choice=None
+    ):
         self.calls.append({"messages": messages, "model": model, "temperature": temperature})
         return AssistantMessage(
-            content=[
-                TextContent(
-                    text='{"key_decisions":["A"],"tool_results":["B"],"open_tasks":["C"],"context_summary":"Compact summary"}'
-                )
-            ],
+            content=[TextContent(text=handoff_response(messages))],
             model="mock",
             provider="mock",
             usage=TokenUsage(input_tokens=10, output_tokens=20),
@@ -67,27 +66,26 @@ def test_compaction_uses_llm_structured_summary_when_provider_available():
 
     assert result.compacted is True
     assert provider.calls
-    assert provider.calls[0]["model"] == "fast"
-    assert provider.calls[0]["temperature"] == 0.3
+    assert provider.calls[0]["model"] == "hard"
+    assert provider.calls[0]["temperature"] == 0.2
+    assert len(provider.calls) == 2
 
     summary = db.storage[SessionSummary][0]
-    assert summary.summary["key_decisions"] == ["A"]
-    assert summary.summary["tool_results"] == ["B"]
-    assert summary.summary["open_tasks"] == ["C"]
-    assert summary.summary["context_summary"] == "Compact summary"
+    assert summary.summary["schema_version"] == 2
+    assert summary.summary["handoff"]["decisions"]
+    assert "Preserved engineering detail" in summary.summary["summary_text"]
 
 
-def test_compaction_falls_back_without_provider():
+def test_compaction_without_provider_does_not_replace_history_with_truncated_bullets():
+    import pytest
+
     db = FakeDB()
     session = _seed_session_with_messages(db, count=14)
     service = CompactionService(provider=None)
 
-    result = _run(service.compact_session(db, session_id=session.id, user_id="dev-admin"))
-    assert result.compacted is True
-
-    summary = db.storage[SessionSummary][0]
-    assert "summary_text" in summary.summary
-    assert "message" in summary.summary["summary_text"]
+    with pytest.raises(ValueError, match="configured model"):
+        _run(service.compact_session(db, session_id=session.id, user_id="dev-admin"))
+    assert not db.storage[SessionSummary]
 
 
 def test_context_builder_includes_session_summary_when_available():

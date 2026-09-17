@@ -59,6 +59,23 @@ of the agent's target. When multiple panes exist, `exec` requires `pane_id`.
 Omit `cwd` to retain the shell's current directory. An explicit `cwd` refers to a
 path inside the container.
 
+`exec` waits up to **20 seconds** for a result. Longer commands automatically
+continue in the background, returning `job_id`, `pane_id` and `window_id` with
+`status: running`. Set `background: true` to return immediately, or
+`timeout_seconds` below 20 to shorten the wait. Larger timeout values are accepted
+but do not extend the foreground wait.
+
+The command is not restarted or killed at handoff. Its pane stays busy until the
+command finishes, and Sentinel delivers the result through the existing background
+job system notice, waking the agent if idle. Do not poll or rerun the command to
+wait for completion; use another pane for independent work. `timeout_seconds` is
+not a process execution deadline.
+
+Monitoring belongs to the backend runtime manager, not the open terminal view or
+the agent's current tool wait. Closing the view or interrupting that wait does not
+cancel the watcher. Backend shutdown/runtime teardown ends monitoring; completion
+notifications are not durable across a backend restart.
+
 Several sessions may share the same workspace files and installed tools. Each
 session has its own tmux session; a workspace is not a separate checkout for each
 agent. Coordinate concurrent edits or use separate Git worktrees.

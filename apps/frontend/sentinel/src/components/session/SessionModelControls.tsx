@@ -1,18 +1,18 @@
-import { Zap } from 'lucide-react';
+import { Zap, Server, Sparkles, Brain } from 'lucide-react';
 import { ReasoningFluid, reasoningColor } from './ReasoningFluid';
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode, type PointerEvent } from 'react';
 import type { ModelOption } from '../../types/api';
+import { resolveModelSelection, type ReasoningLevel, type SessionModelChoice } from '../../lib/model-selection';
 import claudeLogo from '../../assets/provider-logos/claude.svg?raw';
 import openaiLogo from '../../assets/provider-logos/openai.svg?raw';
 import geminiLogo from '../../assets/provider-logos/gemini.svg?raw';
 import './session-model-controls.css';
 
-export type ReasoningLevel = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
-export type SessionModelChoice = { provider_id?: string; reasoning_level?: ReasoningLevel; fast_mode?: boolean };
-export const providerLabel = (id?: string) => ({ anthropic: 'Claude', openai: 'OpenAI', 'openai-codex': 'Codex', gemini: 'Gemini' }[id ?? ''] ?? 'Default provider');
+export const providerLabel = (id?: string) => ({ anthropic: 'Claude', openai: 'OpenAI', 'openai-codex': 'Codex', gemini: 'Gemini', ollama: 'Ollama' }[id ?? ''] ?? 'Default provider');
 const levelLabel = (level: string) => level === 'xhigh' ? 'X-high' : level.charAt(0).toUpperCase() + level.slice(1);
 
 export function ProviderLogo({ id }: { id?: string }) {
+  if (id === 'ollama') return <Server size={16} aria-hidden="true" />;
   const source = id === 'anthropic' ? claudeLogo : id === 'gemini' ? geminiLogo : openaiLogo;
   return <span aria-hidden="true" className="session-provider-logo" dangerouslySetInnerHTML={{ __html: source }} />;
 }
@@ -108,23 +108,26 @@ function Slider({ label, labels, value, disabled, defaultLabel, onSelect }: {
   </div>;
 }
 
-export function SessionModelControls({ models, tier, choice, disabled, onSelect, children }: {
+export function SessionModelControls({ models, tier, choice, disabled, onSelect, children, allowDefaultProvider = false }: {
   children: ReactNode; models: ModelOption[]; tier: ModelOption['tier']; choice: SessionModelChoice; disabled: boolean;
+  allowDefaultProvider?: boolean;
   onSelect: (tier: ModelOption['tier'], choice: SessionModelChoice) => void;
 }) {
   const active = models.find(model => model.tier === tier);
   const options = active?.provider_options ?? [];
-  const provider = options.find(option => option.provider_id === choice.provider_id) ?? options[0];
+  const { provider } = resolveModelSelection(active, choice);
+  const selectedProviderId = allowDefaultProvider ? choice.provider_id : provider?.provider_id;
   const levels = (provider?.reasoning_levels ?? []) as ReasoningLevel[];
   const level = choice.reasoning_level && levels.includes(choice.reasoning_level) ? choice.reasoning_level : levels.includes(provider?.reasoning_effort as ReasoningLevel) ? provider!.reasoning_effort as ReasoningLevel : levels.includes('medium') ? 'medium' : levels[0];
   return <div className="session-model-controls">
-    <div className="session-model-providers">{options.map(option => <button key={option.provider_id} disabled={disabled} aria-pressed={provider?.provider_id === option.provider_id}
-      onClick={() => { if (provider?.provider_id !== option.provider_id) onSelect(tier, { ...choice, provider_id: option.provider_id, fast_mode: option.supports_fast_mode ? choice.fast_mode : false, reasoning_level: option.reasoning_levels.includes(choice.reasoning_level ?? '') ? choice.reasoning_level : undefined }); }}
-      className={provider?.provider_id === option.provider_id ? 'is-selected' : ''}>
+    {active && !provider && <p className="session-model-unavailable" role="status">{choice.provider_id ? `${providerLabel(choice.provider_id)} unavailable` : 'Choose a provider'}</p>}
+    <div className="session-model-providers">{allowDefaultProvider && <button disabled={disabled} aria-pressed={!choice.provider_id} className={!choice.provider_id ? 'is-selected' : ''} onClick={() => onSelect(tier, {})}>Use default provider</button>}{options.map(option => <button key={option.provider_id} disabled={disabled} aria-pressed={selectedProviderId === option.provider_id}
+      onClick={() => { if (selectedProviderId !== option.provider_id) onSelect(tier, { ...choice, provider_id: option.provider_id }); }}
+      className={selectedProviderId === option.provider_id ? 'is-selected' : ''}>
       <ProviderLogo id={option.provider_id} />{providerLabel(option.provider_id)}
     </button>)}</div>
-    {children}
-    {provider?.reasoning_levels.length ? <Slider key={`${provider.provider_id}:${provider.model}`} label="Reasoning" labels={levels.map(levelLabel)} value={Math.max(0, levels.indexOf(level))} defaultLabel={!choice.reasoning_level && !provider.reasoning_effort ? 'Provider default' : undefined} disabled={disabled} onSelect={index => onSelect(tier, { ...choice, provider_id: provider.provider_id, reasoning_level: levels[index] })} /> : <p className="session-model-default">This model manages its own reasoning.</p>}
+    {provider && children}
+    {provider?.reasoning_levels.length ? <Slider key={`${provider.provider_id}:${provider.model}`} label="Reasoning" labels={levels.map(levelLabel)} value={Math.max(0, levels.indexOf(level))} defaultLabel={!choice.reasoning_level && !provider.reasoning_effort ? 'Provider default' : undefined} disabled={disabled} onSelect={index => onSelect(tier, { ...choice, provider_id: provider.provider_id, reasoning_level: levels[index] })} /> : provider && !allowDefaultProvider && <p className="session-model-default">This model manages its own reasoning.</p>}
     {provider?.supports_fast_mode && <button type="button" role="switch" aria-label="Fast mode" title={provider.provider_id === 'anthropic' ? 'Faster processing at higher usage cost. Requires fast-mode access from Claude.' : 'Faster processing at higher usage cost.'} aria-checked={!!choice.fast_mode} disabled={disabled}
       className={`session-fast-mode${choice.fast_mode ? ' is-enabled' : ''}`}
       onClick={() => onSelect(tier, { ...choice, provider_id: provider.provider_id, fast_mode: !choice.fast_mode })}>
@@ -132,4 +135,30 @@ export function SessionModelControls({ models, tier, choice, disabled, onSelect,
       <span className="session-fast-mode-toggle" aria-hidden="true"><span /></span>
     </button>}
   </div>;
+}
+
+/** The same effort/model rows in chat runtime controls and Voice settings. */
+export function SessionTierOptions({ models, tier, choice, disabled, onSelect, compact = false }: {
+  models: ModelOption[]; tier: ModelOption['tier']; choice: SessionModelChoice; disabled: boolean;
+  onSelect: (tier: ModelOption['tier']) => void; compact?: boolean;
+}) {
+  return models.map(model => {
+    const active = tier === model.tier;
+    const { provider } = resolveModelSelection(model, choice);
+    const Icon = { fast: Zap, normal: Sparkles, hard: Brain }[model.tier];
+    const color = { fast:'text-emerald-500', normal:'text-sky-500', hard:'text-rose-500' }[model.tier];
+    return <button key={model.tier} disabled={disabled} aria-pressed={active} onClick={() => onSelect(model.tier)}
+      className={`w-full flex items-start gap-3.5 px-4 py-3 transition-all text-left group ${active ? 'bg-(--accent-solid) text-(--app-bg)' : 'hover:bg-(--surface-1)'}`}>
+      <div className={`mt-0.5 shrink-0 transition-transform group-hover:scale-110 duration-200 ${active ? 'text-(--app-bg) opacity-90' : color}`}><Icon size={14} /></div>
+      <div className="flex flex-col gap-0.5 min-w-0">
+        <div className={`text-[10px] font-bold uppercase tracking-widest ${active ? 'text-(--app-bg)' : 'text-(--text-primary)'}`}>{model.label}</div>
+        {!compact && <div className={`text-[9px] font-medium leading-tight ${active ? 'text-(--app-bg) opacity-70' : 'text-(--text-muted)'}`}>{model.description}</div>}
+        {compact ? <div className={`text-[10px] truncate ${active ? 'text-(--app-bg) opacity-80' : 'text-(--text-muted)'}`}>{provider?.model ?? 'Provider unavailable'}</div> : <div className="mt-2 flex items-center gap-1.5">
+          <span className={`text-[8px] font-mono px-1 rounded uppercase tracking-wider ${active ? 'bg-(--app-bg)/10 text-(--app-bg) border border-(--app-bg)/20' : 'bg-(--surface-2) text-(--text-secondary) border border-(--border-subtle)'}`}>{provider?.provider_id ?? choice.provider_id ?? 'None'}</span>
+          <span className={`text-[8px] font-mono truncate tracking-tight ${active ? 'text-(--app-bg) opacity-80' : 'text-(--text-secondary)'}`}>{provider?.model ?? 'Provider unavailable'}</span>
+        </div>}
+      </div>
+      {active && <div className="ml-auto w-1 h-6 rounded-full bg-(--app-bg)/20 my-auto" />}
+    </button>;
+  });
 }

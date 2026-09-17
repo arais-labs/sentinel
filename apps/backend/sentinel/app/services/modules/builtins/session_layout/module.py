@@ -3,6 +3,11 @@ from app.services.modules.runtime_services import get_ws_manager
 from sentral.errors import ToolValidationError
 
 
+def voice_ui_key(instance_name: str | None) -> str:
+    """The Voice overlay answers layout requests for the whole window, not one chat."""
+    return f"voice-ui:{instance_name}"
+
+
 def handler(action):
     async def execute(payload, runtime):
         if runtime.session_id is None:
@@ -15,10 +20,13 @@ def handler(action):
             not isinstance(operations, list) or not 1 <= len(operations) <= 20
         ):
             raise ToolValidationError("Supply between 1 and 20 layout operations")
+        command = {"action": action, "operations": operations}
+        if action == "switch_chat":
+            command = {"action": "switch_session", "session_id": str(payload.get("chat_id"))}
+        voice = str(runtime.agent_mode or "") == "voice"
+        key = voice_ui_key(runtime.instance_name) if voice else str(runtime.session_id)
         try:
-            return await manager.request_layout(
-                str(runtime.session_id), {"action": action, "operations": operations}
-            )
+            return await manager.request_layout(key, command)
         except RuntimeError as exc:
             raise ToolValidationError(str(exc)) from exc
 
@@ -66,7 +74,7 @@ MODULE = ModuleDefinition(
     icon="layout-grid",
     system=True,
     grouped_tool=True,
-    description="Organize only the current session's Sentinel panes, not desktop windows or terminal process splits. Inspect returns pane IDs, view labels, positions and sizes, never pane contents. Offer to organize and wait for the user's agreement before apply/undo unless they already requested layout changes. Once authorized, arrange without asking about each pane. Inspect first; preserve useful views and respect available space. Closing a pane hides its view, not its underlying terminal or session. Undo restores the previous arrangement. The session must be displayed in one Sentinel window.",
+    description="Organize the Sentinel panes of the displayed session, not desktop windows or terminal process splits. When switch_chat is available, it displays another chat's workspace and the other actions then apply to it. Inspect returns pane IDs, view labels, positions and sizes, never pane contents. Offer to organize and wait for the user's agreement before apply/undo unless they already requested layout changes. Once authorized, arrange without asking about each pane. Inspect first; preserve useful views and respect available space. Closing a pane hides its view, not its underlying terminal or session. Undo restores the previous arrangement. The session must be displayed in one Sentinel window.",
     actions=[
         ActionDefinition(
             id=action,
@@ -108,5 +116,21 @@ MODULE = ModuleDefinition(
                 {"type": "object", "additionalProperties": False, "properties": {}},
             ),
         ]
+    ]
+    + [
+        ActionDefinition(
+            id="switch_chat",
+            label="Switch displayed chat",
+            description="Display another chat's saved workspace and focus its Chat view. Sends no instructions and stops nothing; returns the displayed layout.",
+            handler=handler("switch_chat"),
+            requires_runtime_context=True,
+            voice_only=True,
+            parameters_schema={
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["chat_id"],
+                "properties": {"chat_id": {"type": "string", "description": "Chat ID to display."}},
+            },
+        )
     ],
 )

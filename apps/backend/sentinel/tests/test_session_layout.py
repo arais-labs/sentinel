@@ -59,7 +59,8 @@ async def test_layout_timeout_and_disconnect_release_pending_request():
 
 
 def test_layout_module_guidance_and_metadata_surface():
-    assert {action.id for action in MODULE.actions} == {"inspect", "apply", "undo"}
+    assert {action.id for action in MODULE.actions} == {"inspect", "apply", "undo", "switch_chat"}
+    assert {action.id for action in MODULE.actions if action.voice_only} == {"switch_chat"}
     assert "wait for the user's agreement" in MODULE.description
     assert "never pane contents" in MODULE.description
 

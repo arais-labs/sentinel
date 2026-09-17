@@ -1,4 +1,6 @@
 import asyncio
+
+from app.services.agent.agent_modes import effective_agent_mode
 from app.services.host_runtime import host_processes
 from sentral.llm.http_pool import close_provider_http_pool
 from sentral.llm.providers.codex import close_codex_connections
@@ -50,6 +52,7 @@ from app.routers import (
     sub_agents,
     telegram,
     triggers,
+    voice,
     webhooks,
     workspaces,
     ws,
@@ -66,6 +69,7 @@ from app.routers import (
 from app.routers import modules as modules_router
 from app.routers import (
     settings as settings_router,
+    ollama as ollama_router,
 )
 from app.routers import (
     version as version_router,
@@ -77,6 +81,7 @@ from app.services.instance_runtime_context import (
     instance_runtime_context_registry,
 )
 from app.services.memory.local_embeddings import LocalEmbeddingService
+from app.services.voice.runtime import VoiceRuntime
 from app.services.memory.search import MemorySearchService
 from app.services.modules.runtime_services import configure_runtime_services
 from app.services.sessions.agent_run_registry import AgentRunRegistry
@@ -157,6 +162,10 @@ async def lifespan(app: FastAPI):
     app.state.memory_search_service = memory_search_service
     app.state.ws_manager = ws_manager
     app.state.agent_run_registry = run_registry
+    app.state.voice_runtime = VoiceRuntime(settings.storage_root)
+    from app.services.llm.ollama_models import OllamaPulls
+
+    app.state.ollama_pulls = OllamaPulls()
 
     async def _resolve_runtime_context_for_session(session_id: object):
 
@@ -243,7 +252,9 @@ async def lifespan(app: FastAPI):
                             stream=True,
                             provider_metadata={
                                 "persist_user_message": False,
-                                "agent_mode": steering_metadata.get("agent_mode"),
+                                "agent_mode": effective_agent_mode(
+                                    session.kind, steering_metadata.get("agent_mode")
+                                ),
                             },
                         ),
                         interjection_source=lambda: run_registry.drain_interjections(session_key),
@@ -267,7 +278,10 @@ async def lifespan(app: FastAPI):
                 await run_registry.clear(session_key, run_task)
                 await ws_manager.broadcast(
                     session_key,
-                    {"type": "run_state", "run_active": await run_registry.is_running(session_key)},
+                    {
+                        "type": "run_state",
+                        "run_active": await run_registry.is_running(session_key),
+                    },
                 )
                 try:
 
@@ -477,7 +491,9 @@ async def lifespan(app: FastAPI):
                 await asyncio.wait_for(coro, timeout=timeout)
             except asyncio.TimeoutError:
                 logger.warning(
-                    "shutdown step %r exceeded %.1fs deadline; abandoning", name, timeout
+                    "shutdown step %r exceeded %.1fs deadline; abandoning",
+                    name,
+                    timeout,
                 )
             except asyncio.CancelledError:
                 raise
@@ -486,6 +502,8 @@ async def lifespan(app: FastAPI):
 
         run_registry.configure_idle_interjections_callback(None)
         stop_event.set()
+        await _bounded("voice_runtime", app.state.voice_runtime.close(), timeout=8.0)
+        await _bounded("ollama_pulls", app.state.ollama_pulls.close(), timeout=8.0)
 
         # 1. Cancel any in-flight chat turns first so their streaming work
         #    doesn't hold open downstream resources (provider HTTP, asyncssh).
@@ -507,7 +525,9 @@ async def lifespan(app: FastAPI):
         # 3. Cooperative loops (all use stop_event); bound just in case.
         await _bounded("rate_limit_cleanup", cleanup_task, timeout=2.0)
         await _bounded(
-            "instance_contexts", instance_runtime_context_registry.stop_all(), timeout=5.0
+            "instance_contexts",
+            instance_runtime_context_registry.stop_all(),
+            timeout=5.0,
         )
 
         await _bounded("host_processes", host_processes.close(), timeout=3.0)
@@ -549,8 +569,11 @@ app.include_router(machines.router, prefix="/api/v1", tags=["machines"])
 _instance_api_prefix = "/api/v1/instances/{instance_name}"
 app.include_router(workspaces.router, prefix=_instance_api_prefix, tags=["workspaces"])
 app.include_router(sessions.router, prefix=f"{_instance_api_prefix}/sessions", tags=["sessions"])
+app.include_router(voice.router, prefix=f"{_instance_api_prefix}/voice", tags=["voice"])
 app.include_router(
-    sessions_compaction.router, prefix=f"{_instance_api_prefix}/sessions", tags=["sessions"]
+    sessions_compaction.router,
+    prefix=f"{_instance_api_prefix}/sessions",
+    tags=["sessions"],
 )
 app.include_router(memory.router, prefix=f"{_instance_api_prefix}/memory", tags=["memory"])
 app.include_router(
@@ -560,7 +583,9 @@ app.include_router(triggers.router, prefix=f"{_instance_api_prefix}/triggers", t
 app.include_router(webhooks.router, prefix=f"{_instance_api_prefix}/webhooks", tags=["webhooks"])
 app.include_router(git_router.router, prefix=f"{_instance_api_prefix}/git", tags=["git"])
 app.include_router(
-    approvals_router.router, prefix=f"{_instance_api_prefix}/approvals", tags=["approvals"]
+    approvals_router.router,
+    prefix=f"{_instance_api_prefix}/approvals",
+    tags=["approvals"],
 )
 app.include_router(admin.router, prefix=f"{_instance_api_prefix}/admin", tags=["admin"])
 app.include_router(models.router, prefix=f"{_instance_api_prefix}/models", tags=["models"])
@@ -570,6 +595,11 @@ app.include_router(
 )
 app.include_router(
     settings_router.router, prefix=f"{_instance_api_prefix}/settings", tags=["settings"]
+)
+app.include_router(
+    ollama_router.router,
+    prefix=f"{_instance_api_prefix}/settings/ollama",
+    tags=["settings"],
 )
 app.include_router(telegram.router, prefix=f"{_instance_api_prefix}/telegram", tags=["telegram"])
 app.include_router(backup.router, prefix=f"{_instance_api_prefix}/backup", tags=["backup"])
