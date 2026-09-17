@@ -11,7 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import settings
-from app.models import Message, Session
+from app.models import Message, Session, SessionKind
 from app.services.sessions import session_bindings
 from sentral.llm.generic.types import TextContent, UserMessage
 from sentral.llm.ids import TierName
@@ -88,7 +88,7 @@ class SessionNamingService:
         session = await db.get(Session, session_id)
         if session is None:
             return None
-        if session.parent_session_id is not None:
+        if session.parent_session_id is not None or session.kind != SessionKind.CHAT:
             return None
         if await self._is_telegram_bound(db, session):
             return None

@@ -1,16 +1,9 @@
 import { app, dialog } from 'electron';
-import { mkdirSync } from 'node:fs';
-import path from 'node:path';
 import { startDesktopApplication } from './desktopApplication.js';
 import { BACKUP_RESET_ARGUMENT, runBackupReset } from './app/backupResetWindow.js';
+import { configureApplicationIdentity } from './app/applicationIdentity.js';
 
-if (!app.isPackaged) {
-  // Keep development data separate from the installed application.
-  const developmentData = path.join(app.getPath('appData'), 'Sentinel Dev');
-  mkdirSync(developmentData, { recursive: true });
-  app.setPath('userData', developmentData);
-}
-app.setAppLogsPath(app.isPackaged ? undefined : path.join(app.getPath('userData'), 'logs'));
+configureApplicationIdentity(app);
 
 const resetArgument = process.argv.find(arg => arg.startsWith(BACKUP_RESET_ARGUMENT));
 if (resetArgument) {

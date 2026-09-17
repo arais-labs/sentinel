@@ -17,6 +17,7 @@ from app.services.instance_runtime_context import (
 from app.services.instances import InvalidInstanceNameError, normalize_instance_name
 from app.services.onboarding.onboarding_service import OnboardingService
 from app.services.sessions.agent_run_registry import AgentRunRegistry
+from app.services.sessions.service import SessionService
 from app.services.settings.settings_service import SettingsService
 
 
@@ -31,6 +32,20 @@ def get_onboarding_service() -> OnboardingService:
 
 def get_settings_service() -> SettingsService:
     return SettingsService()
+
+
+def get_request_session_service(request: Request) -> SessionService:
+    """Wire session workflows at the HTTP boundary, not through another router."""
+    registry = get_request_run_registry(request)
+    try:
+        support = get_request_instance_runtime_context(request).agent_runtime_support
+    except RuntimeError:
+        support = None
+    return SessionService(
+        run_registry=registry,
+        agent_runtime_support=support,
+        db_factory=get_request_db_factory(request),
+    )
 
 
 async def get_db(connection: HTTPConnection) -> AsyncGenerator[AsyncSession, None]:

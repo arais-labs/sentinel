@@ -15,6 +15,7 @@ from sentral.llm.antigravity_credentials import read_antigravity_credentials
 from sentral.llm.claude_credentials import read_claude_access_token, renew_claude_access_token
 from sentral.llm.codex_credentials import read_codex_access_token
 from app.services.llm.live_credentials import LiveCredentialProvider
+from sentral.llm.providers.ollama import OllamaProvider
 
 DEFAULT_TIER_NAME = TierName.NORMAL
 
@@ -93,6 +94,14 @@ def build_tier_provider_from_settings(settings: Settings) -> LLMProvider | None:
                 temperature=temperature,
             )
 
+        ollama = providers.get(ProviderChoice.OLLAMA)
+        if ollama is not None:
+            candidates[ProviderChoice.OLLAMA] = TierModelConfig(
+                provider=ollama,
+                model=settings.ollama_model,
+                reasoning_config=ReasoningConfig(max_tokens=min(max_tokens, 8192)),
+                temperature=temperature,
+            )
         if not candidates:
             continue
 
@@ -171,6 +180,10 @@ def _build_enabled_providers(settings: Settings) -> tuple[dict[ProviderChoice, L
     elif gemini_api_key:
         providers[ProviderChoice.GEMINI] = GeminiProvider(gemini_api_key)
 
+    if settings.ollama_base_url and settings.ollama_model:
+        providers[ProviderChoice.OLLAMA] = OllamaProvider(
+            settings.ollama_base_url, settings.ollama_api_key
+        )
     return providers, openai_uses_codex
 
 

@@ -1,25 +1,32 @@
 from __future__ import annotations
 
-import json
+import asyncio
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import UUID
+from weakref import WeakValueDictionary
 
 from fastapi import HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Message, Session, SessionSummary
 from app.services.sessions.history import context_history
+from app.services.sessions.handoff import render_summary
+from app.services.sessions.compaction_generation import (
+    current_selection,
+    generate_handoff,
+    source_record,
+)
 from app.services.sessions.context_usage import (
     latest_request_input_tokens,
     normalize_context_budget,
 )
 from sentral.llm.generic.base import LLMProvider
-from sentral.llm.generic.types import TextContent
-from sentral.llm.ids import TierName
 
 ACTIVE_CONTEXT_MESSAGE_COUNT = 10
+_COMPACTION_LOCKS: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
 
 
 @dataclass
@@ -100,8 +107,19 @@ class CompactionService:
         return self._provider.model_context("normal")["context_token_budget"]
 
     async def _compact(self, db: AsyncSession, session: Session) -> CompactionResult:
-        """Atomically advance the model context boundary while retaining every message."""
+        key = str(session.id)
+        lock = _COMPACTION_LOCKS.setdefault(key, asyncio.Lock())
+        async with lock:
+            return await self._compact_locked(db, session)
+
+    async def _compact_locked(self, db: AsyncSession, session: Session) -> CompactionResult:
+        """Snapshot, generate without a write lock, then compare and atomically publish."""
+        session_id = session.id
         summary, messages = await context_history(db, session.id)
+        previous = deepcopy(summary.summary) if summary else None
+        # Upgrade legacy lossy summaries from their original source, not the paragraph.
+        if summary and (summary.summary or {}).get("schema_version") != 2:
+            _, messages = await context_history(db, session.id, include_compacted=True)
         messages = [m for m in messages if (m.metadata_json or {}).get("steering") != "pending"]
         active_context = self._select_active_context_messages(messages)
         if len(messages) <= len(active_context):
@@ -122,62 +140,122 @@ class CompactionService:
         context_start = older[0].created_at or datetime.now(UTC)
         context_end = older[-1].created_at or datetime.now(UTC)
 
-        previous = str((summary.summary or {}).get("summary_text") or "") if summary else ""
-        to_summarize = list(older)
-        if previous:
-            to_summarize.insert(
-                0,
-                Message(role="system", content="Previous summary:\n" + previous, metadata_json={}),
+        selection = current_selection(messages)
+        # Detached snapshots prevent expiry/later ORM changes from altering the request.
+        frozen = [
+            Message(
+                id=m.id,
+                role=m.role,
+                content=m.content,
+                metadata_json=deepcopy(m.metadata_json or {}),
+                created_at=m.created_at,
+                tool_name=m.tool_name,
+                tool_call_id=m.tool_call_id,
             )
-        if self._provider is not None:
-            summary_payload = await self._llm_summary_payload(to_summarize)
-            summary_text = str(
-                summary_payload.get("context_summary") or summary_payload.get("summary_text") or ""
-            ).strip()
-            if not summary_text:
-                raise ValueError(
-                    "The model returned an empty summary; history and context were not changed."
-                )
-        else:
-            summary_text = self._fallback_summary_text(to_summarize)
-            summary_payload = {"summary_text": summary_text}
-
-        payload = dict(summary_payload)
-        measured = payload.pop("provider_usage", None)
-        if self._provider is not None:
-            db.add(
-                Message(
-                    session_id=session.id,
-                    role="system",
-                    content="Context compacted",
-                    metadata_json={
-                        "source": "usage",
-                        "purpose": "compaction",
-                        "provider_usage": measured,
-                    },
-                )
+            for m in older
+        ]
+        boundary = str(older[-1].id)
+        active_count, older_count = len(active_context), len(older)
+        await db.commit()  # Release the read transaction before slow provider calls.
+        trace = []
+        try:
+            payload = await generate_handoff(
+                self._provider,
+                frozen,
+                previous if previous and previous.get("schema_version") == 2 else None,
+                selection,
+                trace=trace,
             )
+        finally:
+            # Every returned paid response counts, including rejected drafts and retries.
+            # Persist separately so a failed/stale handoff cannot erase its usage.
+            for call in trace:
+                if call["provider_usage"]:
+                    db.add(
+                        Message(
+                            session_id=session_id,
+                            role="system",
+                            content="Compaction model usage",
+                            metadata_json={"source": "usage", "purpose": "compaction", **call},
+                        )
+                    )
+            if any(call["provider_usage"] for call in trace):
+                await db.commit()
+        summary_text = render_summary(payload)
         payload["compacted_at"] = datetime.now(UTC).isoformat()
-        payload["through_message_id"] = str(older[-1].id)
+        payload["through_message_id"] = boundary
         payload["summary_text"] = summary_text
         payload["context_window_start"] = context_start.isoformat()
         payload["context_window_end"] = context_end.isoformat()
-        payload["active_message_count"] = len(active_context)
-        payload["compacted_message_count"] = len(older)
-        if summary is None:
-            summary = SessionSummary(
-                session_id=session.id,
-                summary=payload,
+        payload["active_message_count"] = active_count
+        payload["compacted_message_count"] = older_count
+        try:
+            # SQLite write serialization also protects first-summary creation across
+            # processes; no network calls occur while this lock is held.
+            await db.execute(
+                update(Session)
+                .where(Session.id == session_id)
+                .values(updated_at=Session.updated_at)
             )
-            db.add(summary)
-        else:
-            summary.summary = payload
-
-        await db.commit()
-        await db.refresh(summary)
+            result = await db.execute(
+                select(SessionSummary)
+                .where(SessionSummary.session_id == session_id)
+                .execution_options(populate_existing=True)
+            )
+            summary = result.scalars().first()
+            if (summary.summary if summary else None) != previous:
+                raise ValueError(
+                    "Another compaction changed this session; generated handoff was not applied."
+                )
+            # Recheck source membership/delivery order before advancing the boundary.
+            _, latest = await context_history(db, session_id, include_compacted=True)
+            ids = [
+                str(m.id) for m in latest if (m.metadata_json or {}).get("steering") != "pending"
+            ]
+            if boundary not in ids:
+                raise ValueError("Compaction source boundary disappeared; history was not changed.")
+            prefix = ids[: ids.index(boundary) + 1]
+            expected = [str(m.id) for m in frozen]
+            if previous and previous.get("schema_version") == 2:
+                old_boundary = previous.get("through_message_id")
+                if old_boundary not in prefix:
+                    raise ValueError("Previous compaction boundary disappeared.")
+                prefix = prefix[prefix.index(old_boundary) + 1 :]
+            if prefix != expected:
+                raise ValueError(
+                    "Historical delivery order changed during compaction; retry safely."
+                )
+            originals = {m.id: source_record(m) for m in frozen}
+            if any(source_record(m) != originals[m.id] for m in latest if m.id in originals):
+                raise ValueError(
+                    "Historical message content changed during compaction; retry safely."
+                )
+            if summary is None:
+                summary = SessionSummary(session_id=session_id, summary=payload)
+                db.add(summary)
+            else:
+                summary.summary = payload
+            db.add(
+                Message(
+                    session_id=session_id,
+                    role="system",
+                    content="Context compacted",
+                    metadata_json={
+                        "source": "runtime_context",
+                        "purpose": "compaction",
+                        "compaction_selection": payload["compaction_selection"],
+                        "generation_trace": payload["generation_trace"],
+                        "previous_summary": previous,
+                    },
+                )
+            )
+            await db.commit()
+        except BaseException:
+            await db.rollback()
+            raise
         preview = summary_text[:200]
         return CompactionResult(
-            session_id=session.id,
+            session_id=session_id,
             compacted=True,
             summary_preview=preview,
         )
@@ -235,78 +313,3 @@ class CompactionService:
         if session is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
         return session
-
-    def _bullet_line(self, role: str, content: str) -> str:
-        trimmed = content.replace("\n", " ").strip()
-        snippet = trimmed[:80] + ("..." if len(trimmed) > 80 else "")
-        return f"- [{role}] {snippet}"
-
-    def _word_count(self, text: str) -> int:
-        return len([part for part in text.split() if part])
-
-    def _fallback_summary_text(self, messages: list[Message]) -> str:
-        bullet_lines = [self._bullet_line(message.role, message.content) for message in messages]
-        return "\n".join(bullet_lines)
-
-    async def _llm_summary_payload(self, messages: list[Message]) -> dict:
-        """Generate structured compaction payload via provider JSON response."""
-        prompt_lines = []
-        for message in messages:
-            line = f"[{message.role}]\n{message.content}"
-            calls = (message.metadata_json or {}).get("tool_calls")
-            if calls:
-                line += "\nTool calls: " + json.dumps(calls)
-            prompt_lines.append(line)
-        prompt = (
-            "Summarize the following conversation into strict JSON with keys: "
-            "key_decisions (array of strings), tool_results (array of strings), "
-            "open_tasks (array of strings), context_summary (string).\n\n"
-            "Conversation:\n" + "\n".join(prompt_lines)
-        )
-
-        response = await self._provider.chat(
-            [
-                {"role": "system", "content": "Return valid JSON only."},
-                {"role": "user", "content": prompt},
-            ],
-            model=TierName.FAST.value,
-            temperature=0.3,
-        )
-
-        text_parts = [
-            block.text
-            for block in response.content
-            if isinstance(block, TextContent) and block.text
-        ]
-        raw_text = "\n".join(text_parts).strip()
-        parsed = self._parse_summary_json(raw_text)
-        return {
-            "provider_usage": getattr(response, "provider_usage", None),
-            "key_decisions": (
-                parsed.get("key_decisions") if isinstance(parsed.get("key_decisions"), list) else []
-            ),
-            "tool_results": (
-                parsed.get("tool_results") if isinstance(parsed.get("tool_results"), list) else []
-            ),
-            "open_tasks": (
-                parsed.get("open_tasks") if isinstance(parsed.get("open_tasks"), list) else []
-            ),
-            "context_summary": str(parsed.get("context_summary") or ""),
-        }
-
-    def _parse_summary_json(self, raw_text: str) -> dict:
-        if not raw_text:
-            return {}
-        try:
-            parsed = json.loads(raw_text)
-            return parsed if isinstance(parsed, dict) else {}
-        except json.JSONDecodeError:
-            start = raw_text.find("{")
-            end = raw_text.rfind("}")
-            if start != -1 and end != -1 and end > start:
-                try:
-                    sliced = json.loads(raw_text[start : end + 1])
-                    return sliced if isinstance(sliced, dict) else {}
-                except json.JSONDecodeError:
-                    return {}
-        return {}

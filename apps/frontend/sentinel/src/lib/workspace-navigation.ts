@@ -10,7 +10,7 @@ export function openWorkspaceTab(
   navigate: NavigateFunction,
   instanceName: string,
   tabId: WorkspaceTabId,
-  options: { sessionId?: string; replace?: boolean } = {},
+  options: { sessionId?: string; replace?: boolean; state?: unknown } = {},
 ): void {
   const sessions = useActiveSessionStore.getState();
   const sessionId = options.sessionId ?? sessions.byInstance[instanceName] ?? null;
@@ -19,5 +19,10 @@ export function openWorkspaceTab(
   // saved layout is restored first, then the requested pane is opened/focused.
   requestWorkspaceTab(sessionLayoutKey(instanceName, sessionId), tabId);
   if (options.sessionId !== undefined) sessions.setActiveSession(instanceName, sessionId);
-  navigate(instanceRoute(instanceName, 'workspace'), { replace: options.replace });
+  navigate(instanceRoute(instanceName, 'workspace'), { replace: options.replace, state: options.state });
+}
+
+/** Carry the section through pane creation/remount instead of a consumed event. */
+export function openVoiceSettings(navigate: NavigateFunction, instanceName: string): void {
+  openWorkspaceTab(navigate, instanceName, 'settings', { state: { settingsInstance: instanceName, settingsSection: 'voice' } });
 }

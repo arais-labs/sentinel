@@ -113,7 +113,18 @@ class TierProvider(LLMProvider):
     def model_context(self, model):
 
         primary = self._resolve_tier(model).primary
+        if primary.provider.provider_id == ProviderId.OLLAMA:
+            return primary.provider.model_context(primary.model)
         return model_context(primary.model, primary.reasoning_config.max_tokens)
+
+    def resolve_model_config(self, model: str) -> TierModelConfig:
+        """Resolve one selection without cooldown reordering or implicit fallback.
+
+        Callers with an explicit fallback policy (such as compaction) own retries
+        and provenance. The returned configuration is a copy, never shared state.
+        """
+        config = self._resolve_tier(model).primary
+        return replace(config, reasoning_config=replace(config.reasoning_config))
 
     async def count_input_tokens(self, messages, model, tools=None, reasoning_config=None):
         primary = self._resolve_tier(model).primary
@@ -209,7 +220,11 @@ class TierProvider(LLMProvider):
             "reasoning_levels": reasoning_levels(config.model),
             "supports_fast_mode": config.provider.supports_fast_mode(config.model),
             "reasoning_effort": config.reasoning_config.reasoning_effort,
-            **model_context(config.model, config.reasoning_config.max_tokens),
+            **(
+                config.provider.model_context(config.model)
+                if config.provider.provider_id == ProviderId.OLLAMA
+                else model_context(config.model, config.reasoning_config.max_tokens)
+            ),
         }
 
     def resolve_generation_hint(self, model: str) -> tuple[str, str] | None:
@@ -240,7 +255,6 @@ class TierProvider(LLMProvider):
 
     def _resolve_tier(self, model: str) -> TierConfig:
         if model.startswith("sentinel:"):
-
             parts = model.split(":")
             if len(parts) not in (4, 5) or (len(parts) == 5 and parts[4] != "fast"):
                 raise ValueError("Invalid model selection")

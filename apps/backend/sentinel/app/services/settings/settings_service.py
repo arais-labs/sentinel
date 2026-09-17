@@ -48,6 +48,9 @@ class DesktopOauthConnectionResult:
 
 class SettingsService:
     PERSISTED_SETTINGS: tuple[str, ...] = (
+        "ollama_base_url",
+        "ollama_api_key",
+        "ollama_model",
         "anthropic_api_key",
         "anthropic_oauth_token",
         "anthropic_oauth_source",
@@ -137,6 +140,26 @@ class SettingsService:
             oauth_credential=normalized_gemini_oauth,
         )
 
+    async def set_ollama(self, db: AsyncSession, *, base_url: str, model: str, api_key: str | None):
+        # URL and credential change atomically: no request can pair a new host with an old key.
+        values = {
+            "ollama_base_url": base_url,
+            "ollama_model": model,
+            "ollama_api_key": api_key or "",
+        }
+        rows = (
+            (await db.execute(select(SystemSetting).where(SystemSetting.key.in_(values))))
+            .scalars()
+            .all()
+        )
+        existing = {row.key: row for row in rows}
+        for key, value in values.items():
+            if key in existing:
+                existing[key].value = value
+            else:
+                db.add(SystemSetting(key=key, value=value))
+        await db.commit()
+
     async def connect_desktop_claude_oauth(self, db: AsyncSession) -> DesktopOauthConnectionResult:
 
         try:
@@ -221,6 +244,14 @@ class SettingsService:
         return ApiKeysStatus(
             primary_provider=primary_provider,
             providers={
+                ProviderChoice.OLLAMA: ProviderAuthStatus(
+                    configured=bool(
+                        settings_source.ollama_base_url and settings_source.ollama_model
+                    ),
+                    auth_method="api_key" if settings_source.ollama_api_key else None,
+                    auth_source="manual",
+                    masked_key=self._mask_secret(settings_source.ollama_api_key),
+                ),
                 ProviderChoice.ANTHROPIC: ProviderAuthStatus(
                     configured=bool(anthropic_key or anthropic_oauth),
                     auth_method=(
@@ -279,6 +310,10 @@ class SettingsService:
         )
 
     async def delete_api_keys(self, db: AsyncSession, *, provider: ProviderChoice) -> None:
+        if provider == ProviderChoice.OLLAMA:
+            for key in ("ollama_base_url", "ollama_api_key", "ollama_model"):
+                await delete_system_setting(db, key=key)
+            return
         if provider == ProviderChoice.ANTHROPIC:
             await delete_system_setting(db, key="anthropic_api_key")
             await delete_system_setting(db, key="anthropic_oauth_token")

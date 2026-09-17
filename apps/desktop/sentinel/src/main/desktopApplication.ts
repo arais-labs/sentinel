@@ -1,5 +1,5 @@
 import type { AppNotification } from '../shared/notifications.js';
-import { app, BrowserWindow, Notification, Menu, dialog, ipcMain, screen, shell } from 'electron';
+import { app, BrowserWindow, Notification, Menu, dialog, ipcMain, screen, shell, systemPreferences } from 'electron';
 import { readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { installRendererTransport } from './transport/rendererTransport.js';
@@ -7,6 +7,7 @@ import { DesktopManager } from './app/desktopManager.js';
 import { validateBackupFolder } from './app/backupReset.js';
 import { BACKUP_RESET_ARGUMENT } from './app/backupResetWindow.js';
 import { openPreviewWindow } from './app/previewWindow.js';
+import { createMicrophoneAccess } from './app/microphone.js';
 import { IPC, type CompletionSound, type NotificationSettings, type SessionCompletion, type PendingFormWindow, type DesktopStatus, type PayloadUpdate, type ReleaseChannel } from '../shared/ipc.js';
 
 export function startDesktopApplication(): void {
@@ -21,6 +22,13 @@ export function startDesktopApplication(): void {
   const shownForms = new Set<string>();
 
   const manager = new DesktopManager();
+  const microphone = createMicrophoneAccess({
+    platform: process.platform,
+    appName: app.isPackaged ? app.getName() : 'Electron',
+    getStatus: () => systemPreferences.getMediaAccessStatus('microphone'),
+    ask: () => systemPreferences.askForMediaAccess('microphone'),
+    openExternal: url => shell.openExternal(url),
+  });
   let activeSentinelOrigin: string | undefined;
   let isQuitting = false;
   let resetInProgress = false;
@@ -73,6 +81,20 @@ export function startDesktopApplication(): void {
     return path.resolve(import.meta.dirname, '../preload/preload.mjs');
   }
 
+  function reportStartupFailure(error: unknown): void {
+    const details = error instanceof Error ? error.stack || error.message : String(error);
+    console.error('Sentinel could not start:', details);
+    dialog.showErrorBox('Sentinel could not start', details);
+    app.quit();
+  }
+
+  function openExternalLink(url: string): void {
+    void shell.openExternal(url).catch(error => {
+      console.error('Could not open external link:', error);
+      dialog.showErrorBox('Could not open link', 'No application could open this link. Check your default browser or open the destination manually.');
+    });
+  }
+
   async function createWindow(): Promise<void> {
     const window = new BrowserWindow({
       width: 1280,
@@ -120,13 +142,13 @@ export function startDesktopApplication(): void {
 
     window.webContents.setWindowOpenHandler(({ url }) => {
       if (isSentinelUrl(url)) return { action: 'allow' };
-      void shell.openExternal(url);
+      openExternalLink(url);
       return { action: 'deny' };
     });
     window.webContents.on('will-navigate', (event, url) => {
       if (isInternalAppUrl(url)) return;
       event.preventDefault();
-      void shell.openExternal(url);
+      openExternalLink(url);
     });
     const url = await manager.prepareUI();
     activeSentinelOrigin = new URL(url).protocol === 'sentinel:' ? 'sentinel://app' : new URL(url).origin;
@@ -351,6 +373,9 @@ export function startDesktopApplication(): void {
       if (typeof href !== 'string' || !manager.transport) throw new Error('Workspace services are unavailable');
       await openPreviewWindow(href, manager.transport);
     });
+    handle(IPC.getMicrophonePermission, () => microphone.status());
+    handle(IPC.requestMicrophonePermission, () => microphone.request());
+    handle(IPC.openMicrophoneSettings, () => microphone.openSettings());
     handle(IPC.getNotifications, () => manager.notifications.list());
     handle(IPC.publishNotification, (_event, input) => manager.notifications.publish(input));
     handle(IPC.updateNotification, (_event, id, action) => manager.notifications.update(id, action));
@@ -465,7 +490,7 @@ export function startDesktopApplication(): void {
   } else {
     app.on('second-instance', () => {
       if (!mainWindow || mainWindow.isDestroyed()) {
-        void createWindow();
+        void createWindow().catch(reportStartupFailure);
         return;
       }
       if (mainWindow.isMinimized()) mainWindow.restore();
@@ -504,13 +529,10 @@ export function startDesktopApplication(): void {
           }).finally(() => { startupInProgress = false; });
         app.on('activate', () => {
           if (BrowserWindow.getAllWindows().length === 0) {
-            void createWindow();
+            void createWindow().catch(reportStartupFailure);
           }
         });
       })
-      .catch((error) => {
-        void shell.openExternal(`data:text/plain,${encodeURIComponent(String(error?.stack || error))}`);
-        app.quit();
-      });
+      .catch(reportStartupFailure);
   }
 }

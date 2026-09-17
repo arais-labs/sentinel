@@ -113,8 +113,15 @@ def test_all_grouped_builtins_expose_action_selector():
         assert "action" in schema["required"], module.name
         assert "command" not in schema["properties"], module.name
         assert schema["properties"]["action"]["enum"] == sorted(
-            action.id for action in module.actions if action.handler
+            action.id for action in module.actions if action.handler and not action.voice_only
         )
+        voice_schema = tools[0].voice_parameters_schema
+        if any(action.voice_only for action in module.actions):
+            assert voice_schema["properties"]["action"]["enum"] == sorted(
+                action.id for action in module.actions if action.handler
+            ), module.name
+        else:
+            assert voice_schema is None, module.name
 
 
 def test_grouped_tool_rejects_old_command_selector_without_executing():

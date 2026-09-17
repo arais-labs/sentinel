@@ -1,4 +1,5 @@
 .session-model-controls { padding: 0; color: var(--text-primary); }
+.session-model-unavailable { margin: 0; padding: 4px 16px 8px; color: var(--text-secondary); font-size: 10px; line-height: 1.5; }
 .session-model-providers { padding: 6px 16px 12px; display: flex; flex-wrap: wrap; gap: 5px; }
 .session-model-providers button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 29px; padding: 0 10px; border-radius: 9px; border: 1px solid var(--border-subtle); background: var(--surface-1); color: var(--text-secondary); font-size: 11px; font-weight: 600; transition: color 120ms, background 120ms, border-color 120ms; }
 .session-model-providers button:hover { border-color: var(--border-strong); color: var(--text-primary); }

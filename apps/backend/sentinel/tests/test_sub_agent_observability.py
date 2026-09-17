@@ -271,14 +271,14 @@ def test_internal_messaging_is_hidden_and_legacy_channel_retired():
 
     modules = {module.name: module for module in get_builtins()}
     assert "coordination" not in modules
-    assert modules["agent_messages"].internal
+    assert modules["chats"].internal
 
     async def scenario():
         db = FakeDB()
         db.add(Module(name="coordination", label="Coordination", system=True))
         visible = await list_modules(db)
-        assert not {"coordination", "agent_messages"} & {m["name"] for m in visible["modules"]}
-        for name in ("coordination", "agent_messages"):
+        assert not {"coordination", "chats"} & {m["name"] for m in visible["modules"]}
+        for name in ("coordination", "chats"):
             with pytest.raises(HTTPException) as error:
                 await get_module(name, db)
             assert error.value.status_code == 404

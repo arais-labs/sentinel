@@ -1,12 +1,16 @@
 import { GitPage } from './GitPage';
 import { TelegramPage } from './TelegramPage';
 import { AppearanceSettings } from '../components/AppearanceControls';
+import { VoiceSettings } from '../components/VoiceSettings';
+import { useLocation } from 'react-router-dom';
+import { useInstanceName } from '../lib/workspace-context';
+import { providersChanged } from '../hooks/useModelCatalog';
 import { useState, useEffect, useCallback } from 'react';
 import { notificationPublisher } from '../lib/notifications';
 import {
   ShieldAlert, Info, KeyRound, GitBranch, Send,
   Bot, Eye, EyeOff, Check, Loader2, HelpCircle, X,
-  Trash2,
+  Trash2, AudioLines,
   Archive, Download, Upload, Lock, Server, Type,
 } from 'lucide-react';
 
@@ -16,6 +20,7 @@ import { Panel } from '../components/ui/Panel';
 import { StatusChip } from '../components/ui/StatusChip';
 import { api, requestBlob } from '../lib/api';
 import './settings-page.css';
+import { OllamaProviderSettings } from '../components/OllamaProviderSettings';
 
 const notify = notificationPublisher('Settings');
 
@@ -144,12 +149,13 @@ function ProviderRow({
 
   return (
     <div className="settings-provider rounded-xl border border-(--border-subtle) bg-(--surface-0) overflow-hidden relative">
-      <div className="px-4 py-3 space-y-2">
+      <div className="settings-provider-summary">
         {/* Row 1: name + status badge */}
         <div className="settings-provider-heading flex items-center gap-2">
           <div className="h-2.5 w-2.5 rounded-full shrink-0" style={{ backgroundColor: configured ? '#10B981' : '#F59E0B' }} />
           <span className="text-xs font-bold uppercase tracking-widest">{name}</span>
-          <div className="flex-1" />
+        </div>
+        <div className="settings-provider-badges">
           {configured && isPrimary && (
             <span className="text-[9px] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400">Primary</span>
           )}
@@ -157,10 +163,10 @@ function ProviderRow({
             <span className="text-[9px] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded bg-(--surface-2) text-(--text-muted)">Fallback</span>
           )}
           {configured && (
-            <StatusChip label={status?.auth_method === 'oauth' ? status.auth_source === 'cli' ? 'OAuth · Auto-sync' : 'OAuth' : 'API Key'} tone="info" className="scale-90" />
+            <StatusChip label={status?.auth_method === 'oauth' ? status.auth_source === 'cli' ? 'OAuth · Auto-sync' : 'OAuth' : 'API Key'} tone="info" />
           )}
           {!configured && (
-            <StatusChip label="Not configured" tone="warn" className="scale-90" />
+            <StatusChip label="Not configured" tone="warn" />
           )}
         </div>
 
@@ -211,7 +217,7 @@ function ProviderRow({
       </div>
 
       {editing && (
-        <div className="px-4 pb-4 pt-1 border-t border-(--border-subtle) space-y-3 animate-in fade-in duration-200">
+        <div className="settings-provider-editor space-y-3 animate-in fade-in duration-200">
           {help ? (
             <div className="flex items-center gap-2">
               <div className="flex rounded-lg bg-(--surface-2) p-0.5 w-fit">
@@ -333,7 +339,14 @@ function ProviderRow({
 // ── main page ───────────────────────────────────────────────────────────────
 
 export function SettingsPage({ initialSection = 'providers' }: { initialSection?: 'providers' | 'git' | 'telegram' } = {}) {
-  const [section, setSection] = useState<'providers' | 'backup' | 'services' | 'updates' | 'appearance' | 'git' | 'telegram'>(initialSection);
+  const instance = useInstanceName();
+  const location = useLocation();
+  const destination = location.state as { settingsInstance?: string; settingsSection?: string } | null;
+  const voiceSettingsRequested = destination?.settingsInstance === instance && destination?.settingsSection === 'voice';
+  const [section, setSection] = useState<'providers' | 'voice' | 'backup' | 'services' | 'updates' | 'appearance' | 'git' | 'telegram'>(() => voiceSettingsRequested ? 'voice' : initialSection);
+  useEffect(() => {
+    if (voiceSettingsRequested) setSection('voice');
+  }, [location.key, voiceSettingsRequested]);
 
 
   const [providerStatus, setProviderStatus] = useState<ProvidersStatusResponse | null>(null);
@@ -369,6 +382,11 @@ export function SettingsPage({ initialSection = 'providers' }: { initialSection?
   }, []);
 
   useEffect(() => { fetchStatus(); }, [fetchStatus]);
+
+  const providerUpdated = async () => {
+    providersChanged(instance);
+    await fetchStatus();
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -548,7 +566,7 @@ export function SettingsPage({ initialSection = 'providers' }: { initialSection?
       await api.post('/settings/api-keys', body);
       const labels = { anthropic: 'Anthropic', openai: 'OpenAI', gemini: 'Gemini' };
       notify.success(`${labels[provider]} provider updated`);
-      await fetchStatus();
+      await providerUpdated();
     } catch {
       notify.error('Failed to update provider');
     } finally {
@@ -561,18 +579,18 @@ export function SettingsPage({ initialSection = 'providers' }: { initialSection?
       await api.delete('/settings/api-keys', { provider });
       const labels = { anthropic: 'Anthropic', openai: 'OpenAI', gemini: 'Gemini' };
       notify.success(`${labels[provider]} provider removed`);
-      await fetchStatus();
+      await providerUpdated();
     } catch {
       notify.error('Failed to remove provider');
     }
   }
 
-  async function handleSetPrimary(provider: 'anthropic' | 'openai' | 'gemini') {
+  async function handleSetPrimary(provider: 'anthropic' | 'openai' | 'gemini' | 'ollama') {
     try {
       await api.post('/settings/primary-provider', { provider });
-      const labels = { anthropic: 'Anthropic', openai: 'OpenAI', gemini: 'Gemini' };
+      const labels = { anthropic: 'Anthropic', openai: 'OpenAI', gemini: 'Gemini', ollama: 'Ollama' };
       notify.success(`${labels[provider]} set as primary`);
-      await fetchStatus();
+      await providerUpdated();
     } catch {
       notify.error('Failed to set primary provider');
     }
@@ -583,7 +601,7 @@ export function SettingsPage({ initialSection = 'providers' }: { initialSection?
     try {
       await api.post('/settings/desktop-claude-oauth/connect');
       notify.success('Claude CLI auto-sync enabled');
-      await fetchStatus();
+      await providerUpdated();
     } catch (error) {
       notify.error(error instanceof Error ? error.message : 'Failed to enable Claude CLI auto-sync');
     } finally {
@@ -596,7 +614,7 @@ export function SettingsPage({ initialSection = 'providers' }: { initialSection?
     try {
       await api.post('/settings/desktop-codex-oauth/connect');
       notify.success('Codex CLI auto-sync enabled');
-      await fetchStatus();
+      await providerUpdated();
     } catch (error) {
       notify.error(error instanceof Error ? error.message : 'Failed to enable Codex CLI auto-sync');
     } finally {
@@ -609,7 +627,7 @@ export function SettingsPage({ initialSection = 'providers' }: { initialSection?
     try {
       await api.post('/settings/desktop-gemini-oauth/connect');
       notify.success('Antigravity auto-sync enabled');
-      await fetchStatus();
+      await providerUpdated();
     } catch (error) {
       notify.error(error instanceof Error ? error.message : 'Failed to enable Antigravity auto-sync');
     } finally {
@@ -628,6 +646,7 @@ export function SettingsPage({ initialSection = 'providers' }: { initialSection?
         <nav className="settings-navigation" aria-label="Settings sections">
           <span>SETTINGS</span>
           <button className="menu-selection-item" type="button" aria-current={section === 'providers' ? 'page' : undefined} onClick={() => setSection('providers')}><Bot size={16} />LLM Providers</button>
+          <button className="menu-selection-item" type="button" aria-current={section === 'voice' ? 'page' : undefined} onClick={() => setSection('voice')}><AudioLines size={16} />Voice</button>
           <button className="menu-selection-item" type="button" aria-current={section === 'backup' ? 'page' : undefined} onClick={() => setSection('backup')}><Archive size={16} />Backup & Restore</button>
           <button className="menu-selection-item" type="button" aria-current={section === 'appearance' ? 'page' : undefined} onClick={() => setSection('appearance')}><Type size={16} />Appearance</button>
           <button className="menu-selection-item" type="button" aria-current={section === 'git' ? 'page' : undefined} onClick={() => setSection('git')}><GitBranch size={16} />Git & GitHub</button>
@@ -636,6 +655,7 @@ export function SettingsPage({ initialSection = 'providers' }: { initialSection?
         </nav>
         <main className="settings-content"><div className="settings-layout">
         {section === 'git' && <GitPage embedded />}
+        {section === 'voice' && <VoiceSettings />}
         {section === 'telegram' && <TelegramPage embedded />}
         <div hidden={section !== 'appearance'}><AppearanceSettings /></div>
         {/* Providers Panel — full width */}
@@ -683,6 +703,7 @@ export function SettingsPage({ initialSection = 'providers' }: { initialSection?
                 syncingOauth={importingCodexOauth}
                 onSyncOauth={handleSyncCodexOauth}
               />
+              <OllamaProviderSettings isPrimary={primaryProvider === 'ollama'} onChanged={providerUpdated} onSetPrimary={() => handleSetPrimary('ollama')} />
               <ProviderRow
                 name="Google Gemini"
                 providerId="gemini"

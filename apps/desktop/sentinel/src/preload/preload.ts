@@ -20,6 +20,9 @@ function subscribe<T>(
 }
 
 const api: DesktopApi = {
+  getMicrophonePermission: () => ipcRenderer.invoke(IPC.getMicrophonePermission),
+  requestMicrophonePermission: () => ipcRenderer.invoke(IPC.requestMicrophonePermission),
+  openMicrophoneSettings: () => ipcRenderer.invoke(IPC.openMicrophoneSettings),
   getNotifications: () => ipcRenderer.invoke(IPC.getNotifications),
   publishNotification: input => ipcRenderer.invoke(IPC.publishNotification, input),
   onNotificationPublished: listener => subscribe(IPC.notificationPublished, listener),

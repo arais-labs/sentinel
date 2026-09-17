@@ -216,8 +216,11 @@ async def persist_user_message(
     fast_mode: bool = False,
     message_id: UUID | None = None,
     steering: bool = False,
+    ingress_metadata: dict[str, Any] | None = None,
 ) -> Message:
-    metadata: dict[str, Any] = web_ingress_metadata()
+    metadata: dict[str, Any] = (
+        dict(ingress_metadata) if ingress_metadata is not None else web_ingress_metadata()
+    )
     if steering:
         metadata.update(steering="pending", steering_id=str(message_id))
     if form_response is not None:

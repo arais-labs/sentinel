@@ -10,12 +10,14 @@ class TierName(StrEnum):
 
 
 class ProviderChoice(StrEnum):
+    OLLAMA = "ollama"
     ANTHROPIC = "anthropic"
     OPENAI = "openai"
     GEMINI = "gemini"
 
 
 class ProviderId(StrEnum):
+    OLLAMA = "ollama"
     ANTHROPIC = "anthropic"
     OPENAI = "openai"
     OPENAI_CODEX = "openai-codex"

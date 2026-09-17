@@ -193,10 +193,10 @@ export interface ModelOption {
   label: string;
   description: string;
   tier: 'fast' | 'normal' | 'hard';
-  primary_provider_id?: 'anthropic' | 'openai' | 'openai-codex' | 'gemini';
+  primary_provider_id?: 'anthropic' | 'openai' | 'openai-codex' | 'gemini' | 'ollama';
   primary_model_id?: string;
   fallback_providers?: Array<{
-    provider_id: 'anthropic' | 'openai' | 'openai-codex' | 'gemini';
+    provider_id: 'anthropic' | 'openai' | 'openai-codex' | 'gemini' | 'ollama';
     model: string;
   }>;
   thinking_budget?: number;

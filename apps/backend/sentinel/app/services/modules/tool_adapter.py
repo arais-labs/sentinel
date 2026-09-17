@@ -69,6 +69,8 @@ def build_module_tools(
     actions = [action for action in (module.actions or []) if action.handler]
     if not actions:
         return []
+    if any(action.voice_only for action in actions) and not module.grouped_tool:
+        raise ValueError(f"Module '{module.name}': voice_only actions require grouped_tool")
 
     checks = {
         action.id: _resolve_action_approval_check(
@@ -100,8 +102,14 @@ def _build_grouped_tool(
     action_checks: dict[str, Any | None],
 ) -> ToolDefinition:
     action_map = {action.id: action for action in actions}
-    schema = _build_grouped_parameters_schema(
-        actions=actions,
+    chat_actions = [action for action in actions if not action.voice_only]
+    if not chat_actions:
+        raise ValueError(f"Grouped module '{module.name}' needs at least one action for chats")
+    schema = _build_grouped_parameters_schema(actions=chat_actions)
+    voice_schema = (
+        _build_grouped_parameters_schema(actions=actions)
+        if len(chat_actions) < len(actions)
+        else None
     )
 
     async def _execute(payload: dict[str, Any], runtime: ToolRuntimeContext) -> Any:
@@ -109,6 +117,8 @@ def _build_grouped_tool(
             payload=payload,
             action_map=action_map,
         )
+        if action.voice_only and str(runtime.agent_mode or "") != "voice":
+            raise ToolValidationError(f"Action '{action.id}' is available to the Voice agent only")
         forwarded = dict(payload)
         forwarded.pop(_GROUPED_ACTION_FIELD, None)
         validate_payload(
@@ -133,6 +143,7 @@ def _build_grouped_tool(
         parameters_schema=schema,
         execute=_execute,
         approval_check=approval_check,
+        voice_parameters_schema=voice_schema,
     )
 
 

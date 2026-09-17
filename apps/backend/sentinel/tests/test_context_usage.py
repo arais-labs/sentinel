@@ -30,10 +30,17 @@ def test_missing_latest_usage_does_not_fall_back_to_earlier_request():
     assert latest_request_input_tokens(messages) is None
 
 
+def conversation_messages(db):
+    return [
+        m for m in db.storage[Message] if (m.metadata_json or {}).get("purpose") != "compaction"
+    ]
+
+
 def test_auto_compaction_uses_reported_input_and_ignores_stale_usage():
     import asyncio
     from app.models import Session, SessionSummary
     from app.services.sessions.compaction import CompactionService
+    from tests.compaction_fixtures import HandoffProvider
     from tests.fake_db import FakeDB
 
     db = FakeDB()
@@ -49,7 +56,7 @@ def test_auto_compaction_uses_reported_input_and_ignores_stale_usage():
             )
         )
     db.storage[Message][-1].metadata_json = {"provider_usage": {"usage": {"input_tokens": 5000}}}
-    service = CompactionService()
+    service = CompactionService(HandoffProvider())
     assert asyncio.run(
         service.should_auto_compact(db, session_id=session.id, threshold_tokens=4000)
     )
@@ -57,7 +64,7 @@ def test_auto_compaction_uses_reported_input_and_ignores_stale_usage():
         service.auto_compact_if_needed(db, session_id=session.id, threshold_tokens=4000)
     )
     assert result.compacted
-    assert len(db.storage[Message]) == 14
+    assert len(conversation_messages(db)) == 14
     assert len(db.storage[SessionSummary]) == 1
     assert not asyncio.run(
         service.should_auto_compact(db, session_id=session.id, threshold_tokens=4000)

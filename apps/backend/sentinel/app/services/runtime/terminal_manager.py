@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from shlex import quote
 from typing import Any
@@ -22,6 +23,7 @@ from app.services.runtime.workspace import (
 )
 
 _POLL_INTERVAL_SECONDS = 0.2
+logger = logging.getLogger(__name__)
 _OSC_D_PATTERN = re.compile(rb"\x1b\]133;D(?:;(-?\d+))?(?:\x1b\\|\x07)")
 _OSC_C_PATTERN = re.compile(rb"\x1b\]133;C(?:\x1b\\|\x07)")
 
@@ -44,8 +46,8 @@ class RuntimeTerminalManager:
         self._ssh = ssh
         self._workspace_location = workspace_location
         self._locks: dict[tuple[str, str], asyncio.Lock] = {}
-        self._background_tasks: set[asyncio.Task[None]] = set()
-        self._background_tasks_by_pane: dict[tuple[str, str], set[asyncio.Task[None]]] = {}
+        self._background_tasks: set[asyncio.Task[Any]] = set()
+        self._background_tasks_by_pane: dict[tuple[str, str], set[asyncio.Task[Any]]] = {}
         self._environment: RuntimeEnvironment | None = None
         self._open_locks: dict[str, asyncio.Lock] = {}
 
@@ -159,12 +161,14 @@ class RuntimeTerminalManager:
             await asyncio.gather(*list(self._background_tasks), return_exceptions=True)
         await self._ssh.close()
 
-    def _track_background_task(self, key: tuple[str, str], task: asyncio.Task[None]) -> None:
+    def _track_background_task(self, key: tuple[str, str], task: asyncio.Task[Any]) -> None:
         self._background_tasks.add(task)
         self._background_tasks_by_pane.setdefault(key, set()).add(task)
 
-        def _discard(done: asyncio.Task[None]) -> None:
+        def _discard(done: asyncio.Task[Any]) -> None:
             self._background_tasks.discard(done)
+            if not done.cancelled() and (error := done.exception()) is not None:
+                logger.error("Runtime background task failed for %s", key, exc_info=error)
             pane_tasks = self._background_tasks_by_pane.get(key)
             if pane_tasks is None:
                 return
@@ -217,11 +221,9 @@ class RuntimeTerminalManager:
         session_id: str,
         *,
         since_offset: int,
-        timeout: int,
         log_path: str,
         pane_id: str,
     ) -> RuntimeExecResult:
-        deadline = asyncio.get_running_loop().time() + timeout
         last_chunk = b""
         while True:
             result = await self._ssh.run(
@@ -267,13 +269,6 @@ class RuntimeTerminalManager:
                         stdout=parsed.stdout,
                         stderr="Pane exited before reporting command completion",
                     )
-            if asyncio.get_running_loop().time() >= deadline:
-                parsed = self._parse_output(last_chunk, -1)
-                return RuntimeExecResult(
-                    exit_status=-1,
-                    stdout=parsed.stdout,
-                    stderr="[command did not finish within timeout]",
-                )
             await asyncio.sleep(_POLL_INTERVAL_SECONDS)
 
     def _build_visible_command(

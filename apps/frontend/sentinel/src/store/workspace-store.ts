@@ -354,6 +354,10 @@ export const useWorkspaceStore = create<WorkspaceState>()(
           try {
             // Also repair layouts saved while focus mode hid their headers.
             api.fromJSON(unfocusedLayout(saved));
+            // Voice is now an app-level popover, not a persisted session pane.
+            for (const panel of [...api.panels]) {
+              if (panel.params?.tabId === 'voice') api.removePanel(panel);
+            }
             restored = true;
           } catch {
             api.clear();

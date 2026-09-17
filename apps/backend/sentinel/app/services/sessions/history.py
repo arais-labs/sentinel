@@ -5,18 +5,22 @@ from sqlalchemy import select
 from app.models import Message, SessionSummary
 
 
-async def context_history(db, session_id):
+async def context_history(db, session_id, *, include_compacted=False):
     result = await db.execute(select(SessionSummary).where(SessionSummary.session_id == session_id))
     summary = result.scalars().first()
     payload = summary.summary or {} if summary else {}
-    result = await db.execute(select(Message).where(Message.session_id == session_id))
+    result = await db.execute(
+        select(Message)
+        .where(Message.session_id == session_id)
+        .execution_options(populate_existing=True)
+    )
     messages = sorted(
         result.scalars().all(),
         key=lambda m: (m.created_at or datetime.min.replace(tzinfo=UTC), str(m.id)),
     )
     messages = order_steering_history(messages)
     boundary = payload.get("through_message_id")
-    if boundary:
+    if boundary and not include_compacted:
         for index, message in enumerate(messages):
             if str(message.id) == boundary:
                 messages = messages[index + 1 :]

@@ -46,7 +46,7 @@ MODULE = ModuleDefinition(
         action(
             "exec",
             "Execute shell command",
-            "Execute in a sandboxed Bash pane. Does not elevate privileges. Omit pane_id only when no pane exists (creates main) or exactly one pane exists. State persists in that shell; multiline commands use a subshell. background returns immediately and reports completion later; it uses the same execution path. Timeout stops waiting, not the process. Output combines stdout and stderr.",
+            "Execute in a sandboxed Bash pane. Does not elevate privileges. Omit pane_id only when no pane exists (creates main) or exactly one pane exists. State persists in that shell; multiline commands use a subshell. Waits at most 20 seconds, then automatically continues in the background and reports completion later. background=true returns immediately using the same execution path. A running result includes job_id, pane_id and window_id. Do not poll for completion or rerun the command; use another pane for other work. timeout_seconds only shortens the foreground wait; it never kills the process or stops monitoring. Output combines stdout and stderr.",
             {
                 "shell_command": {"type": "string", "minLength": 1},
                 "pane_id": PANE,
@@ -55,8 +55,16 @@ MODULE = ModuleDefinition(
                     "description": "Optional directory inside the container; omit to retain shell cwd.",
                 },
                 "env": {"type": "object", "additionalProperties": {"type": "string"}},
-                "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 3600},
-                "background": {"type": "boolean"},
+                "timeout_seconds": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 3600,
+                    "description": "Foreground wait in seconds, capped at 20. Expiry returns a running job and monitoring continues until completion; never a process kill timeout.",
+                },
+                "background": {
+                    "type": "boolean",
+                    "description": "Return immediately and report completion later instead of waiting up to 20 seconds.",
+                },
             },
             ["shell_command"],
         ),

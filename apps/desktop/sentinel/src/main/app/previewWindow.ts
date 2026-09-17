@@ -1,4 +1,4 @@
-import { BrowserWindow, session, shell } from 'electron';
+import { BrowserWindow, dialog, session, shell } from 'electron';
 import { randomUUID } from 'node:crypto';
 import { previewOrigin, previewTargetPath } from '../../shared/preview.js';
 import type { LocalTransport } from '../transport/localTransport.js';
@@ -20,7 +20,12 @@ export async function openPreviewWindow(href: string, transport: LocalTransport)
     webPreferences: { session: isolatedSession, nodeIntegration: false, contextIsolation: true, sandbox: true },
   });
   previews.add(window);
-  const external = (url: string) => { if (/^https?:\/\//.test(url)) void shell.openExternal(url); };
+  const external = (url: string) => {
+    if (/^https?:\/\//.test(url)) void shell.openExternal(url).catch(error => {
+      console.error('Could not open preview link:', error);
+      dialog.showErrorBox('Could not open link', 'Check your default browser or open the destination manually.');
+    });
+  };
   window.webContents.setWindowOpenHandler(({ url }) => { external(url); return { action: 'deny' }; });
   const guard = (event: Electron.Event, url: string) => {
     if (new URL(url).origin === origin) return;
