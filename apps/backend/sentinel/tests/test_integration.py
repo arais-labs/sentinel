@@ -8,46 +8,12 @@ os.environ.setdefault("TOOL_FILE_READ_BASE_DIR", "/tmp")
 from app.main import app
 from app.config import settings
 from app.services.instance_runtime_context import InstanceRuntimeContext
-from sentral.llm.generic.base import LLMProvider
-from sentral.llm.generic.types import AgentEvent, AssistantMessage, TextContent
 from app.services.sub_agents.orchestrator import SubAgentOrchestrator
 from app.services.tools import ToolExecutor, ToolRegistry
 from app.services.triggers.trigger_scheduler import TriggerScheduler
+from tests.compaction_fixtures import HandoffProvider
 from tests.fake_db import FakeDB
 from tests.helpers import FakeSessionFactory, install_fake_db_overrides, restore_test_app
-
-
-class _NoopProvider(LLMProvider):
-    @property
-    def name(self) -> str:
-        return "noop"
-
-    async def chat(
-        self,
-        messages,
-        model,
-        tools=None,
-        temperature=0.7,
-        reasoning_config=None,
-        tool_choice=None,
-    ):
-        return AssistantMessage(
-            content=[TextContent(text='{"context_summary":"Summary of earlier turns"}')],
-            model=model,
-            provider=self.name,
-        )
-
-    async def stream(
-        self,
-        messages,
-        model,
-        tools=None,
-        temperature=0.7,
-        reasoning_config=None,
-        tool_choice=None,
-    ):
-        yield AgentEvent(type="start")
-        yield AgentEvent(type="done", stop_reason="stop")
 
 
 def test_full_integration_happy_path():
@@ -55,7 +21,7 @@ def test_full_integration_happy_path():
     session_factory = FakeSessionFactory(fake_db)
     tool_registry = ToolRegistry()
     tool_executor = ToolExecutor(tool_registry)
-    fake_runtime_support = SimpleNamespace(provider=_NoopProvider())
+    fake_runtime_support = SimpleNamespace(provider=HandoffProvider())
     instance_context = InstanceRuntimeContext(
         name="main",
         database_name="sentinel_main_test",

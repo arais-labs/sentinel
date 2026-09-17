@@ -6,6 +6,7 @@ from app.services.sessions.agent_run_registry import AgentRunRegistry
 from app.services.sessions.compaction import CompactionService
 from app.services.sessions.service import SessionService
 from app.services.sessions.usage import session_usage
+from tests.compaction_fixtures import HandoffProvider
 from tests.fake_db import FakeDB
 from tests.test_runtime_support import _new_session
 
@@ -37,7 +38,7 @@ def test_session_total_covers_all_pages_and_survives_repeated_compaction():
         db = FakeDB()
         session = _new_session(db)
         service = SessionService(run_registry=AgentRunRegistry())
-        compactor = CompactionService()
+        compactor = CompactionService(HandoffProvider())
 
         def add_turns(count):
             for _ in range(count):
@@ -62,7 +63,10 @@ def test_session_total_covers_all_pages_and_survives_repeated_compaction():
         before = await total()
         assert before["requests"] == 60
         await compactor._compact(db, session)
-        assert len(db.storage[Message]) == 120
+        conversation = [
+            m for m in db.storage[Message] if (m.metadata_json or {}).get("purpose") != "compaction"
+        ]
+        assert len(conversation) == 120
         assert await total() == before
         add_turns(20)
         before_second = await total()

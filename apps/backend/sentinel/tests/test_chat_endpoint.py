@@ -1,10 +1,8 @@
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
 
 
-from app.routers import sessions as sessions_router
 from app.main import app
 from app.services.agent.runtime_support import PreparedRuntimeTurnContext
 from sentral.llm.generic.base import LLMProvider
@@ -12,7 +10,7 @@ from sentral.llm.generic.types import AssistantMessage, TextContent, TokenUsage
 from app.services.tools.executor import ToolExecutor
 from app.services.tools.registry import ToolRegistry
 from tests.fake_db import FakeDB
-from tests.helpers import install_fake_db_overrides, restore_test_app
+from tests.helpers import install_fake_db_overrides, make_fake_instance_context, restore_test_app
 
 
 class _FakeProvider(LLMProvider):
@@ -106,15 +104,16 @@ def test_chat_endpoint_calls_runtime_support_and_returns_response():
     fake_db = FakeDB()
 
     fake_loop = _FakeLoop()
-    old_init = install_fake_db_overrides(app_db=fake_db)
+    old_init = install_fake_db_overrides(
+        app_db=fake_db,
+        instance_context=make_fake_instance_context(
+            app_db=fake_db, agent_runtime_support=fake_loop
+        ),
+    )
 
     try:
         client = TestClient(
             app, headers={"x-sentinel-desktop-token": "test-desktop-transport-token"}
-        )
-        old_runtime_context = sessions_router.get_request_instance_runtime_context
-        sessions_router.get_request_instance_runtime_context = lambda _request: SimpleNamespace(
-            agent_runtime_support=fake_loop
         )
         headers = {"x-sentinel-desktop-token": "test-desktop-transport-token"}
 
@@ -142,8 +141,6 @@ def test_chat_endpoint_calls_runtime_support_and_returns_response():
         assert fake_loop.calls[0]["agent_mode"] == "normal"
     finally:
         restore_test_app(old_init)
-        if "old_runtime_context" in locals():
-            sessions_router.get_request_instance_runtime_context = old_runtime_context
 
 
 def test_chat_endpoint_returns_503_when_no_provider_configured():
@@ -154,10 +151,6 @@ def test_chat_endpoint_returns_503_when_no_provider_configured():
     try:
         client = TestClient(
             app, headers={"x-sentinel-desktop-token": "test-desktop-transport-token"}
-        )
-        old_runtime_context = sessions_router.get_request_instance_runtime_context
-        sessions_router.get_request_instance_runtime_context = lambda _request: SimpleNamespace(
-            agent_runtime_support=None
         )
         headers = {"x-sentinel-desktop-token": "test-desktop-transport-token"}
 
@@ -176,5 +169,3 @@ def test_chat_endpoint_returns_503_when_no_provider_configured():
         assert chat.json()["error"]["message"] == "No LLM provider configured"
     finally:
         restore_test_app(old_init)
-        if "old_runtime_context" in locals():
-            sessions_router.get_request_instance_runtime_context = old_runtime_context
