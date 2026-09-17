@@ -48,6 +48,9 @@ class Settings(TierDefaults, BaseSettings):
     )
     openai_api_key: str | None = Field(default=None, validation_alias="_db_only_openai_api_key")
     openai_base_url: str = "https://api.openai.com/v1"
+    ollama_base_url: str | None = Field(default=None, validation_alias="_db_only_ollama_base_url")
+    ollama_api_key: str | None = Field(default=None, validation_alias="_db_only_ollama_api_key")
+    ollama_model: str | None = Field(default=None, validation_alias="_db_only_ollama_model")
     gemini_api_key: str | None = Field(default=None, validation_alias="_db_only_gemini_api_key")
     gemini_oauth_credentials: str | None = Field(
         default=None, validation_alias="_db_only_gemini_oauth_credentials"

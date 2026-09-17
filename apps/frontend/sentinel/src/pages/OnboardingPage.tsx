@@ -8,6 +8,7 @@ import {
 import { useProductTourStore } from '../store/product-tour-store';
 import { Logo } from '../components/ui/Logo';
 import { MachinesStep, WorkspacesStep } from '../components/onboarding/EnvironmentSteps';
+import { OllamaSetupCard } from '../components/onboarding/OllamaSetupCard';
 import { api } from '../lib/api';
 import {
   resolveAgentIdentity,
@@ -332,7 +333,7 @@ function LLMStep({
       <div>
         <h2 className="text-xl font-black tracking-tight text-(--text-primary)">Connect a model provider.</h2>
         <p className="text-sm text-(--text-muted) mt-1">
-          Connect one or more providers using API keys or OAuth credentials. You can add or change providers later in Settings → LLM Providers.
+          Use API keys, an account connection, or a local or remote Ollama server. You can change providers later in Settings → LLM Providers.
         </p>
       </div>
 
@@ -367,6 +368,7 @@ function LLMStep({
           syncingOauth={importingCodexOauth}
           onSyncOauth={onImportCodexOauth}
         />
+        <OllamaSetupCard />
         <ProviderCard
           name="Google Gemini"
           canSyncOauth
