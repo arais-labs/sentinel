@@ -16,6 +16,8 @@ from sentral.llm.runtime_conversions import approval_payload_to_request
 from sentral.approval_payload import extract_approval_metadata_from_tool_result
 from sentral.errors import ToolValidationError
 from app.services.tools.executor import ToolExecutionError, ToolExecutor
+from app.services.mcp.exposure import SessionExposure
+from app.services.modules.builtins.catalog import CATALOG_TOOL_PREFIX
 from app.services.tools.registry import ToolDefinition, ToolRegistry, ToolRuntimeContext
 
 # Top-level keys stripped from tool results before they reach the model —
@@ -37,9 +39,11 @@ class SentinelToolRegistryAdapter(RuntimeToolRegistry):
         on_pending_tool_result: (
             Callable[[str, dict[str, Any], dict[str, Any]], Awaitable[None]] | None
         ) = None,
+        exposure: SessionExposure | None = None,
     ) -> None:
         self._registry = registry
         self._executor = executor
+        self._exposure = exposure
         self._agent_mode = agent_mode
         self._session_id = str(session_id) if session_id is not None else None
         self._runtime_session_id = (
@@ -48,12 +52,20 @@ class SentinelToolRegistryAdapter(RuntimeToolRegistry):
         self._on_pending_tool_result = on_pending_tool_result
 
     def list_tools(self) -> list[RuntimeToolDefinition]:
+        """Re-read on every LLM iteration, so a load mid-turn shows up on the next call."""
         tools: list[RuntimeToolDefinition] = []
         for tool in self._registry.list_all():
-            if not tool.enabled:
+            if not tool.enabled or not self._visible(tool):
                 continue
             tools.append(self._wrap_tool(tool))
         return tools
+
+    def _visible(self, tool: ToolDefinition) -> bool:
+        if tool.name.startswith(CATALOG_TOOL_PREFIX):
+            return self._exposure is not None and self._exposure.has_servers
+        if self._exposure is None:
+            return True
+        return self._registry.is_exposed(tool, self._exposure.exposed)
 
     def get_tool(self, name: str) -> RuntimeToolDefinition | None:
         tool = self._registry.get(name)

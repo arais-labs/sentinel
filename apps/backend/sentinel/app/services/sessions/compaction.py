@@ -12,6 +12,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Message, Session, SessionSummary
+from app.services.mcp import exposure as mcp_exposure
 from app.services.sessions.history import context_history
 from app.services.sessions.handoff import render_summary
 from app.services.sessions.compaction_generation import (
@@ -253,6 +254,7 @@ class CompactionService:
         except BaseException:
             await db.rollback()
             raise
+        await mcp_exposure.clear(db, session_id)
         preview = summary_text[:200]
         return CompactionResult(
             session_id=session_id,

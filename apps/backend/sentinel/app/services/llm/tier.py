@@ -26,6 +26,7 @@ from sentral.llm.ids import ProviderId, TierName, parse_tier_name
 from sentral.llm.model_limits import model_context
 from sentral.llm.tier_defaults import TIER_LABELS
 from app.services.llm.session_selection import LEVELS, reasoning_levels, with_reasoning
+from app.services.notifications import Notification, publish_notification
 
 logger = logging.getLogger(__name__)
 
@@ -95,11 +96,14 @@ class TierProvider(LLMProvider):
         max_retries: int = 3,
         base_backoff_ms: int = 500,
         sleep_func: Callable[[float], Awaitable[Any]] = asyncio.sleep,
+        instance_name: str | None = None,
     ) -> None:
         if not tiers:
             raise ValueError("TierProvider requires at least one tier")
         self._tiers = tiers
         self._default_tier = default_tier
+        self._instance_name = instance_name
+        self._notification_tasks: set[asyncio.Task[Any]] = set()
         self._max_retries = max_retries
         self._base_backoff_ms = base_backoff_ms
         self._sleep = sleep_func
@@ -366,6 +370,43 @@ class TierProvider(LLMProvider):
                 configs = [*tier.fallbacks, tier.primary]
         return configs
 
+    def _announce_fallback(
+        self, failed: TierModelConfig, next_cfg: TierModelConfig, reason: str
+    ) -> None:
+        """Surface a provider switch: the user picked a model and is now getting another."""
+        logger.warning(
+            "LLM fallback: %s (%s) -> %s (%s): %s",
+            failed.provider.name,
+            failed.model,
+            next_cfg.provider.name,
+            next_cfg.model,
+            reason,
+        )
+        notification = Notification(
+            source="llm",
+            title="Model fallback",
+            message=(
+                f"{failed.provider.name} ({failed.model}) failed: {reason[:600]}\n"
+                f"Continuing with {next_cfg.provider.name} ({next_cfg.model})."
+            ),
+            key=f"{self._instance_name or 'sentinel'}:llm-fallback:{failed.provider.name}"[:200],
+            severity="warning",
+            target={"instanceName": self._instance_name} if self._instance_name else None,
+        )
+
+        async def deliver() -> None:
+            try:
+                await publish_notification(notification)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("Fallback notification not delivered: %s", exc)
+
+        try:
+            task = asyncio.get_running_loop().create_task(deliver())
+        except RuntimeError:
+            return
+        self._notification_tasks.add(task)
+        task.add_done_callback(self._notification_tasks.discard)
+
     async def _call_with_fallback(
         self,
         tier: TierConfig,
@@ -419,6 +460,8 @@ class TierProvider(LLMProvider):
                         await self._sleep((self._base_backoff_ms * (2 ** (attempt - 1))) / 1000)
                         continue
                     break  # move to next config
+            if cfg is not configs[-1]:
+                self._announce_fallback(cfg, configs[configs.index(cfg) + 1], diagnostics[-1])
 
         raise RuntimeError("All providers failed. " + " | ".join(diagnostics))
 
@@ -486,5 +529,7 @@ class TierProvider(LLMProvider):
                         await self._sleep((self._base_backoff_ms * (2 ** (attempt - 1))) / 1000)
                         continue
                     break
+            if cfg is not configs[-1]:
+                self._announce_fallback(cfg, configs[configs.index(cfg) + 1], diagnostics[-1])
 
         raise RuntimeError("All providers failed. " + " | ".join(diagnostics))

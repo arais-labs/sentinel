@@ -7,7 +7,7 @@ from uuid import UUID, uuid4
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app.models import Message, Session, SessionSummary
+from app.models import MCPServer, MCPSessionExposure, Message, Session, SessionSummary
 from app.services.agent.context_builder import ContextBuilder
 from app.services.sessions.compaction import CompactionService
 from app.services.sessions.compaction_generation import batches, current_selection, generate_handoff
@@ -379,7 +379,14 @@ async def test_real_sqlite_compaction_and_scoped_paginated_retrieval(tmp_path):
     async with engine.begin() as connection:
         await connection.run_sync(
             lambda conn: Session.metadata.create_all(
-                conn, tables=[Session.__table__, Message.__table__, SessionSummary.__table__]
+                conn,
+                tables=[
+                    Session.__table__,
+                    Message.__table__,
+                    SessionSummary.__table__,
+                    MCPServer.__table__,
+                    MCPSessionExposure.__table__,
+                ],
             )
         )
     factory = async_sessionmaker(engine, expire_on_commit=False)

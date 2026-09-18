@@ -4,10 +4,10 @@ import { api } from '../../lib/api';
 import { SESSION_PERMISSIONS_CHANGED } from '../../lib/approvals';
 import './approval-actions.css';
 
-type Grant = { id: string; action: string; session_id: string };
+export type Grant = { id: string; action: string; session_id: string };
 
-export function SessionPermissions({ instanceName, sessionId }: { instanceName: string; sessionId: string }) {
-  const [expanded, setExpanded] = useState(false);
+/** Grants that let actions run without asking in one conversation, kept in sync across surfaces. */
+export function useSessionGrants(instanceName: string, sessionId: string) {
   const [grants, setGrants] = useState<Grant[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -44,6 +44,13 @@ export function SessionPermissions({ instanceName, sessionId }: { instanceName: 
     finally { setBusy(null); }
   }
 
+  return { grants, loading, error, busy, revoke, retry: () => setRevision(value => value + 1) };
+}
+
+export function SessionPermissions({ instanceName, sessionId }: { instanceName: string; sessionId: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const { grants, loading, error, busy, revoke, retry } = useSessionGrants(instanceName, sessionId);
+
   return <section className="run-settings-section session-permissions">
     <button type="button" className="run-settings-section-toggle" aria-expanded={expanded} onClick={() => setExpanded(value => !value)}>
       <span className="text-(--text-secondary)"><ShieldCheck size={11} /></span>
@@ -60,7 +67,7 @@ export function SessionPermissions({ instanceName, sessionId }: { instanceName: 
           onClick={() => void revoke(grant)}>{busy === grant.id ? 'Revoking…' : 'Revoke'}</button>
       </li>)}</ul>
     </>}
-    {error && <p role="alert">{error} <button type="button" onClick={() => setRevision(value => value + 1)}>Retry</button></p>}
+    {error && <p role="alert">{error} <button type="button" onClick={retry}>Retry</button></p>}
     </div>
   </section>;
 }

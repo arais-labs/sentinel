@@ -38,7 +38,9 @@ def build_models_response(provider: object | None) -> ModelsResponse:
     return ModelsResponse(models=models, default_tier=default_tier)
 
 
-def build_tier_provider_from_settings(settings: Settings) -> LLMProvider | None:
+def build_tier_provider_from_settings(
+    settings: Settings, *, instance_name: str | None = None
+) -> LLMProvider | None:
     providers, openai_uses_codex = _build_enabled_providers(settings)
     if not providers:
         return None
@@ -125,6 +127,7 @@ def build_tier_provider_from_settings(settings: Settings) -> LLMProvider | None:
         tiers=tiers,
         default_tier=DEFAULT_TIER_NAME,
         max_retries=settings.llm_max_retries,
+        instance_name=instance_name,
     )
 
 

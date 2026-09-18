@@ -137,7 +137,7 @@ export function Markdown({
   return (
     <div className={classes} {...rest}>
       <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkMath]}
+        remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: false }]]}
         rehypePlugins={[rehypeKatex, rehypeHighlight]}
         components={markdownComponents}
       >

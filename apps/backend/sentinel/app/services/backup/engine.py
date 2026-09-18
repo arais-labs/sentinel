@@ -14,6 +14,7 @@ from sqlalchemy.sql import Select
 
 from app.config import app_version
 from app.models.memory import Memory, SessionSummary
+from app.models.mcp import MCPServer
 from app.models.modules import Module, ModuleRecord, ModuleSecret
 from app.models.session_bindings import SessionBinding
 from app.models.sessions import Message, Session
@@ -101,6 +102,7 @@ ITEMS: dict[str, Item] = {
         key="modules",
         label="Modules",
         tables=(
+            TableSpec(MCPServer),
             TableSpec(
                 Module,
                 export_filter=lambda q: q.where(Module.system.is_(False)),
