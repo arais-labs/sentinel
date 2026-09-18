@@ -219,7 +219,8 @@ function SessionWorkspace({ instanceName, className = '', layoutKey, visible }: 
   // A closed pane window re-docks its tab next to the active pane of the layout it came from.
   useEffect(() => {
     const desktop = window.sentinelDesktop;
-    if (!desktop || !apiReady) return;
+    // Shells older than pane windows lack this API; the workspace must still render on them.
+    if (!desktop || typeof desktop.onPaneWindowClosed !== 'function' || !apiReady) return;
     return desktop.onPaneWindowClosed(info => {
       const [, sessionId] = JSON.parse(layoutKey) as [string | null, string | null];
       const api = apiRef.current;

@@ -339,8 +339,9 @@ export function PaneHeaderTab(props: IDockviewPanelHeaderProps<WorkspacePanePara
   const instanceName = useContext(WorkspaceInstanceContext);
   const retained = useContext(RetainedSessionContext);
   const desktop = window.sentinelDesktop;
+  const canPopOut = Boolean(desktop) && typeof desktop?.openPaneWindow === 'function';
   const popOut = () => {
-    if (!desktop || !tabId || !tab || !instanceName) return;
+    if (!desktop || !canPopOut || !tabId || !tab || !instanceName) return;
     void desktop.openPaneWindow({ instance: instanceName, session: retained?.sessionId ?? null, tabId, paneId, title: tab.label })
       .then(() => closePane(paneId))
       .catch(() => { /* the pane stays docked when the window can't open */ });
@@ -373,7 +374,7 @@ export function PaneHeaderTab(props: IDockviewPanelHeaderProps<WorkspacePanePara
             {focused ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
           </button>
         )}
-        {tabId && desktop && !focused && (
+        {tabId && canPopOut && !focused && (
           <button
             type="button"
             onClick={popOut}
