@@ -27,6 +27,7 @@ _BUILTIN_MODULE_NAMES = (
     "conversation_history",
     "form",
     "notification",
+    "catalog",
 )
 
 

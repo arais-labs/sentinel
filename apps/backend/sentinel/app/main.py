@@ -66,6 +66,7 @@ from app.routers import (
 from app.routers import (
     git as git_router,
 )
+from app.routers import mcp as mcp_router
 from app.routers import modules as modules_router
 from app.routers import (
     settings as settings_router,
@@ -615,3 +616,5 @@ app.include_router(
     prefix=f"{_instance_api_prefix}/permissions",
     tags=["module-permissions"],
 )
+
+app.include_router(mcp_router.router, prefix=f"{_instance_api_prefix}/mcp", tags=["mcp"])

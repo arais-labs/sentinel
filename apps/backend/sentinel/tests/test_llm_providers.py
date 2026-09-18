@@ -936,6 +936,61 @@ def test_tier_provider_non_hint_model_does_not_fallback_to_different_model():
     assert len(fallback.chat_calls) == 0
 
 
+def test_tier_provider_fallback_announces_the_switch(monkeypatch):
+    """A silent switch to another provider is worse than an error: it must be surfaced."""
+    from app.services.llm import tier as tier_module
+
+    request = httpx.Request("POST", "https://primary.example")
+    response = httpx.Response(400, request=request, text="tool names rejected")
+    err = httpx.HTTPStatusError("bad request", request=request, response=response)
+    primary = _TierCaptureProvider("anthropic", fail_with=err)
+    fallback = _TierCaptureProvider("openai")
+    published = []
+
+    async def capture(notification):
+        published.append(notification)
+        return {}
+
+    monkeypatch.setattr(tier_module, "publish_notification", capture)
+
+    async def scenario():
+        tp = TierProvider(
+            tiers={
+                TierName.FAST: TierConfig(
+                    primary=TierModelConfig(
+                        provider=primary, model="claude-sonnet", reasoning_config=ReasoningConfig()
+                    ),
+                    fallbacks=[
+                        TierModelConfig(
+                            provider=fallback,
+                            model="gpt-4o-mini",
+                            reasoning_config=ReasoningConfig(),
+                        )
+                    ],
+                )
+            },
+            default_tier=TierName.FAST,
+            instance_name="arias-dev",
+        )
+        result = await tp.chat([UserMessage(content="x")], model="fast")
+        async for _ in tp.stream([UserMessage(content="x")], model="fast"):
+            pass
+        await asyncio.gather(*tp._notification_tasks)
+        return result
+
+    result = _run(scenario())
+    assert result.provider == "openai"
+    assert len(published) == 2
+    note = published[0]
+    assert note.severity == "warning"
+    assert note.title == "Model fallback"
+    assert note.target == {"instanceName": "arias-dev"}
+    assert note.key == "arias-dev:llm-fallback:anthropic"
+    assert "anthropic (claude-sonnet) failed" in note.message
+    assert "http_400: tool names rejected" in note.message
+    assert "Continuing with openai (gpt-4o-mini)" in note.message
+
+
 def test_tier_provider_fallback_on_primary_failure():
     """When primary 429s, fallback should be tried with ITS OWN model."""
     request = httpx.Request("POST", "https://primary.example")

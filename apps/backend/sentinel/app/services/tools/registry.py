@@ -101,6 +101,9 @@ class ToolDefinition:
     approval_check: ToolApprovalCheckFn | None = None
     # Schema including Voice-only actions; None when the tool has no such actions.
     voice_parameters_schema: dict[str, Any] | None = None
+    # Deferred tools stay out of the prompt until their server is loaded into the session.
+    deferred: bool = False
+    server_id: str | None = None
 
     def schema_for(self, agent_mode: Any) -> dict[str, Any]:
         if self.voice_parameters_schema is not None and str(agent_mode or "") == "voice":
@@ -115,6 +118,14 @@ class ToolRegistry:
     def register(self, tool: ToolDefinition) -> None:
         self._tools[tool.name] = tool
 
+    def replace_namespace(self, prefix: str, tools: list[ToolDefinition]) -> None:
+        """Atomically replace a dynamic integration's tools in existing executors."""
+        replacement = {
+            name: tool for name, tool in self._tools.items() if not name.startswith(prefix)
+        }
+        replacement.update({tool.name: tool for tool in tools})
+        self._tools = replacement
+
     def get(self, name: str) -> ToolDefinition | None:
         return self._tools.get(name)
 
@@ -125,7 +136,13 @@ class ToolRegistry:
         tool = self.get(name)
         return bool(tool and tool.enabled)
 
-    def list_schemas(self, agent_mode: Any = None) -> list[ToolSchema]:
+    def is_exposed(self, tool: ToolDefinition, exposed: set[str] | None) -> bool:
+        """None means the full catalog; a set restricts deferred tools to loaded servers."""
+        return not tool.deferred or exposed is None or tool.server_id in exposed
+
+    def list_schemas(
+        self, agent_mode: Any = None, *, exposed: set[str] | None = None
+    ) -> list[ToolSchema]:
         """Snapshot the enabled tools as the schema records the agent loop
         feeds to the LLM. Living here (next to the registry it walks) means a
         single source of truth — the previous home on ``ToolAdapter`` was
@@ -139,5 +156,5 @@ class ToolRegistry:
                 parameters=tool.schema_for(agent_mode),
             )
             for tool in self.list_all()
-            if tool.enabled
+            if tool.enabled and self.is_exposed(tool, exposed)
         ]

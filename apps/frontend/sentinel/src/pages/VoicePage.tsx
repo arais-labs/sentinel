@@ -430,7 +430,14 @@ export function VoicePage({ active = true, panelOpen = true, onPhaseChange, onOp
         <AudioLines className="voice-waveform" size={36} strokeWidth={1.5} aria-hidden="true" />
       </div>
       <VoiceOrbitText label={labels[phase]} heard={connected ? heard : ''} reply={connected ? reply : ''} hold={phase === 'speaking'} />
-      {connected && tools.length > 0 && <div className="voice-activity-anchor"><VoiceActivity calls={tools} /></div>}
+      {connected && (tools.length > 0 || approval) && <div className="voice-activity-anchor"><div className="voice-activity-stack">
+        {approval && <section className="voice-setup voice-approval" aria-labelledby="voice-approval-title">
+          <div className="voice-permission-heading"><ShieldCheck size={18} /><h3 id="voice-approval-title">Approval needed</h3></div>
+          <p>{approval.label ?? approval.action ?? 'An action'} is waiting for your decision.</p>
+          <ApprovalActions busy={resolvingApproval} sessionId={voiceSessionId} action={approval.action} onResolve={(decision, scope) => void resolveApproval(decision, scope)} />
+        </section>}
+        {tools.length > 0 && <VoiceActivity calls={tools} />}
+      </div></div>}
       {phase === 'permission' && <section className="voice-setup voice-microphone" aria-labelledby="voice-microphone-title">
         <div className="voice-permission-heading"><Mic size={18} /><h3 id="voice-microphone-title">{microphoneBlocked ? 'Microphone access' : 'Waiting for microphone access'}</h3></div>
         <p>Voice needs your microphone to hear requests. Use Disconnect to stop listening, even when this panel is closed.</p>
@@ -445,11 +452,6 @@ export function VoicePage({ active = true, panelOpen = true, onPhaseChange, onOp
           </div>
         </>}
         <button className="voice-permission-later" onClick={() => setEnabled(false)}>Not now</button>
-      </section>}
-      {approval && connected && <section className="voice-setup voice-approval" aria-labelledby="voice-approval-title">
-        <div className="voice-permission-heading"><ShieldCheck size={18} /><h3 id="voice-approval-title">Approval needed</h3></div>
-        <p>{approval.label ?? approval.action ?? 'An action'} is waiting for your decision.</p>
-        <ApprovalActions busy={resolvingApproval} sessionId={voiceSessionId} action={approval.action} onResolve={(decision, scope) => void resolveApproval(decision, scope)} />
       </section>}
       {error && <p className="voice-error" role="alert">{error}</p>}
       {phase === 'setup' && <section className="voice-setup"><h3>Local voice setup</h3>

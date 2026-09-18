@@ -35,6 +35,7 @@ from sentral import (
 )
 from app.services.agent.agent_modes import get_agent_mode_definition
 import app.services.agent.runtime_support as runtime_support_module
+import app.services.mcp.exposure as mcp_exposure_module
 from app.services.agent_runtime_adapters.conversions import db_messages_to_runtime_items
 from sentral.llm.runtime_conversions import (
     runtime_item_to_sentinel_message,
@@ -230,6 +231,11 @@ class SentinelLoopRuntimeAdapter(Machine):
         persist_user_message = bool(config.provider_metadata.get("persist_user_message", True))
         skipped_pre_persisted_new_items = 0 if persist_user_message else len(request.new_items)
 
+        mcp_exposure = (
+            await mcp_exposure_module.refresh(self._db, self._session_id)
+            if any(tool.server_id for tool in self._loop.tool_registry.list_all())
+            else None
+        )
         prepared = await self._loop.prepare_runtime_turn_context(
             self._db,
             self._session_id,
@@ -242,6 +248,7 @@ class SentinelLoopRuntimeAdapter(Machine):
             temperature=config.temperature,
             max_iterations=config.max_iterations,
             stream=config.stream,
+            **({"mcp_exposure": mcp_exposure} if mcp_exposure is not None else {}),
         )
         messages = prepared.messages
         runtime_system_prompt = prepared.effective_system_prompt
@@ -428,6 +435,7 @@ class SentinelLoopRuntimeAdapter(Machine):
                 session_id=self._session_id,
                 runtime_session_id=self._runtime_session_id,
                 on_pending_tool_result=_on_pending_tool_result,
+                exposure=mcp_exposure,
             ),
             compactor=self._compactor,
         )

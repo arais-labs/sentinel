@@ -18,6 +18,7 @@ from app.services.agent.agent_modes import AgentMode, parse_agent_mode
 import app.services.agent.context_builder as context_builder_module
 from app.services.agent.interactive_output import post_process_assistant_html
 from app.services.tools.executor import ToolExecutor
+from app.services.mcp.exposure import SessionExposure, summary_block
 from app.services.tools.registry import ToolRegistry
 from sentral.llm.generic.base import LLMProvider
 from sentral.llm.generic.types import (
@@ -104,8 +105,11 @@ class SentinelRuntimeSupport:
         temperature: float,
         max_iterations: int,
         stream: bool,
+        mcp_exposure: SessionExposure | None = None,
     ) -> PreparedRuntimeTurnContext:
         context_options = {}
+        if mcp_exposure is not None:
+            context_options["mcp_summary"] = summary_block(mcp_exposure)
         if isinstance(self.context_builder, context_builder_module.ContextBuilder):
             limits = self.provider.model_context(model)
             context_options["token_budget"] = limits["context_token_budget"]
@@ -118,7 +122,9 @@ class SentinelRuntimeSupport:
             agent_mode=agent_mode,
             **context_options,
         )
-        tools = self.tool_registry.list_schemas(agent_mode)
+        tools = self.tool_registry.list_schemas(
+            agent_mode, exposed=None if mcp_exposure is None else mcp_exposure.exposed
+        )
         return PreparedRuntimeTurnContext(
             messages=messages,
             tools=tools,

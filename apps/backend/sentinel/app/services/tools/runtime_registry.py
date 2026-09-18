@@ -4,6 +4,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.services.mcp.tools import load_tools
 from app.services.modules.custom_modules import load_custom_module_tool_definitions
 from app.services.tools.approval.approval_waiters import (
     build_tool_db_approval_result_recorder,
@@ -19,6 +20,8 @@ async def build_runtime_registry(
 ) -> ToolRegistry:
     registry = build_default_registry(session_factory=session_factory)
     for tool_def in await load_custom_module_tool_definitions(session_factory=session_factory):
+        registry.register(tool_def)
+    for tool_def in await load_tools(session_factory):
         registry.register(tool_def)
     return registry
 

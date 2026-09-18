@@ -31,3 +31,8 @@
 .topbar-voice-popover :is(.voice-setup,.voice-error) { pointer-events:auto; }
 @media (max-width:700px) { .topbar-voice-popover { width:min(440px,calc(100vw - 24px)); } }
 @media (prefers-reduced-motion:reduce) { .topbar-voice-popover,.topbar-voice-popover::backdrop,.topbar-voice-island,.topbar-voice-island-actions { transition:none; } }
+.topbar-voice-permissions { position:relative; }
+.topbar-voice-permissions[data-count] { color:var(--sentinel-blue); }
+.topbar-voice-permissions-count { position:absolute; top:2px; right:2px; min-width:13px; height:13px; padding:0 3px; border-radius:999px; background:var(--sentinel-blue); color:#fff; font-size:9px; font-weight:700; line-height:13px; text-align:center; }
+.topbar-voice-permissions-panel { -webkit-app-region:no-drag; position:fixed; inset:auto; margin:0; width:min(360px,calc(100vw - 24px)); transform:translateX(-50%); padding:10px 0 0; border:1px solid var(--border-subtle); border-radius:14px; background:var(--surface-0); box-shadow:0 8px 28px #0006; color:var(--text-primary); }
+.topbar-voice-permissions-panel::backdrop { display:none; }

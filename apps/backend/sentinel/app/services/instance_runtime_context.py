@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.services.mcp import connections as mcp_connections, oauth as mcp_oauth
+
 import app.services.runtime.session_cleanup as session_cleanup
 import app.services.telegram.bridge as telegram_bridge_module
 
@@ -180,7 +182,7 @@ async def _build_instance_runtime_context(
         instance_name=instance.name,
     )
 
-    provider = build_tier_provider_from_settings(instance_settings)
+    provider = build_tier_provider_from_settings(instance_settings, instance_name=instance.name)
     memory_search_service = getattr(app_state, "memory_search_service", None)
     agent_runtime_support = None
     if provider is not None:
@@ -274,6 +276,8 @@ async def _build_instance_runtime_context(
 
 
 async def _stop_instance_context(context: InstanceRuntimeContext) -> None:
+    await mcp_oauth.cancel(context.session_factory)
+    await mcp_connections.close(context.session_factory)
     await context.sub_agent_orchestrator.close()
     for task in context.background_tasks:
         task.cancel()
