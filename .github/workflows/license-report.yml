@@ -27,7 +27,7 @@ jobs:
         run: bash scripts/generate-license-reports.sh
 
       - name: Upload license reports
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: license-reports
           path: reports/licenses/

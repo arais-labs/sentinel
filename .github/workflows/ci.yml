@@ -96,7 +96,7 @@ jobs:
         working-directory: apps/frontend/sentinel
         run: npm run build
 
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: frontend-dist
           path: apps/frontend/sentinel/dist/
@@ -124,7 +124,7 @@ jobs:
         run: |
           python3 scripts/packaging/graphics/build-guest.py build/guest-graphics musl
           python3 scripts/packaging/graphics/build-guest.py build/guest-graphics glibc
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: guest-graphics-arm64
           path: apps/desktop/sentinel/build/guest-graphics/
@@ -195,13 +195,13 @@ jobs:
             packaging-downloads-${{ runner.os }}-${{ runner.arch }}-v1-
 
 
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v8
         with:
           name: guest-graphics-arm64
           path: apps/desktop/sentinel/build/guest-graphics
 
 
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v8
         with:
           name: frontend-dist
           path: apps/frontend/sentinel/dist
@@ -220,7 +220,7 @@ jobs:
       - name: Build payload
         if: matrix.artifact == 'payload'
         run: npm run payload:build
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: desktop-${{ matrix.artifact }}
           path: |
