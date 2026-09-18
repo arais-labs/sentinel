@@ -37,6 +37,17 @@ build today. The machine runtime can be updated through Machines using the runti
 local build does not establish that macOS will trust a downloaded copy.
 :::
 
+## Updating
+
+Sentinel updates in two layers.
+
+- **The service**, the backend and the web frontend, ships as a payload and updates in place from **Settings → Updates**. Choose a channel, check for updates, and install. Most releases only need this.
+- **The app itself**, the desktop shell, only changes when a release adds something the shell must provide, such as new windows or new desktop integrations. Those releases need the new DMG.
+
+Each release declares the oldest app version that can run its service. When the latest service on your channel needs a newer app than the one running, Updates shows a **Download Sentinel** button that opens the release page instead of installing, and the app posts one notification on launch. Install the DMG, and it brings its own matching service.
+
+An older app keeps updating its service normally until a release raises that requirement, and anything it receives in the meantime runs without the newer desktop features. Apps older than 2.3.0 predate this check, so once they have the 2.3.0 service their next update is always offered as a DMG.
+
 ## Current limitations
 
 - LLM provider credentials must be set per instance via the UI/API after install;
