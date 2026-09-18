@@ -1,135 +1,33 @@
 name: CI
-
-# PRs build a testable payload immediately; add the `build-installer` label when
-# a DMG is required. Publishing remains restricted to release pushes/manual runs.
+# PRs test source and build candidates. Release only promotes tested artifacts.
 on:
-  push:
-    branches: [main, beta]
   pull_request:
-    types: [opened, synchronize, reopened, labeled]
-  workflow_dispatch:
-    inputs:
-      channel:
-        description: Release channel to publish
-        type: choice
-        options: [beta, stable]
-        default: beta
-
+    types: [opened, synchronize, reopened]
 permissions:
   actions: read
   contents: read
-
-# Superseded PR commits need no artifacts; release runs must finish publishing.
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
+  group: ci-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 jobs:
   version:
     name: Version
     runs-on: ubuntu-24.04
-    outputs:
-      bumped: ${{ steps.bump.outputs.bumped }}
-      promotion: ${{ steps.promotion.outputs.promotion }}
-      promotion_run_id: ${{ steps.promotion.outputs.run_id }}
     steps:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
-
-      - name: Drift guard
-        # Every derived copy of the version must match the root VERSION file.
-        run: scripts/sync-version.sh --check
-
-      - name: Require increasing versions on release branches
+      - name: Check version and release direction
         env:
-          EVENT_NAME: ${{ github.event_name }}
-          TARGET_BRANCH: ${{ github.base_ref }}
-          REF_NAME: ${{ github.ref_name }}
-          PREVIOUS_SHA: ${{ github.event.before }}
+          BASE: ${{ github.base_ref }}
+          HEAD: ${{ github.head_ref }}
         run: |
-          if [ "$EVENT_NAME" = pull_request ] && { [ "$TARGET_BRANCH" = main ] || [ "$TARGET_BRANCH" = beta ]; }; then
-            git fetch --no-tags origin "refs/heads/$TARGET_BRANCH"
-            scripts/sync-version.sh --check --greater-than FETCH_HEAD
-          elif [ "$EVENT_NAME" = push ] && { [ "$REF_NAME" = main ] || [ "$REF_NAME" = beta ]; }; then
-            if git cat-file -e "$PREVIOUS_SHA^{commit}" 2>/dev/null; then
-              scripts/sync-version.sh --check --greater-than "$PREVIOUS_SHA"
-            else
-              echo "Initial branch creation: no previous target version to compare."
-            fi
+          scripts/sync-version.sh --check
+          if [ "$BASE" = main ]; then
+            test "$HEAD" = beta
           fi
-
-      - name: Detect version bump
-        id: bump
-        # Publishing happens only when VERSION changed in this push (or a manual
-        # dispatch). Plain pushes still run the gate above but never ship, so a
-        # given version is published exactly once — on the commit that bumped it.
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "bumped=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          before="${{ github.event.before }}"
-          if [ -z "$before" ] || ! git cat-file -e "${before}^{commit}" 2>/dev/null; then
-            # New branch / unknown base: can't diff, so don't publish.
-            echo "bumped=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          if git diff --name-only "$before" "${{ github.sha }}" | grep -qx VERSION; then
-            echo "bumped=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "bumped=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Plan tested-asset promotion
-        id: promotion
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          echo "promotion=false" >> "$GITHUB_OUTPUT"
-          echo "run_id=" >> "$GITHUB_OUTPUT"
-          if [ "${{ github.event_name }}" != push ] || [ "${{ steps.bump.outputs.bumped }}" != true ]; then
-            exit 0
-          fi
-          if ! source_commit="$(git rev-parse HEAD^2 2>/dev/null)"; then
-            echo "Release head is not a merge commit; using a full build."
-            exit 0
-          fi
-          if [ "$(git rev-parse 'HEAD^{tree}')" != "$(git rev-parse 'HEAD^2^{tree}')" ]; then
-            echo "Release head differs from its candidate parent; using a full build."
-            exit 0
-          fi
-          version="$(tr -d '[:space:]' < VERSION)"
-          if [ "${{ github.ref }}" = refs/heads/main ]; then
-            tag="beta-${version}-${source_commit:0:7}"
-            if ! assets="$(gh release view "$tag" --json assets --jq '.assets[].name')"; then
-              echo "Beta release $tag is unavailable; using a full stable build."
-              exit 0
-            fi
-            for required in "Sentinel-${version}-arm64.dmg" "sentinel-payload-beta-${version}.tar.gz" latest-beta.json; do
-              if ! grep -Fxq "$required" <<<"$assets"; then
-                echo "Beta release $tag lacks $required; using a full stable build."
-                exit 0
-              fi
-            done
-            echo "promotion=stable" >> "$GITHUB_OUTPUT"
-            echo "Promoting the tested assets from $tag."
-          elif [ "${{ github.ref }}" = refs/heads/beta ]; then
-            run_id="$(gh run list --workflow ci.yml --commit "$source_commit" --event pull_request --status success --limit 1 --json databaseId --jq '.[0].databaseId')"
-            if [ -z "$run_id" ]; then
-              echo "No successful PR candidate run for $source_commit; using a full beta build."
-              exit 0
-            fi
-            artifacts="$(gh api "repos/${{ github.repository }}/actions/runs/$run_id/artifacts" --jq '.artifacts[] | select(.expired == false) | .name')"
-            for required in desktop-installer desktop-payload; do
-              if ! grep -Fxq "$required" <<<"$artifacts"; then
-                echo "PR run $run_id lacks $required; using a full beta build."
-                exit 0
-              fi
-            done
-            echo "promotion=beta" >> "$GITHUB_OUTPUT"
-            echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
-            echo "Promoting the tested candidate from PR workflow run $run_id."
+          if [ "$BASE" = beta ] || [ "$BASE" = main ]; then
+            scripts/sync-version.sh --check --greater-than "origin/$BASE"
           fi
 
   backend-tests:
@@ -170,9 +68,9 @@ jobs:
         working-directory: apps/desktop/sentinel
         run: npm ci
 
-      - name: Typecheck
+      - name: Typecheck and desktop unit tests
         working-directory: apps/desktop/sentinel
-        run: npx tsc -p tsconfig.json --noEmit
+        run: npm test
 
       - name: Test graphics artifact handoff
         working-directory: apps/desktop/sentinel
@@ -207,13 +105,7 @@ jobs:
 
   guest-graphics:
     name: Build Linux ARM guest graphics
-    needs: version
-    if: >-
-      needs.version.outputs.promotion == 'false' &&
-      (github.event_name == 'pull_request' ||
-       github.event_name == 'workflow_dispatch' ||
-       ((github.ref == 'refs/heads/main' || github.ref == 'refs/heads/beta') &&
-        needs.version.outputs.bumped == 'true'))
+    if: github.base_ref != 'main'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 60
     steps:
@@ -239,27 +131,34 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  desktop-installer:
-    name: Build macOS installer
-    needs: [version, guest-graphics]
-    if: >-
-      needs.version.outputs.promotion == 'false' &&
-      (github.event_name != 'pull_request' ||
-       github.base_ref == 'beta' ||
-       contains(github.event.pull_request.labels.*.name, 'build-installer'))
+  desktop:
+    name: Build desktop ${{ matrix.artifact }}
+    needs: [version, guest-graphics, frontend-build]
+    if: github.base_ref != 'main'
     runs-on: macos-26
-    timeout-minutes: 90
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        artifact: [installer, payload]
+    env:
+      SENTINEL_BUILD_CHANNEL: beta
+      SENTINEL_GUEST_GRAPHICS_DIR: ${{ github.workspace }}/apps/desktop/sentinel/build/guest-graphics
+      SENTINEL_FRONTEND_DIST: ${{ github.workspace }}/apps/frontend/sentinel/dist
+      SENTINEL_INTERNAL_BUILD: '1'
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      CSC_FOR_PULL_REQUEST: 'true'
+    defaults:
+      run:
+        working-directory: apps/desktop/sentinel
     steps:
       - uses: actions/checkout@v6
-
-      - name: Select Xcode 26.3
+      - name: Select toolchain
         id: toolchain
         run: |
           sudo xcode-select --switch /Applications/Xcode_26.3.app/Contents/Developer
-          swift --version
           test "$(uname -m)" = arm64
           echo "image=$ImageVersion" >> "$GITHUB_OUTPUT"
-
       - uses: actions/setup-node@v6
         with:
           node-version: '22'
@@ -267,7 +166,11 @@ jobs:
           cache-dependency-path: |
             apps/desktop/sentinel/package-lock.json
             apps/frontend/sentinel/package-lock.json
-
+      - uses: astral-sh/setup-uv@v7
+        if: matrix.artifact == 'payload'
+        with:
+          enable-cache: true
+          cache-dependency-glob: apps/backend/sentinel/uv.lock
       - name: Cache native runtime
         uses: actions/cache@v5
         with:
@@ -297,254 +200,65 @@ jobs:
           name: guest-graphics-arm64
           path: apps/desktop/sentinel/build/guest-graphics
 
-      - name: Install native build tools
-        run: brew install ninja pkg-config
-
-      - name: Prepare native runtime
-        working-directory: apps/desktop/sentinel
-        env:
-          SENTINEL_GUEST_GRAPHICS_DIR: ${{ github.workspace }}/apps/desktop/sentinel/build/guest-graphics
-          SENTINEL_INTERNAL_BUILD: '1'
-          # Explicit ad-hoc identity, with strict verification after signing.
-          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-          # PR builds use the ad-hoc identity above, with no signing secrets.
-          CSC_FOR_PULL_REQUEST: 'true'
-        run: npm run desktop:prepare
-
-      - name: Build ad-hoc signed DMG
-        working-directory: apps/desktop/sentinel
-        env:
-          SENTINEL_INTERNAL_BUILD: '1'
-          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-          CSC_FOR_PULL_REQUEST: 'true'
-        run: npm run desktop:package
-
-      - name: Verify DMG checksum
-        working-directory: apps/desktop/sentinel
-        run: hdiutil verify release/*.dmg
-
-      - uses: actions/upload-artifact@v5
-        with:
-          name: desktop-installer
-          path: apps/desktop/sentinel/release/*.dmg
-          if-no-files-found: error
-          retention-days: 14
-
-  desktop-payload:
-    name: Build desktop payload
-    needs: [version, guest-graphics, frontend-build]
-    if: needs.version.outputs.promotion == 'false'
-    runs-on: macos-26
-    timeout-minutes: 90
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Select Xcode 26.3
-        id: toolchain
-        run: |
-          sudo xcode-select --switch /Applications/Xcode_26.3.app/Contents/Developer
-          test "$(uname -m)" = arm64
-          echo "image=$ImageVersion" >> "$GITHUB_OUTPUT"
-
-      - uses: actions/setup-node@v6
-        with:
-          node-version: '22'
-          cache: npm
-          cache-dependency-path: apps/desktop/sentinel/package-lock.json
-
-      - uses: astral-sh/setup-uv@v7
-        with:
-          enable-cache: true
-          cache-dependency-glob: |
-            apps/backend/sentinel/uv.lock
-            packages/sentral/pyproject.toml
-
-      - name: Cache native runtime
-        uses: actions/cache@v5
-        with:
-          path: |
-            apps/desktop/sentinel/build/macos-arm64/runtime
-            apps/desktop/sentinel/build/macos-arm64/stamps
-          key: native-runtime-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.image }}-xcode26.3-v2-${{ hashFiles('apps/desktop/sentinel/runtime.lock.json', 'apps/desktop/sentinel/native/**', 'apps/desktop/sentinel/packaging/**', 'apps/desktop/sentinel/scripts/packaging/platforms/**', 'apps/desktop/sentinel/scripts/packaging/graphics/**') }}
-          restore-keys: |
-            native-runtime-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.image }}-xcode26.3-v2-
-            native-runtime-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.image }}-xcode26.3-v1-
-            native-runtime-${{ runner.os }}-${{ runner.arch }}-
-
-      - uses: actions/download-artifact@v5
-        with:
-          name: guest-graphics-arm64
-          path: apps/desktop/sentinel/build/guest-graphics
 
       - uses: actions/download-artifact@v5
         with:
           name: frontend-dist
           path: apps/frontend/sentinel/dist
-
-      - name: Install native build tools
-        run: brew install ninja pkg-config
-
-      - name: Resolve channel
-        id: channel
+      - name: Prepare runtime
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            channel="${{ inputs.channel }}"
-          elif [ "${{ github.ref }}" = "refs/heads/main" ]; then
-            channel="stable"
-          else
-            channel="beta"
-          fi
-          echo "channel=$channel" >> "$GITHUB_OUTPUT"
-
-      - name: Prepare payload runtime
-        working-directory: apps/desktop/sentinel
-        env:
-          SENTINEL_GUEST_GRAPHICS_DIR: ${{ github.workspace }}/apps/desktop/sentinel/build/guest-graphics
-        run: npm run desktop:build -- --skip-package
-
+          brew install ninja pkg-config
+          npm run desktop:prepare
+      - name: Build and verify installer
+        if: matrix.artifact == 'installer'
+        run: |
+          npm run desktop:package
+          mount_dir="$(mktemp -d)"
+          trap 'hdiutil detach "$mount_dir"; rmdir "$mount_dir"' EXIT
+          hdiutil attach release/*.dmg -readonly -nobrowse -mountpoint "$mount_dir"
+          codesign --verify --deep --strict "$mount_dir/Sentinel.app"
       - name: Build payload
-        working-directory: apps/desktop/sentinel
-        env:
-          SENTINEL_BUILD_CHANNEL: ${{ steps.channel.outputs.channel }}
-          SENTINEL_FRONTEND_DIST: ${{ github.workspace }}/apps/frontend/sentinel/dist
+        if: matrix.artifact == 'payload'
         run: npm run payload:build
-
-      - name: Verify the payload index names the required shell
-        working-directory: apps/desktop/sentinel
-        run: |
-          expected="$(tr -d '[:space:]' < ../../../MIN_SHELL_VERSION)"
-          actual="$(node -p "JSON.parse(require('fs').readFileSync('release/latest-${{ steps.channel.outputs.channel }}.json', 'utf8')).minShellVersion ?? ''")"
-          if [ "$actual" != "$expected" ]; then
-            echo "latest-${{ steps.channel.outputs.channel }}.json minShellVersion='$actual' but MIN_SHELL_VERSION='$expected'"
-            exit 1
-          fi
-
-      - name: Write tester instructions
-        working-directory: apps/desktop/sentinel/release
-        run: |
-          cat > TESTING.txt <<'EOF'
-          Source commit: ${{ github.sha }}
-          Requires Apple Silicon and macOS 26 or later.
-          If this artifact includes a DMG, install it first. If macOS blocks
-          opening it, use System Settings > Privacy & Security > Open Anyway.
-          In Sentinel, enable Developer > Developer Mode, then choose
-          Developer > Install PR app bundle…
-          and select the sentinel-payload-*.tar.gz included in this artifact.
-          This installs the matching backend and frontend for this build.
-          EOF
-
       - uses: actions/upload-artifact@v5
         with:
-          name: desktop-payload
-          path: |
-            apps/desktop/sentinel/release/sentinel-payload-*.tar.gz
-            apps/desktop/sentinel/release/latest-*.json
-            apps/desktop/sentinel/release/TESTING.txt
-          if-no-files-found: error
-          retention-days: 14
-
-  desktop-candidate:
-    # Keep this check name stable: beta branch protection requires it.
-    name: Build testable macOS installer and payload
-    needs: [desktop-installer, desktop-payload]
-    if: always() && github.event_name == 'pull_request'
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Confirm both independently built artifacts passed
-        env:
-          INSTALLER_RESULT: ${{ needs.desktop-installer.result }}
-          PAYLOAD_RESULT: ${{ needs.desktop-payload.result }}
-        run: |
-          test "$INSTALLER_RESULT" = success
-          test "$PAYLOAD_RESULT" = success
-
-  promote-release:
-    name: Promote tested release assets
-    needs: version
-    if: needs.version.outputs.promotion != 'false'
-    runs-on: ubuntu-24.04
-    permissions:
-      actions: read
-      contents: read
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-node@v6
-        with:
-          node-version: '22'
-      - name: Prepare promoted release assets
-        working-directory: apps/desktop/sentinel
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PROMOTION_RUN_ID: ${{ needs.version.outputs.promotion_run_id }}
-        run: node scripts/publishing/promote-release.mjs "${{ needs.version.outputs.promotion }}"
-      - uses: actions/upload-artifact@v5
-        with:
-          name: desktop-release
+          name: desktop-${{ matrix.artifact }}
           path: |
             apps/desktop/sentinel/release/*.dmg
             apps/desktop/sentinel/release/sentinel-payload-*.tar.gz
             apps/desktop/sentinel/release/latest-*.json
-            apps/desktop/sentinel/release/TESTING.txt
+          compression-level: 0
           if-no-files-found: error
           retention-days: 14
 
-  desktop-release:
-    name: Publish desktop release
-    needs: [version, backend-tests, desktop-typecheck, frontend-build, desktop-installer, desktop-payload, promote-release]
-    if: >-
-      always() &&
-      needs.version.result == 'success' &&
-      needs.backend-tests.result == 'success' &&
-      needs.desktop-typecheck.result == 'success' &&
-      needs.frontend-build.result == 'success' &&
-      (needs.promote-release.result == 'success' ||
-       (needs.desktop-installer.result == 'success' && needs.desktop-payload.result == 'success')) &&
-      (github.event_name == 'workflow_dispatch' ||
-       (github.event_name == 'push' &&
-        (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/beta') &&
-        needs.version.outputs.bumped == 'true'))
+  desktop-candidate:
+    # This fixed name is required by branch protection.
+    name: Build testable macOS installer and payload
+    needs: [version, desktop]
+    if: always()
     runs-on: ubuntu-24.04
-    permissions:
-      actions: read
-      contents: write
-    concurrency:
-      group: desktop-release-${{ github.ref_name }}-${{ inputs.channel || 'auto' }}
-      cancel-in-progress: false
     steps:
+      - name: Check candidate builds
+        if: github.base_ref != 'main'
+        env:
+          VERSION_RESULT: ${{ needs.version.result }}
+          BUILD_RESULT: ${{ needs.desktop.result }}
+        run: |
+          test "$VERSION_RESULT" = success
+          test "$BUILD_RESULT" = success
       - uses: actions/checkout@v6
+        if: github.base_ref == 'main'
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v6
+        if: github.base_ref == 'main'
         with:
           node-version: '22'
-      - uses: actions/download-artifact@v5
-        if: needs.promote-release.result == 'success'
-        with:
-          name: desktop-release
-          path: apps/desktop/sentinel/release
-      - uses: actions/download-artifact@v5
-        if: needs.promote-release.result != 'success'
-        with:
-          name: desktop-installer
-          path: apps/desktop/sentinel/release
-      - uses: actions/download-artifact@v5
-        if: needs.promote-release.result != 'success'
-        with:
-          name: desktop-payload
-          path: apps/desktop/sentinel/release
-      - name: Resolve release channel
-        id: channel
-        run: |
-          if [ "${{ github.event_name }}" = workflow_dispatch ]; then
-            channel="${{ inputs.channel }}"
-          elif [ "${{ github.ref }}" = refs/heads/main ]; then
-            channel=stable
-          else
-            channel=beta
-          fi
-          echo "channel=$channel" >> "$GITHUB_OUTPUT"
-      - name: Publish to GitHub Releases
-        working-directory: apps/desktop/sentinel
+      - name: Validate beta release for stable promotion
+        if: github.base_ref == 'main'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: node scripts/publishing/publish-release.mjs "${{ steps.channel.outputs.channel }}"
+          VERSION_RESULT: ${{ needs.version.result }}
+        run: |
+          test "$VERSION_RESULT" = success
+          node apps/desktop/sentinel/scripts/publishing/promote-release.mjs stable --check

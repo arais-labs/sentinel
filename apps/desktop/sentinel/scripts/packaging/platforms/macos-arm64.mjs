@@ -448,6 +448,10 @@ export function electronBuilderConfig({ paths, baseConfig }) {
       icon: path.join(paths.targetDir, 'icon.icns'),
       entitlements: path.join(paths.desktopDir, 'packaging/macos/mac.plist'),
       entitlementsInherit: path.join(paths.desktopDir, 'packaging/macos/mac.inherit.plist'),
+      // osx-sign otherwise invokes codesign on hundreds of Python bytecode and
+      // other data files. These are sealed as resources by the app signature;
+      // only executable code needs an individual signature.
+      signIgnore: ['\\.(pyc|pyo|whl|gif|ico|png|pickle|exe|gz|xz|pak|dat|asar|icns|woff2?|ttf)$'],
       binaries: ['Contents/Resources/workspace-runtime/sentinel-workspace-runtime', 'Contents/Resources/workspace-runtime/graphics/sentinel-graphics-renderer'],
       extendInfo: { ...(baseConfig.mac?.extendInfo || {}), LSMinimumSystemVersion: '26.0' },
     },
@@ -458,6 +462,8 @@ export function electronBuilderConfig({ paths, baseConfig }) {
       // Sentinel updates through its signed payload/index channel, not
       // electron-updater. Avoid hashing the entire DMG for an unused blockmap.
       writeUpdateInfo: false,
+      // Sentinel requires macOS 26. LZFSE avoids legacy zlib compression cost.
+      format: 'ULFO',
     },
   };
 }
