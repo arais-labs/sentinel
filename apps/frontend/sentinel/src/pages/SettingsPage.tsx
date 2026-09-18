@@ -22,6 +22,7 @@ import { StatusChip } from '../components/ui/StatusChip';
 import { api, requestBlob } from '../lib/api';
 import './settings-page.css';
 import { OllamaProviderSettings } from '../components/OllamaProviderSettings';
+import { ProviderUsage } from '../components/ProviderUsage';
 
 const notify = notificationPublisher('Settings');
 
@@ -114,6 +115,7 @@ const OAUTH_HELP: Record<string, { title: string; steps: string[]; command: stri
 function ProviderRow({
   name, status, onSave, saving, providerId, isPrimary, onSetPrimary, onRemove,
   canSyncOauth = false, syncingOauth = false, onSyncOauth,
+  usageActive,
 }: {
   name: string;
   status: ProviderStatus | null;
@@ -126,6 +128,7 @@ function ProviderRow({
   canSyncOauth?: boolean;
   syncingOauth?: boolean;
   onSyncOauth?: () => void;
+  usageActive: boolean;
 }) {
   const [editing, setEditing] = useState(false);
   const help = OAUTH_HELP[providerId];
@@ -216,6 +219,10 @@ function ProviderRow({
           )}
         </div>
       </div>
+
+      {configured && status?.auth_method === 'oauth' && (
+        <ProviderUsage provider={providerId} name={name} active={usageActive} connection={status} />
+      )}
 
       {editing && (
         <div className="settings-provider-editor space-y-3 animate-in fade-in duration-200">
@@ -683,6 +690,7 @@ export function SettingsPage({ initialSection = 'providers' }: { initialSection?
               <ProviderRow
                 name="Anthropic"
                 providerId="anthropic"
+                usageActive={section === 'providers'}
                 canSyncOauth
                 syncingOauth={importingClaudeOauth}
                 onSyncOauth={handleSyncClaudeOauth}
@@ -696,6 +704,7 @@ export function SettingsPage({ initialSection = 'providers' }: { initialSection?
               <ProviderRow
                 name="OpenAI"
                 providerId="openai"
+                usageActive={section === 'providers'}
                 status={providerStatus?.providers.openai ?? null}
                 onSave={(data) => handleSaveProvider('openai', data)}
                 saving={savingProvider === 'openai'}
@@ -710,6 +719,7 @@ export function SettingsPage({ initialSection = 'providers' }: { initialSection?
               <ProviderRow
                 name="Google Gemini"
                 providerId="gemini"
+                usageActive={section === 'providers'}
                 canSyncOauth
                 syncingOauth={importingGeminiOauth}
                 onSyncOauth={handleSyncGeminiOauth}

@@ -186,6 +186,13 @@ class CodexProvider(OpenAIProvider):
     def provider_id(self) -> ProviderId:
         return ProviderId.OPENAI_CODEX
 
+    async def get_account_usage(self) -> dict[str, Any]:
+        """Read the same account quota endpoint used by Codex's status view."""
+        async with self._client_factory() as client:
+            response = await client.get(f"{self._base_url}/wham/usage", headers=self._headers())
+        response.raise_for_status()
+        return response.json()
+
     def _uses_responses(self, model: str) -> bool:
         return True
 

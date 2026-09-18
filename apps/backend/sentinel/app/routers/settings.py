@@ -19,6 +19,11 @@ from app.logging_context import (
 from app.services.instance_runtime_context import instance_runtime_context_registry
 from sentral.llm.ids import ProviderChoice
 from app.services.settings.settings_service import SettingsService
+from app.services.settings.provider_usage import (
+    OAuthProvider,
+    ProviderUsage,
+    provider_usage_service,
+)
 
 router = APIRouter()
 
@@ -83,6 +88,16 @@ async def get_api_keys_status(
         "primary_provider": status.primary_provider.value,
         "providers": providers,
     }
+
+
+@router.get("/providers/{provider}/usage", response_model=ProviderUsage)
+async def get_provider_usage(
+    provider: OAuthProvider,
+    db: AsyncSession = Depends(get_db),
+    settings_service: SettingsService = Depends(get_settings_service),
+) -> ProviderUsage:
+    instance_settings = await settings_service.build_instance_settings(db)
+    return await provider_usage_service.get_usage(provider, instance_settings)
 
 
 @router.get("/desktop-codex-oauth/status")

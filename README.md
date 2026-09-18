@@ -34,6 +34,18 @@ Built by [ARAIS](https://arais.us).
 Connect Anthropic, OpenAI, or Gemini in Settings using the supported API-key or
 OAuth options. Provider credentials and settings belong to each instance.
 
+## Install on macOS
+
+For **Apple Silicon · macOS 26+**. Quit Sentinel if it's running, then paste into Terminal:
+
+```bash
+sentinel_installer="$(curl -fsSL https://raw.githubusercontent.com/arais-labs/sentinel/main/scripts/install-macos.sh)" && /bin/bash -c "$sentinel_installer"
+```
+
+Open **Sentinel** from Applications when finished. Your existing data is preserved.
+
+Prefer a manual install? [Download the DMG](https://github.com/arais-labs/sentinel/releases/tag/latest-stable).
+
 ## Start developing
 
 On macOS, install Xcode Command Line Tools and Homebrew, then run:

@@ -76,6 +76,17 @@ class AnthropicProvider(LLMProvider):
     def provider_id(self) -> ProviderId:
         return ProviderId.ANTHROPIC
 
+    async def get_account_usage(self) -> dict[str, Any]:
+        """Read subscription quotas without making an inference request."""
+        if not self._is_oauth:
+            raise ValueError("Account usage requires OAuth.")
+        async with self._client_factory() as client:
+            response = await client.get(
+                f"{self._base_url}/api/oauth/usage", headers=self._headers()
+            )
+        response.raise_for_status()
+        return response.json()
+
     async def _renew_credentials(self):
 
         self._api_key = await self._credential_renewer(self._api_key)
