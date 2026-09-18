@@ -276,6 +276,16 @@ jobs:
           SENTINEL_BUILD_CHANNEL: ${{ steps.channel.outputs.channel }}
         run: npm run payload:build
 
+      - name: Verify the payload index names the required shell
+        working-directory: apps/desktop/sentinel
+        run: |
+          expected="$(tr -d '[:space:]' < ../../../MIN_SHELL_VERSION)"
+          actual="$(node -p "JSON.parse(require('fs').readFileSync('release/latest-${{ steps.channel.outputs.channel }}.json', 'utf8')).minShellVersion ?? ''")"
+          if [ "$actual" != "$expected" ]; then
+            echo "latest-${{ steps.channel.outputs.channel }}.json minShellVersion='$actual' but MIN_SHELL_VERSION='$expected'"
+            exit 1
+          fi
+
       - name: Write tester instructions
         working-directory: apps/desktop/sentinel/release
         run: |

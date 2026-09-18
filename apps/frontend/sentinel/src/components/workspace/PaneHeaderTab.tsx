@@ -1,5 +1,5 @@
 import '../session/chat-header.css';
-import { useRef, useState, type SyntheticEvent } from 'react';
+import { useContext, useRef, useState, type SyntheticEvent } from 'react';
 import { createPortal } from 'react-dom';
 import type { IDockviewPanelHeaderProps } from 'dockview-react';
 import {
@@ -8,6 +8,7 @@ import {
   SplitSquareHorizontal,
   Maximize2,
   Minimize2,
+  PictureInPicture2,
   X,
 } from 'lucide-react';
 
@@ -24,6 +25,7 @@ import {
   type SplitDirection,
 } from '../../store/workspace-store';
 import { useFocusModeStore } from '../../store/focus-mode-store';
+import { RetainedSessionContext, WorkspaceInstanceContext } from '../../lib/workspace-context-values';
 import { PaneActions } from './PaneActions';
 import { usePaneActions } from '../../store/pane-actions-store';
 import { useAnchorRect, useDismissOnOutside } from '../../lib/portal-menu';
@@ -334,6 +336,16 @@ export function PaneHeaderTab(props: IDockviewPanelHeaderProps<WorkspacePanePara
   const actions = usePaneActions(paneId);
   const focused = useFocusModeStore(state => state.paneId === paneId);
   const setFocusPane = useFocusModeStore(state => state.setPaneId);
+  const instanceName = useContext(WorkspaceInstanceContext);
+  const retained = useContext(RetainedSessionContext);
+  const desktop = window.sentinelDesktop;
+  const canPopOut = Boolean(desktop) && typeof desktop?.openPaneWindow === 'function';
+  const popOut = () => {
+    if (!desktop || !canPopOut || !tabId || !tab || !instanceName) return;
+    void desktop.openPaneWindow({ instance: instanceName, session: retained?.sessionId ?? null, tabId, paneId, title: tab.label })
+      .then(() => closePane(paneId))
+      .catch(() => { /* the pane stays docked when the window can't open */ });
+  };
 
   return (
     <div data-pane-header-id={paneId} data-tour-pane={tabId ?? undefined} className={`sentinel-pane-header ${tabId === 'sessions' ? 'chat-pane-header ' : ''}flex h-full w-full items-center gap-2 border-b border-(--border-subtle) bg-(--surface-0) px-2 text-(--text-primary)`}>
@@ -360,6 +372,18 @@ export function PaneHeaderTab(props: IDockviewPanelHeaderProps<WorkspacePanePara
             className="rounded-md p-1.5 text-(--text-primary) transition-colors hover:bg-(--surface-2)"
           >
             {focused ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+          </button>
+        )}
+        {tabId && canPopOut && !focused && (
+          <button
+            type="button"
+            onClick={popOut}
+            {...DRAG_BLOCKERS}
+            title="Open in new window"
+            aria-label="Open in new window"
+            className="rounded-md p-1.5 text-(--text-primary) transition-colors hover:bg-(--surface-2)"
+          >
+            <PictureInPicture2 size={16} />
           </button>
         )}
         {!focused && <SplitMenu paneId={paneId} />}

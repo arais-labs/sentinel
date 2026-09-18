@@ -77,6 +77,16 @@ async function readVersion() {
   return version;
 }
 
+// Oldest shell able to run this payload. The shell refuses newer payloads and
+// points the user at the installer instead.
+async function readMinShellVersion() {
+  const value = (await readFile(path.join(repoRoot, 'MIN_SHELL_VERSION'), 'utf8')).trim();
+  if (!/^\d+\.\d+\.\d+$/.test(value)) {
+    throw new Error(`Root MIN_SHELL_VERSION must be MAJOR.MINOR.PATCH, got "${value}".`);
+  }
+  return value;
+}
+
 // Heads = revisions that no other revision lists as its down_revision. We parse
 // the migration files directly so the build needs no DB and no alembic import.
 async function alembicHeads(versionsDir) {
@@ -193,11 +203,15 @@ async function buildPayload() {
   console.log('◆ building web frontend (vite)...');
   await stageFrontend(stagingDir);
 
+  const minShellVersion = await readMinShellVersion();
+  const installer = `Sentinel-${version}-arm64.dmg`;
   const manifest = {
     schema: 1,
     version,
     channel,
     commit,
+    minShellVersion,
+    installer,
     python: pythonVersion,
     builtAt: new Date().toISOString(),
     alembicHeads: {
@@ -228,6 +242,8 @@ async function buildPayload() {
     channel,
     version,
     commit,
+    minShellVersion,
+    installer,
     file: tarName,
     sha256,
     alembicHeads: manifest.alembicHeads,

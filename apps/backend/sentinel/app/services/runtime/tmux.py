@@ -16,6 +16,23 @@ SENTINEL_BASHRC = r"""if [ -r /etc/bash.bashrc ]; then
 fi
 export TERM="${TERM:-xterm-256color}"
 export COLORTERM="${COLORTERM:-truecolor}"
+# tmux always speaks UTF-8. Without a UTF-8 ctype readline measures the prompt
+# in bytes, so a multibyte prompt character shifts the wrap point and rewriting
+# a wrapped input line drops one of its rows. Match the terminal, and leave an
+# explicit locale alone.
+case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in
+  *[Uu][Tt][Ff]-8 | *[Uu][Tt][Ff]8) ;;
+  *)
+    for __ctype in C.UTF-8 C.utf8 en_US.UTF-8; do
+      # A system without the locale command (musl) is UTF-8 already.
+      if ! command -v locale >/dev/null 2>&1 || locale -a 2>/dev/null | grep -qx "$__ctype"; then
+        export LC_CTYPE="$__ctype"
+        break
+      fi
+    done
+    unset __ctype
+    ;;
+esac
 export PAGER=cat
 export GIT_PAGER=cat
 export LESS=FRX

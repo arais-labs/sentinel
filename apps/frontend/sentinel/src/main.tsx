@@ -25,8 +25,24 @@ function Root() {
   );
 }
 
+class RootErrorBoundary extends React.Component<{ children: React.ReactNode }, { error: Error | null }> {
+  state = { error: null as Error | null };
+  static getDerivedStateFromError(error: Error) { return { error }; }
+  componentDidCatch(error: Error) { console.error('Sentinel failed to render', error); }
+  render() {
+    if (!this.state.error) return this.props.children;
+    return <div style={{ padding: 32, fontFamily: 'system-ui, sans-serif', color: '#e4e4e7', background: '#09090b', minHeight: '100vh' }}>
+      <p style={{ fontWeight: 600, marginBottom: 8 }}>Sentinel failed to render.</p>
+      <p style={{ opacity: .75, marginBottom: 16 }}>Reload the app. If this keeps happening, install the latest release.</p>
+      <pre style={{ whiteSpace: 'pre-wrap', fontSize: 12, opacity: .7 }}>{String(this.state.error.stack || this.state.error.message)}</pre>
+    </div>;
+  }
+}
+
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <Root />
+    <RootErrorBoundary>
+      <Root />
+    </RootErrorBoundary>
   </React.StrictMode>,
 );

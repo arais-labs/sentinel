@@ -14,6 +14,10 @@ from app.services.runtime.tmux import TMUX_HISTORY_LIMIT, tmux_host_socket_path
 
 logger = logging.getLogger(__name__)
 _OCTAL = re.compile(rb"\\([0-7]{3})")
+# OSC 133 semantic prompt marks: introducer, body without ESC/BEL, then ST or BEL.
+_MARK_INTRODUCER = b"\x1b]133;"
+_PROMPT_MARK = re.compile(rb"\x1b\]133;[^\x07\x1b]*(?:\x07|\x1b\\)")
+_PARTIAL_MARK_LIMIT = 128
 _FORMAT = (
     "#{window_id} #{pane_id} #{pane_dead} #{pane_active} "
     "#{pane_width} #{pane_height} #{pane_left} #{pane_top} "
@@ -26,6 +30,42 @@ _FORMAT = (
 
 def unescape_output(data: bytes) -> bytes:
     return _OCTAL.sub(lambda match: bytes([int(match[1], 8)]), data)
+
+
+class PromptMarkFilter:
+    """Drop OSC 133 prompt marks from one pane's stream, across any chunking.
+
+    The viewer core honours shell integration: on resize it erases the current
+    prompt region and waits for the shell to redraw it. Behind tmux nothing
+    redraws those cells, because bash repaints only its own readline line and
+    tmux sends no diff for a grid it did not change, so the prompt and anything
+    printed after it would stay blank until new output arrives. Command capture
+    reads the marks from the pane log, so the viewer never needs them.
+    """
+
+    def __init__(self) -> None:
+        self._tail = b""
+
+    def __call__(self, data: bytes) -> bytes:
+        data = _PROMPT_MARK.sub(b"", self._tail + data)
+        self._tail = b""
+        held = _partial_mark_start(data)
+        # Never stall a pane on output that only looks like a truncated mark.
+        if held is not None and len(data) - held <= _PARTIAL_MARK_LIMIT:
+            data, self._tail = data[:held], data[held:]
+        return data
+
+
+def _partial_mark_start(data: bytes) -> int | None:
+    """Offset of a trailing, still incomplete prompt mark, if there is one."""
+    start = data.rfind(_MARK_INTRODUCER)
+    # Complete marks are already gone, so a remaining introducer is cut off.
+    if start >= 0:
+        return start
+    for size in range(min(len(_MARK_INTRODUCER) - 1, len(data)), 0, -1):
+        if data.endswith(_MARK_INTRODUCER[:size]):
+            return len(data) - size
+    return None
 
 
 def parse_layout(data: bytes) -> list[dict]:
@@ -156,12 +196,16 @@ async def serve_terminal(manager, session_id, websocket, messages, *, on_panes=N
         encoding=None,
     )
     initialized: set[str] = set()
+    prompt_marks: dict[str, PromptMarkFilter] = {}
     panes: dict[str, dict] = {}
     changed = asyncio.Event()
     previous = None
 
     async def output(pane_id, data):
         if pane_id in initialized:
+            data = prompt_marks.setdefault(pane_id, PromptMarkFilter())(data)
+            if not data:
+                return
             await websocket.send_json(
                 {
                     "type": "pane_output",
@@ -198,7 +242,8 @@ async def serve_terminal(manager, session_id, websocket, messages, *, on_panes=N
         async def deliver(data):
             # capture-pane -C encodes control bytes. A final newline is a command
             # separator, not an extra screen row (ControlClient already removes it).
-            screen = unescape_output(data).replace(b"\n", b"\r\n")
+            screen = _PROMPT_MARK.sub(b"", unescape_output(data).replace(b"\n", b"\r\n"))
+            prompt_marks.pop(pane_id, None)
             await websocket.send_json(
                 {
                     "type": "pane_snapshot",
@@ -231,6 +276,8 @@ async def serve_terminal(manager, session_id, websocket, messages, *, on_panes=N
         )
         panes = {p["pane_id"]: p for w in windows for p in w["panes"]}
         initialized.intersection_update(panes)
+        for closed in prompt_marks.keys() - panes.keys():
+            del prompt_marks[closed]
         # Cursor movement is reflected by raw output; it is not a layout update.
         signature = [
             {

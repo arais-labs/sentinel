@@ -29,6 +29,17 @@ if args.greater_than:
     if tuple(map(int, version.split("."))) <= tuple(map(int, previous.split("."))):
         raise SystemExit(f"App version {version} must be strictly greater than target version {previous}.")
 
+# The oldest shell (DMG) able to run this payload; raised only by releases that
+# change the Electron shell in a way the payload depends on.
+min_shell_path = Path("MIN_SHELL_VERSION")
+if not min_shell_path.exists():
+    raise SystemExit("MIN_SHELL_VERSION is missing; it names the oldest app version that can run this payload.")
+min_shell = min_shell_path.read_text().strip()
+if not re.fullmatch(version_pattern, min_shell):
+    raise SystemExit(f"MIN_SHELL_VERSION must be MAJOR.MINOR.PATCH, got {min_shell!r}.")
+if tuple(map(int, min_shell.split("."))) > tuple(map(int, version.split("."))):
+    raise SystemExit(f"MIN_SHELL_VERSION {min_shell} must not exceed VERSION {version}.")
+
 updates = {Path("VERSION"): version + "\n"}
 
 def replace(path, pattern, value):

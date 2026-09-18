@@ -12,7 +12,11 @@ from types import SimpleNamespace
 import pytest
 
 from app.services.runtime.local_transport import LocalTransport
-from app.services.runtime.terminal_view import serve_terminal, unescape_output
+from app.services.runtime.terminal_view import (
+    PromptMarkFilter,
+    serve_terminal,
+    unescape_output,
+)
 
 
 def test_control_bytes_preserve_unicode_and_literal_escapes():
@@ -20,6 +24,29 @@ def test_control_bytes_preserve_unicode_and_literal_escapes():
         unescape_output(b"caf\xc3\xa9\\015\\012\\033[31m\\134033")
         == b"caf\xc3\xa9\r\n\x1b[31m\\033"
     )
+
+
+def test_prompt_marks_are_dropped_from_the_viewer_stream():
+    stream = PromptMarkFilter()
+    prompt = b"\x1b]133;A\x1b\\\x1b[34mHINOKI\x1b[0m > \x1b]133;B\x1b\\"
+    assert stream(prompt) == b"\x1b[34mHINOKI\x1b[0m > "
+    assert stream(b"\x1b]133;C\x07hello\r\n") == b"hello\r\n"
+    assert stream(b"\x1b]133;D;0\x1b\\") == b""
+
+
+def test_prompt_marks_split_across_chunks_never_leak():
+    stream = PromptMarkFilter()
+    assert stream(b"done\r\n\x1b]13") == b"done\r\n"
+    assert stream(b"3;D;0\x1b") == b""
+    assert stream(b"\\") == b""
+    assert stream(b"next") == b"next"
+
+
+def test_other_sequences_and_long_lookalikes_pass_through():
+    stream = PromptMarkFilter()
+    assert stream(b"\x1b]0;title\x07\x1b[31mred\x1b[0m") == b"\x1b]0;title\x07\x1b[31mred\x1b[0m"
+    stuck = b"\x1b]133;" + b"x" * 200
+    assert stream(stuck) == stuck
 
 
 class Viewer:
