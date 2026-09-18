@@ -4,10 +4,10 @@
 //   1. A versioned release tagged `<channel>-<version>-<shortsha>` holds the
 //      DMG shell + the payload tarball + the release index. Every push creates
 //      a new one, so nothing is ever clobbered or lost.
-//   2. A fixed pointer release tagged `latest-<channel>` holds ONLY
-//      `latest-<channel>.json`, clobbered on each push. The app polls this one
-//      stable URL to discover the newest payload; the index inside it carries
-//      the absolute URL of the tarball in the versioned release.
+//   2. A fixed pointer release tagged `latest-<channel>` holds the current DMG
+//      and `latest-<channel>.json`. The app polls this stable URL to discover
+//      the newest payload; the index carries the absolute URL of the tarball in
+//      the immutable versioned release.
 //
 // Runs in CI after `desktop:build` + `payload:build`. Requires the `gh` CLI and
 // a GH_TOKEN with `contents: write`. Invoke as:
@@ -17,7 +17,7 @@ import { readdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __filename = fileURLToPath(import.meta.url);
 const desktopDir = path.resolve(path.dirname(__filename), '../..');
@@ -82,6 +82,23 @@ function assertPayloadClean(tarPath) {
 function releaseExists(tag) {
   const result = spawnSync('gh', ['release', 'view', tag, '--repo', repoSlug], { encoding: 'utf8' });
   return result.status === 0;
+}
+
+export function obsoletePointerAssets(names, keep) {
+  return names.filter((name) => !keep.has(name));
+}
+
+function prunePointerAssets(tag, keep) {
+  const names = output('gh', [
+    'release', 'view', tag,
+    '--json', 'assets',
+    '--jq', '.assets[].name',
+    '--repo', repoSlug,
+  ]).split('\n').filter(Boolean);
+  for (const name of obsoletePointerAssets(names, keep)) {
+    console.log(`Removing obsolete pointer asset ${name}`);
+    run('gh', ['release', 'delete-asset', tag, name, '--yes', '--repo', repoSlug]);
+  }
 }
 
 async function main() {
@@ -156,14 +173,17 @@ async function main() {
     ]);
   } else {
     run('gh', ['release', 'upload', pointerTag, dmgPath, pointerIndexPath, '--clobber', '--repo', repoSlug]);
-    run('gh', ['release', 'edit', pointerTag, prerelease, '--repo', repoSlug]);
+    prunePointerAssets(pointerTag, new Set([path.basename(dmgPath), path.basename(pointerIndexPath)]));
+    run('gh', ['release', 'edit', pointerTag, prerelease, '--target', commit, '--repo', repoSlug]);
   }
 
   console.log(`\n✓ Published ${versionedTag}`);
   console.log(`✓ Pointer ${pointerTag} → DMG + ${tarUrl}`);
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.message : error);
-  process.exit(1);
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+  main().catch((error) => {
+    console.error(error instanceof Error ? error.message : error);
+    process.exit(1);
+  });
+}

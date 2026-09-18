@@ -48,7 +48,7 @@ function currentTarget() {
 }
 
 function parseArgs(argv) {
-  const args = { command: argv[2], target: currentTarget(), forceRuntime: false };
+  const args = { command: argv[2], target: currentTarget(), forceRuntime: false, skipPackage: false };
   for (let i = 3; i < argv.length; i += 1) {
     const value = argv[i];
     if (value === '--target') {
@@ -58,6 +58,8 @@ function parseArgs(argv) {
       args.target = value.slice('--target='.length);
     } else if (value === '--force-runtime') {
       args.forceRuntime = true;
+    } else if (value === '--skip-package') {
+      args.skipPackage = true;
     } else {
       throw new Error(`Unknown argument: ${value}`);
     }
@@ -167,9 +169,11 @@ function buildPaths(target) {
   };
 }
 
-async function installNodeDependencies() {
+async function installNodeDependencies(includeFrontend = true) {
   await installNodeDependenciesIn(desktopDir);
-  await installNodeDependenciesIn(path.join(repoRoot, 'apps/frontend/sentinel'));
+  if (includeFrontend) {
+    await installNodeDependenciesIn(path.join(repoRoot, 'apps/frontend/sentinel'));
+  }
   // Electron's npm package no longer installs the binary through postinstall.
   // Its installer verifies the pinned version and reuses an existing download.
   // The native graphics bundle also needs the binary's ANGLE libraries.
@@ -327,7 +331,7 @@ async function buildDesktop(args) {
   const totalStart = Date.now();
   const platform = await loadPlatform(args.target);
   const { config } = await readLock(args.target);
-  await time('install-node-deps', () => installNodeDependencies());
+  await time('install-node-deps', () => installNodeDependencies(args.command === 'prepare' || !args.skipPackage));
   const rebuiltAny = await time('build-runtime-components', () =>
     buildRuntime(args.target, config, platform, args.forceRuntime),
   );
@@ -336,6 +340,45 @@ async function buildDesktop(args) {
   } else {
     console.log('◆ verify-runtime: skipped (all components cached)');
   }
+  if (args.skipPackage) {
+    console.log('◆ app packaging: skipped (payload-only build)');
+  } else {
+    await time('build-electron-app', () => run('npm', ['run', 'build']));
+    if (platform.preparePackageAssets) {
+      await time('prepare-package-assets (icns)', () =>
+        platform.preparePackageAssets({ target: args.target, paths: buildPaths(args.target) }),
+      );
+    }
+    const builderConfig = await writeElectronBuilderConfig(args.target, platform);
+    await time('electron-builder (pack + sign + dmg)', () =>
+      run('npx', ['electron-builder', ...platform.electronBuilderArgs(), '--config', builderConfig]),
+    );
+  }
+
+  const total = (Date.now() - totalStart) / 1000;
+  console.log('\n=== build timing breakdown ===');
+  for (const p of phases) {
+    const bar = '█'.repeat(Math.max(1, Math.round((p.elapsed / total) * 40)));
+    console.log(`  ${p.name.padEnd(36)} ${p.elapsed.toFixed(2).padStart(7)}s  ${bar}`);
+  }
+  console.log(`  ${'TOTAL'.padEnd(36)} ${total.toFixed(2).padStart(7)}s`);
+  console.log('');
+}
+
+async function packageDesktop(args) {
+  const totalStart = Date.now();
+  const platform = await loadPlatform(args.target);
+  const phases = [];
+  const time = async (name, fn) => {
+    const start = Date.now();
+    try {
+      return await fn();
+    } finally {
+      const elapsed = (Date.now() - start) / 1000;
+      phases.push({ name, elapsed });
+      console.log(`◆ ${name}: ${elapsed.toFixed(2)}s`);
+    }
+  };
   await time('build-electron-app', () => run('npm', ['run', 'build']));
   if (platform.preparePackageAssets) {
     await time('prepare-package-assets (icns)', () =>
@@ -346,15 +389,12 @@ async function buildDesktop(args) {
   await time('electron-builder (pack + sign + dmg)', () =>
     run('npx', ['electron-builder', ...platform.electronBuilderArgs(), '--config', builderConfig]),
   );
-
   const total = (Date.now() - totalStart) / 1000;
-  console.log('\n=== build timing breakdown ===');
-  for (const p of phases) {
-    const bar = '█'.repeat(Math.max(1, Math.round((p.elapsed / total) * 40)));
-    console.log(`  ${p.name.padEnd(36)} ${p.elapsed.toFixed(2).padStart(7)}s  ${bar}`);
+  console.log('\n=== package timing breakdown ===');
+  for (const phase of phases) {
+    console.log(`  ${phase.name.padEnd(36)} ${phase.elapsed.toFixed(2).padStart(7)}s`);
   }
-  console.log(`  ${'TOTAL'.padEnd(36)} ${total.toFixed(2).padStart(7)}s`);
-  console.log('');
+  console.log(`  ${'TOTAL'.padEnd(36)} ${total.toFixed(2).padStart(7)}s\n`);
 }
 
 async function cleanDesktop() {
@@ -369,7 +409,9 @@ async function verifyDesktop(args) {
 }
 
 function usage() {
-  console.error('Usage: npm run desktop:build -- [--target macos-arm64] [--force-runtime]');
+  console.error('Usage: npm run desktop:build -- [--target macos-arm64] [--force-runtime] [--skip-package]');
+  console.error('       npm run desktop:prepare -- [--target macos-arm64] [--force-runtime]');
+  console.error('       npm run desktop:package -- [--target macos-arm64]');
   console.error('       npm run desktop:verify -- [--target macos-arm64]');
   console.error('       npm run desktop:clean');
 }
@@ -378,6 +420,14 @@ async function main() {
   const args = parseArgs(process.argv);
   if (args.command === 'build') {
     await buildDesktop(args);
+    return;
+  }
+  if (args.command === 'prepare') {
+    await buildDesktop({ ...args, skipPackage: true });
+    return;
+  }
+  if (args.command === 'package') {
+    await packageDesktop(args);
     return;
   }
   if (args.command === 'clean') {

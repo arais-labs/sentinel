@@ -1,7 +1,7 @@
 {
   "name": "sentinel-desktop",
   "private": true,
-  "version": "2.3.2",
+  "version": "2.3.3",
   "description": "Sentinel desktop management app",
   "type": "module",
   "main": "dist/main/main.js",
@@ -11,6 +11,8 @@
   },
   "scripts": {
     "desktop:build": "node scripts/packaging/desktop-build.mjs build",
+    "desktop:prepare": "node scripts/packaging/desktop-build.mjs prepare",
+    "desktop:package": "node scripts/packaging/desktop-build.mjs package",
     "desktop:clean": "node scripts/packaging/desktop-build.mjs clean",
     "desktop:verify": "node scripts/packaging/desktop-build.mjs verify",
     "payload:build": "node scripts/packaging/payload-build.mjs build",
