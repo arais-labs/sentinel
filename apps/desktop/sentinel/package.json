@@ -1,7 +1,7 @@
 {
   "name": "sentinel-desktop",
   "private": true,
-  "version": "2.3.5",
+  "version": "2.3.7",
   "description": "Sentinel desktop management app",
   "type": "module",
   "main": "dist/main/main.js",

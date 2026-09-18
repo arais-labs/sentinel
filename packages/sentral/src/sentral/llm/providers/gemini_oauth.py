@@ -233,6 +233,20 @@ class GeminiOAuthProvider(GeminiProvider):
         self._refresh_lock = asyncio.Lock()
         self._model_cooldowns: dict[str, float] = {}
 
+    async def get_account_usage(self) -> dict[str, Any]:
+        """Read Code Assist's model quotas using the connected Antigravity account."""
+        project = await self._ensure_project_id()
+        headers = await self._request_headers()
+        headers["accept"] = "application/json"
+        async with self._client_factory() as client:
+            response = await client.post(
+                f"{self._base_url}:retrieveUserQuota",
+                json={"project": project},
+                headers=headers,
+            )
+        response.raise_for_status()
+        return response.json()
+
     def resolve_generation_hint(self, model: str) -> tuple[str, str] | None:
         candidates = self._iter_candidate_models(model)
         if not candidates:

@@ -23,7 +23,6 @@ async def database(tmp_path):
         f"sqlite+aiosqlite:///{tmp_path}/pool.sqlite",
         pool_size=1,
         max_overflow=0,
-        pool_timeout=0.2,
     )
     factory = async_sessionmaker(engine, expire_on_commit=False)
     async with engine.begin() as connection:
@@ -56,52 +55,37 @@ def request():
 
 
 @pytest.mark.asyncio
-async def test_many_slow_desktop_requests_leave_database_available(database, monkeypatch):
+async def test_desktop_request_releases_lookup_connection_before_runtime(database, monkeypatch):
     engine, factory, sid, _ = database
-    waiting = 0
-    all_waiting = asyncio.Event()
-    release = asyncio.Event()
 
     async def get_manager(**kwargs):
+        # Check ownership at the handoff, not how quickly concurrent tasks run.
+        assert engine.pool.checkedout() == 0
         # Runtime resolution needs its own connection to resolve the binding.
         async with factory() as db:
             assert await db.get(Session, sid) is not None
-        return SimpleNamespace(enabled=True, status=slow_status)
+        return SimpleNamespace(enabled=True, status=runtime_status)
 
-    async def slow_status():
-        nonlocal waiting
-        waiting += 1
-        if waiting == 40:
-            all_waiting.set()
-        await release.wait()
+    async def runtime_status():
+        # Unrelated DB work must succeed before the runtime request completes.
+        assert engine.pool.checkedout() == 0
+        async with factory() as db:
+            assert await db.scalar(select(Session.id)) == sid
         return {"state": "stopped"}
 
     monkeypatch.setattr(control, "runtime_configured", AsyncMock(return_value=True))
     monkeypatch.setattr(control, "get_runtime_desktop_manager", get_manager)
 
-    async def open_desktop():
-        async with factory() as db:
-            return await control.live_view_response(
-                request=request(),
-                session_id=str(sid),
-                db=db,
-                geometry=None,
-                resolution_presets={"1920x1200"},
-            )
-
-    tasks = [asyncio.create_task(open_desktop()) for _ in range(40)]
-    try:
-        await asyncio.wait_for(all_waiting.wait(), 3)
+    async with factory() as db:
+        result = await control.live_view_response(
+            request=request(),
+            session_id=str(sid),
+            db=db,
+            geometry=None,
+            resolution_presets={"1920x1200"},
+        )
+        assert result.state == "stopped"
         assert engine.pool.checkedout() == 0
-        async with factory() as db:
-            assert await db.scalar(select(Session.id)) == sid
-        release.set()
-        results = await asyncio.gather(*tasks)
-        assert all(result.state == "stopped" for result in results)
-    finally:
-        for task in tasks:
-            task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 @pytest.mark.asyncio
@@ -110,18 +94,17 @@ async def test_runtime_handoffs_release_lookup_connection(database, monkeypatch,
     from app.routers import sessions
 
     engine, factory, sid, _ = database
-    reached_runtime = asyncio.Event()
-    block = asyncio.Event()
 
-    async def runtime_wait(**kwargs):
+    async def runtime_probe(**kwargs):
+        assert engine.pool.checkedout() == 0
         async with factory() as db:
             assert await db.get(Session, sid) is not None
-        reached_runtime.set()
-        await block.wait()
+        # Stop at the handoff without starting a real runtime or socket stream.
+        raise asyncio.CancelledError
 
     monkeypatch.setattr(control, "runtime_configured", AsyncMock(return_value=True))
-    monkeypatch.setattr(control, "get_runtime_desktop_manager", runtime_wait)
-    monkeypatch.setattr(sessions, "get_runtime_port_forward_manager", runtime_wait)
+    monkeypatch.setattr(control, "get_runtime_desktop_manager", runtime_probe)
+    monkeypatch.setattr(sessions, "get_runtime_port_forward_manager", runtime_probe)
     socket = SimpleNamespace(path_params={"instance_name": "test"}, close=AsyncMock())
     async with factory() as db:
         if route == "resolution":
@@ -133,7 +116,7 @@ async def test_runtime_handoffs_release_lookup_connection(database, monkeypatch,
                 resolution_presets={"1920x1200"},
             )
         elif route == "action":
-            monkeypatch.setattr(control, "runtime_configured", runtime_wait)
+            monkeypatch.setattr(control, "runtime_configured", runtime_probe)
             operation = control.require_runtime_session(str(sid), instance_name="test", db=db)
         elif route == "desktop_socket":
             operation = control.bridge_runtime_desktop_rfb(websocket=socket, session_id=sid, db=db)
@@ -144,13 +127,8 @@ async def test_runtime_handoffs_release_lookup_connection(database, monkeypatch,
                 forward_id="test",
                 db=db,
             )
-        task = asyncio.create_task(operation)
-        try:
-            await asyncio.wait_for(reached_runtime.wait(), 2)
-            assert engine.pool.checkedout() == 0
-        finally:
-            task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
+        with pytest.raises(asyncio.CancelledError):
+            await operation
         assert engine.pool.checkedout() == 0
 
 
@@ -160,16 +138,16 @@ async def test_workspace_reads_release_connection_before_runtime(database, monke
     from app.routers import workspace_browser, workspaces
 
     engine, factory, _, wid = database
-    reached_runtime = asyncio.Event()
-    block = asyncio.Event()
 
-    async def runtime_wait(*args, **kwargs):
-        reached_runtime.set()
-        await block.wait()
+    async def runtime_probe(*args, **kwargs):
+        assert engine.pool.checkedout() == 0
+        async with factory() as other:
+            assert await other.get(Workspace, wid) is not None
+        raise asyncio.CancelledError
 
-    monkeypatch.setattr(workspaces.containers, "overview", runtime_wait)
-    monkeypatch.setattr(workspaces.containers, "statuses", runtime_wait)
-    monkeypatch.setattr(workspaces.workspace_metrics, "get", runtime_wait)
+    monkeypatch.setattr(workspaces.containers, "overview", runtime_probe)
+    monkeypatch.setattr(workspaces.containers, "statuses", runtime_probe)
+    monkeypatch.setattr(workspaces.workspace_metrics, "get", runtime_probe)
     async with factory() as db:
         if route == "browse":
             operation = workspace_browser.browse_workspace(wid, "files", limit=500, db=db)
@@ -177,15 +155,8 @@ async def test_workspace_reads_release_connection_before_runtime(database, monke
             operation = workspaces.list_workspaces(db=db)
         else:
             operation = workspaces.get_workspace_metrics(wid, db=db)
-        task = asyncio.create_task(operation)
-        try:
-            await asyncio.wait_for(reached_runtime.wait(), 2)
-            assert engine.pool.checkedout() == 0
-            async with factory() as other:
-                assert await other.get(Workspace, wid) is not None
-        finally:
-            task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
+        with pytest.raises(asyncio.CancelledError):
+            await operation
         assert engine.pool.checkedout() == 0
 
 
