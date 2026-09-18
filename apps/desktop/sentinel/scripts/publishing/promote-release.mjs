@@ -54,6 +54,11 @@ export function promoteIndex(source, targetChannel, targetCommit, targetFile, ta
   return promoted;
 }
 
+export function isSuccessfulCandidateRun(run, sourceCommit) {
+  return run.headSha === sourceCommit && run.event === 'pull_request' &&
+    run.status === 'completed' && run.conclusion === 'success';
+}
+
 async function main() {
   const targetChannel = process.argv[2];
   if (targetChannel !== 'beta' && targetChannel !== 'stable') {
@@ -79,9 +84,17 @@ async function main() {
     await mkdir(downloaded, { recursive: true });
     await mkdir(staging, { recursive: true });
     let sourceLabel;
+    let sourceMetadataCommit = sourceCommit;
     if (targetChannel === 'beta') {
       const runId = process.env.PROMOTION_RUN_ID;
       if (!runId) throw new Error('PROMOTION_RUN_ID is required for beta promotion.');
+      const [headSha, event, status, conclusion] = output('gh', [
+        'api', `repos/${repoSlug}/actions/runs/${runId}`,
+        '--jq', '[.head_sha, .event, .status, .conclusion] | @tsv',
+      ]).split('\t');
+      if (!isSuccessfulCandidateRun({ headSha, event, status, conclusion }, sourceCommit)) {
+        throw new Error(`PR workflow run ${runId} is not the successful candidate being promoted.`);
+      }
       for (const artifact of ['desktop-installer', 'desktop-payload']) {
         run('gh', [
           'run', 'download', runId,
@@ -91,6 +104,10 @@ async function main() {
         ]);
       }
       sourceLabel = `PR workflow run ${runId}`;
+      // pull_request workflows run against GitHub's temporary test merge, so
+      // their embedded GITHUB_SHA differs from the real head_sha authenticated
+      // above. The index and manifest must still agree with one another.
+      sourceMetadataCommit = null;
     } else {
       const betaTag = `beta-${version}-${sourceCommit.slice(0, 7)}`;
       run('gh', [
@@ -105,7 +122,9 @@ async function main() {
     }
 
     const sourceIndex = JSON.parse(await readFile(path.join(downloaded, 'latest-beta.json'), 'utf8'));
-    if (sourceIndex.channel !== 'beta' || sourceIndex.version !== version || sourceIndex.commit !== sourceCommit) {
+    if (sourceIndex.channel !== 'beta' || sourceIndex.version !== version ||
+        !/^[0-9a-f]{40}$/.test(sourceIndex.commit) ||
+        (sourceMetadataCommit && sourceIndex.commit !== sourceMetadataCommit)) {
       throw new Error(`${sourceLabel} metadata does not match the candidate being promoted.`);
     }
     const sourceTar = path.join(downloaded, sourceTarName);
@@ -116,7 +135,8 @@ async function main() {
     run('tar', ['-xzf', sourceTar, '-C', staging], { env: { COPYFILE_DISABLE: '1' } });
     const manifestPath = path.join(staging, 'manifest.json');
     const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
-    if (manifest.channel !== 'beta' || manifest.version !== version || manifest.commit !== sourceCommit) {
+    if (manifest.channel !== 'beta' || manifest.version !== version ||
+        manifest.commit !== sourceIndex.commit) {
       throw new Error(`${sourceLabel} payload manifest does not match its release index.`);
     }
     const promotedManifest = promoteManifest(manifest, targetChannel, targetCommit, new Date().toISOString());

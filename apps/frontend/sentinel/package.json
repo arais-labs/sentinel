@@ -1,7 +1,7 @@
 {
   "name": "sentinel-frontend",
   "private": true,
-  "version": "2.3.3",
+  "version": "2.3.4",
   "description": "Sentinel operator frontend",
   "type": "module",
   "engines": {

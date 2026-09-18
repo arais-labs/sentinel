@@ -455,6 +455,9 @@ export function electronBuilderConfig({ paths, baseConfig }) {
       ...(baseConfig.dmg || {}),
       icon: path.join(paths.targetDir, 'icon.icns'),
       badgeIcon: path.join(paths.targetDir, 'icon.icns'),
+      // Sentinel updates through its signed payload/index channel, not
+      // electron-updater. Avoid hashing the entire DMG for an unused blockmap.
+      writeUpdateInfo: false,
     },
   };
 }
