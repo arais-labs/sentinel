@@ -1,4 +1,5 @@
-.topbar-voice-island { -webkit-app-region:no-drag; position:absolute; z-index:20; left:50%; top:50%; transform:translate(-50%,-50%); display:flex; align-items:center; width:48px; height:34px; padding:2px; border:1px solid transparent; border-radius:999px; background:transparent; overflow:hidden; transition:width 340ms cubic-bezier(.22,1,.36,1),background-color 220ms,border-color 220ms,box-shadow 220ms; }
+.topbar-voice-island { -webkit-app-region:no-drag; position:absolute; z-index:20; left:50%; top:50%; transform:translate(-50%,-50%); display:flex; align-items:center; width:48px; height:34px; padding:2px; border:1px solid transparent; border-radius:999px; background:transparent; overflow:hidden; transition:width 340ms cubic-bezier(.22,1,.36,1),background-color 220ms,border-color 220ms,box-shadow 220ms,transform 280ms cubic-bezier(.22,1,.36,1),opacity 200ms; }
+.desktop-titlebar:has(.recent-session-dots[data-expanded=true]) > .topbar-voice-island { transform:translate(-50%,calc(-50% - 56px)); opacity:0; pointer-events:none; }
 .topbar-voice-island[data-open=true] { width:calc(48px + var(--voice-actions-width,171px)); max-width:calc(100vw - 120px); background:var(--surface-0); border-color:var(--border-subtle); box-shadow:0 3px 14px #0003,inset 0 1px 0 #ffffff08; }
 .topbar-voice-trigger { -webkit-app-region:no-drag; flex:0 0 42px; height:28px; display:grid; place-items:center; border-radius:999px; color:var(--sentinel-blue); cursor:pointer; }
 .topbar-voice-trigger > svg { position:relative; z-index:1; }
@@ -36,3 +37,15 @@
 .topbar-voice-permissions-count { position:absolute; top:2px; right:2px; min-width:13px; height:13px; padding:0 3px; border-radius:999px; background:var(--sentinel-blue); color:#fff; font-size:9px; font-weight:700; line-height:13px; text-align:center; }
 .topbar-voice-permissions-panel { -webkit-app-region:no-drag; position:fixed; inset:auto; margin:0; width:min(360px,calc(100vw - 24px)); transform:translateX(-50%); padding:10px 0 0; border:1px solid var(--border-subtle); border-radius:14px; background:var(--surface-0); box-shadow:0 8px 28px #0006; color:var(--text-primary); }
 .topbar-voice-permissions-panel::backdrop { display:none; }
+/* The bars ripple while Voice thinks (slow, shallow) or speaks (quick, full). */
+.topbar-voice-trigger:is([data-phase=thinking],[data-phase=speaking]) > svg path { transform-box:fill-box; transform-origin:center; animation:topbar-voice-wave 1.1s cubic-bezier(.45,0,.55,1) infinite; }
+.topbar-voice-trigger[data-phase=thinking] > svg path { animation-duration:1.9s; --voice-wave-peak:1.15; --voice-wave-dip:.75; }
+.topbar-voice-trigger > svg path:nth-child(1) { animation-delay:0ms; }
+.topbar-voice-trigger > svg path:nth-child(2) { animation-delay:90ms; }
+.topbar-voice-trigger > svg path:nth-child(3) { animation-delay:180ms; }
+.topbar-voice-trigger > svg path:nth-child(4) { animation-delay:270ms; }
+.topbar-voice-trigger > svg path:nth-child(5) { animation-delay:360ms; }
+.topbar-voice-trigger > svg path:nth-child(6) { animation-delay:450ms; }
+.topbar-voice-trigger > svg path:nth-child(7) { animation-delay:540ms; }
+@keyframes topbar-voice-wave { 0%,100% { transform:scaleY(var(--voice-wave-dip,.5)); } 50% { transform:scaleY(var(--voice-wave-peak,1.45)); } }
+@media (prefers-reduced-motion:reduce) { .topbar-voice-trigger > svg path { animation:none; } }
