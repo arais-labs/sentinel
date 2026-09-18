@@ -49,6 +49,10 @@ export function buildBackendEnv(secrets: DesktopSecrets): NodeJS.ProcessEnv {
     // Frozen dependencies live alongside the payload; the backend source is on
     // cwd (payload/backend), so `app.*` resolves without an editable install.
     PYTHONPATH: payloadSitePackagesDir(),
+    // Resources live inside the signed .app bundle. Python otherwise writes
+    // stdlib bytecode caches beside their sources after first launch, which
+    // mutates the bundle and makes subsequent codesign verification fail.
+    PYTHONDONTWRITEBYTECODE: '1',
     LANG: 'C',
     LC_ALL: 'C',
     LC_CTYPE: 'C',

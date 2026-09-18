@@ -24,7 +24,9 @@ const repoRoot = path.resolve(desktopDir, '../../..');
 const backendDir = path.join(repoRoot, 'apps/backend/sentinel');
 const sentralDir = path.join(repoRoot, 'packages/sentral');
 const frontendDir = path.join(repoRoot, 'apps/frontend/sentinel');
-const distRoot = path.join(desktopDir, 'release');
+const distRoot = process.env.SENTINEL_RELEASE_DIR
+  ? path.resolve(process.env.SENTINEL_RELEASE_DIR)
+  : path.join(desktopDir, 'release');
 // The shell build stages the interpreter here; the payload must be frozen
 // against THIS python so the wheels are ABI/platform-correct.
 const bundledPython = path.join(
@@ -159,6 +161,15 @@ async function stageBackend(stagingDir) {
 }
 
 async function stageFrontend(stagingDir) {
+  const prebuilt = process.env.SENTINEL_FRONTEND_DIST;
+  if (prebuilt) {
+    const distSrc = path.resolve(prebuilt);
+    if (!existsSync(path.join(distSrc, 'index.html'))) {
+      throw new Error(`Prebuilt frontend does not contain ${path.join(distSrc, 'index.html')}.`);
+    }
+    await cp(distSrc, path.join(stagingDir, 'frontend/dist'), { recursive: true });
+    return;
+  }
   const lockFile = path.join(frontendDir, 'package-lock.json');
   if (!existsSync(lockFile)) {
     throw new Error(`Missing package-lock.json in ${path.relative(repoRoot, frontendDir)}; payload builds require deterministic npm ci.`);

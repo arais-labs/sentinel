@@ -1,0 +1,35 @@
+name: Release
+on:
+  push:
+    branches: [beta, main]
+  workflow_dispatch:
+permissions:
+  actions: read
+  contents: write
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+jobs:
+  release:
+    name: Promote and publish tested release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      - name: Validate, promote, and publish
+        working-directory: apps/desktop/sentinel
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          case "$GITHUB_REF_NAME" in
+            beta) channel=beta ;;
+            main) channel=stable ;;
+            *) echo "Releases require beta or main"; exit 1 ;;
+          esac
+          node scripts/publishing/promote-release.mjs "$channel"
+          node scripts/publishing/publish-release.mjs "$channel"
