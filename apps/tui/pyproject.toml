@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sentinel-tui"
-version = "2.3.4"
+version = "2.3.5"
 description = "Standalone Sentral terminal chat with machine-local tools"
 requires-python = ">=3.12"
 dependencies = ["sentral-runtime==0.1.0", "textual>=8.2.8,<9", "jsonschema>=4.23,<5"]

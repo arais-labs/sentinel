@@ -76,6 +76,17 @@ async function main() {
   const dmgName = `Sentinel-${version}-arm64.dmg`;
   const sourceTarName = `sentinel-payload-beta-${version}.tar.gz`;
   const targetTarName = `sentinel-payload-${targetChannel}-${version}.tar.gz`;
+  const betaTag = `beta-${version}-${sourceCommit.slice(0, 7)}`;
+  if (process.argv.includes('--check')) {
+    if (targetChannel !== 'stable') throw new Error('--check requires stable');
+    const assets = output('gh', ['release', 'view', betaTag, '--repo', repoSlug,
+      '--json', 'assets', '--jq', '.assets[].name']).split('\n');
+    for (const name of [dmgName, sourceTarName, 'latest-beta.json']) {
+      if (!assets.includes(name)) throw new Error(`${betaTag} is missing ${name}`);
+    }
+    console.log(`Verified tree-identical beta candidate ${betaTag}`);
+    return;
+  }
   const temporary = await mkdtemp(path.join(os.tmpdir(), 'sentinel-promote-'));
   const downloaded = path.join(temporary, 'downloaded');
   const staging = path.join(temporary, 'staging');
@@ -86,8 +97,12 @@ async function main() {
     let sourceLabel;
     let sourceMetadataCommit = sourceCommit;
     if (targetChannel === 'beta') {
-      const runId = process.env.PROMOTION_RUN_ID;
-      if (!runId) throw new Error('PROMOTION_RUN_ID is required for beta promotion.');
+      const runId = process.env.PROMOTION_RUN_ID || output('gh', [
+        'run', 'list', '--repo', repoSlug, '--workflow', 'ci.yml',
+        '--commit', sourceCommit, '--event', 'pull_request', '--status', 'success',
+        '--limit', '1', '--json', 'databaseId', '--jq', '.[0].databaseId // empty',
+      ]);
+      if (!runId) throw new Error(`No successful PR build for ${sourceCommit}; build the candidate before promoting.`);
       const [headSha, event, status, conclusion] = output('gh', [
         'api', `repos/${repoSlug}/actions/runs/${runId}`,
         '--jq', '[.head_sha, .event, .status, .conclusion] | @tsv',
@@ -109,7 +124,6 @@ async function main() {
       // above. The index and manifest must still agree with one another.
       sourceMetadataCommit = null;
     } else {
-      const betaTag = `beta-${version}-${sourceCommit.slice(0, 7)}`;
       run('gh', [
         'release', 'download', betaTag,
         '--pattern', dmgName,
@@ -126,6 +140,15 @@ async function main() {
         !/^[0-9a-f]{40}$/.test(sourceIndex.commit) ||
         (sourceMetadataCommit && sourceIndex.commit !== sourceMetadataCommit)) {
       throw new Error(`${sourceLabel} metadata does not match the candidate being promoted.`);
+    }
+    if (targetChannel === 'beta') {
+      const artifactTree = output('gh', ['api',
+        `repos/${repoSlug}/git/commits/${sourceIndex.commit}`, '--jq', '.tree.sha']);
+      if (artifactTree !== targetTree) throw new Error('PR artifact source tree differs from the release.');
+    }
+    const installerSha256 = await sha256(path.join(downloaded, dmgName));
+    if (sourceIndex.installerSha256 && installerSha256 !== sourceIndex.installerSha256) {
+      throw new Error(`${sourceLabel} installer checksum does not match its index.`);
     }
     const sourceTar = path.join(downloaded, sourceTarName);
     if (await sha256(sourceTar) !== sourceIndex.sha256) {
@@ -153,6 +176,7 @@ async function main() {
     const targetIndex = promoteIndex(
       sourceIndex, targetChannel, targetCommit, targetTarName, await sha256(targetTar),
     );
+    targetIndex.installerSha256 = installerSha256;
     await writeFile(
       path.join(distRoot, `latest-${targetChannel}.json`),
       `${JSON.stringify(targetIndex, null, 2)}\n`,
