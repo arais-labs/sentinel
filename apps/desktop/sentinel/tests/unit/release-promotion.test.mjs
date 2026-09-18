@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { promoteIndex, promoteManifest } from '../../scripts/publishing/promote-release.mjs';
+import {
+  isSuccessfulCandidateRun,
+  promoteIndex,
+  promoteManifest,
+} from '../../scripts/publishing/promote-release.mjs';
 import { obsoletePointerAssets } from '../../scripts/publishing/publish-release.mjs';
 
 test('release promotion changes only target metadata and removes the source URL', () => {
@@ -43,4 +47,16 @@ test('pointer cleanup retains only the current index and installer', () => {
     ], keep),
     ['Sentinel-2.2.0-arm64.dmg', 'Sentinel-2.3.2-arm64.dmg'],
   );
+});
+
+test('beta promotion authenticates the successful PR run by its real head', () => {
+  const run = {
+    headSha: 'candidate-head',
+    event: 'pull_request',
+    status: 'completed',
+    conclusion: 'success',
+  };
+  assert.equal(isSuccessfulCandidateRun(run, 'candidate-head'), true);
+  assert.equal(isSuccessfulCandidateRun(run, 'different-head'), false);
+  assert.equal(isSuccessfulCandidateRun({ ...run, conclusion: 'failure' }, 'candidate-head'), false);
 });
