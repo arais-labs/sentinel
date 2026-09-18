@@ -7,6 +7,8 @@ import { DesktopManager } from './app/desktopManager.js';
 import { validateBackupFolder } from './app/backupReset.js';
 import { BACKUP_RESET_ARGUMENT } from './app/backupResetWindow.js';
 import { openPreviewWindow } from './app/previewWindow.js';
+import { openPaneWindow } from './app/paneWindow.js';
+import { PaneWindowBoundsStore, PaneWindowRegistry, isTrustedDesktopSender, validatePaneWindowRequest } from './app/paneWindowRegistry.js';
 import { createMicrophoneAccess } from './app/microphone.js';
 import { IPC, type CompletionSound, type NotificationSettings, type SessionCompletion, type PendingFormWindow, type DesktopStatus, type PayloadUpdate, type ReleaseChannel } from '../shared/ipc.js';
 
@@ -20,6 +22,8 @@ export function startDesktopApplication(): void {
   let formWindow: FormWindowEntry | undefined;
   const formWindows = new Map<number, FormWindowEntry>();
   const shownForms = new Set<string>();
+  const paneWindows = new PaneWindowRegistry<BrowserWindow>();
+  const paneWindowBounds = new PaneWindowBoundsStore(path.join(app.getPath('userData'), 'pane-windows.json'));
 
   const manager = new DesktopManager();
   const microphone = createMicrophoneAccess({
@@ -120,7 +124,11 @@ export function startDesktopApplication(): void {
       if (isQuitting || window.isDestroyed() || window.webContents.isDestroyed()) return;
       window.webContents.send(channel, payload);
     };
-    const unsubscribeStatus = manager.onStatus((status) => sendToWindow(IPC.statusChanged, status));
+    let launchUpdateCheck = false;
+    const unsubscribeStatus = manager.onStatus((status) => {
+      sendToWindow(IPC.statusChanged, status); sendToPaneWindows(IPC.statusChanged, status);
+      if (status.ready && app.isPackaged && !launchUpdateCheck) { launchUpdateCheck = true; void manager.notifyShellUpdate(); }
+    });
     const unsubscribeLog = manager.onLog((entry) => sendToWindow(IPC.logEntry, entry));
     const unsubscribePayloadProgress = manager.onPayloadProgress((progress) =>
       sendToWindow(IPC.payloadProgress, progress),
@@ -138,6 +146,7 @@ export function startDesktopApplication(): void {
       unsubscribePayloadInstalled();
       unsubscribePayloadFailed();
       if (mainWindow === window) mainWindow = undefined;
+      paneWindows.closeAll();
     });
 
     window.webContents.setWindowOpenHandler(({ url }) => {
@@ -193,6 +202,33 @@ export function startDesktopApplication(): void {
   async function navigateTo(route: string): Promise<void> {
     await ensureWindow();
     mainWindow!.webContents.send(IPC.navigate, route);
+    sendToPaneWindows(IPC.navigate, route);
+  }
+
+  function sendToPaneWindows(channel: string, payload: unknown): void {
+    if (isQuitting) return;
+    for (const entry of paneWindows.all()) {
+      if (!entry.window.isDestroyed() && !entry.window.webContents.isDestroyed()) entry.window.webContents.send(channel, payload);
+    }
+  }
+
+  async function popOutPane(request: unknown): Promise<void> {
+    if (!mainWindow || mainWindow.isDestroyed()) throw new Error('Sentinel window is unavailable');
+    await openPaneWindow({
+      request: validatePaneWindowRequest(request),
+      baseUrl: mainWindow.webContents.getURL(),
+      log: line => manager.log(line),
+      preload: preloadPath(),
+      registry: paneWindows,
+      bounds: paneWindowBounds,
+      isSentinelUrl,
+      openExternal: openExternalLink,
+      onClosed: entry => {
+        if (isQuitting || !mainWindow || mainWindow.isDestroyed()) return;
+        const { instance, session, tabId } = entry.request;
+        mainWindow.webContents.send(IPC.paneWindowClosed, { instance, session, tabId });
+      },
+    });
   }
 
   // Opens a native picker for a locally-built payload tarball and installs it.
@@ -364,10 +400,19 @@ export function startDesktopApplication(): void {
   function registerIpc(): void {
     const handle: typeof ipcMain.handle = (channel, listener) => ipcMain.handle(channel, (event, ...args) => {
       if (resetInProgress) throw new Error('A backup and reset is in progress.');
-      if (!event.senderFrame || event.senderFrame !== mainWindow?.webContents.mainFrame || !isSentinelUrl(event.senderFrame.url)) {
+      const sender = { id: event.sender.id, frame: event.senderFrame, url: event.senderFrame?.url };
+      if (!isTrustedDesktopSender(sender, mainWindow?.webContents.mainFrame, paneWindows, isSentinelUrl)) {
         throw new Error('Untrusted desktop request');
       }
       return listener(event, ...args);
+    });
+    handle(IPC.openPaneWindow, (_event, request: unknown) => popOutPane(request));
+    ipcMain.handle(IPC.dockPaneWindow, (event) => {
+      const entry = paneWindows.get(event.sender.id);
+      if (!entry || !paneWindows.ownsFrame(event.sender.id, event.senderFrame) || !event.senderFrame || !isSentinelUrl(event.senderFrame.url)) {
+        throw new Error('Untrusted pane window request');
+      }
+      entry.window.close();
     });
     handle(IPC.openPreview, async (_event, href: string) => {
       if (typeof href !== 'string' || !manager.transport) throw new Error('Workspace services are unavailable');
@@ -490,6 +535,7 @@ export function startDesktopApplication(): void {
   } else {
     app.on('second-instance', () => {
       if (!mainWindow || mainWindow.isDestroyed()) {
+        paneWindows.closeAll();
         void createWindow().catch(reportStartupFailure);
         return;
       }
@@ -528,7 +574,8 @@ export function startDesktopApplication(): void {
 
           }).finally(() => { startupInProgress = false; });
         app.on('activate', () => {
-          if (BrowserWindow.getAllWindows().length === 0) {
+          if (!mainWindow || mainWindow.isDestroyed()) {
+            paneWindows.closeAll();
             void createWindow().catch(reportStartupFailure);
           }
         });

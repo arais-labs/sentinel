@@ -216,6 +216,25 @@ function SessionWorkspace({ instanceName, className = '', layoutKey, visible }: 
     };
   }, [apiReady, focusPaneId, visible]);
   useEffect(() => { if (visible) useFocusModeStore.setState({ paneId: null }); }, [visible]);
+  // A closed pane window re-docks its tab next to the active pane of the layout it came from.
+  useEffect(() => {
+    const desktop = window.sentinelDesktop;
+    if (!desktop || !apiReady) return;
+    return desktop.onPaneWindowClosed(info => {
+      const [, sessionId] = JSON.parse(layoutKey) as [string | null, string | null];
+      const api = apiRef.current;
+      if (!api || info.instance !== instanceName || (info.session ?? null) !== sessionId || !isWorkspaceTabId(info.tabId)) return;
+      if (api.panels.some(panel => panel.params?.tabId === info.tabId)) return;
+      const reference = api.activePanel ?? api.activeGroup?.activePanel ?? api.panels.at(-1);
+      api.addPanel({
+        id: `pane-${info.tabId}-${Math.random().toString(36).slice(2, 8)}`,
+        component: WORKSPACE_PANEL_COMPONENT,
+        params: { tabId: info.tabId },
+        ...(reference ? { position: { referencePanel: reference.id, direction: 'right' } } : {}),
+      });
+      if (visible) useWorkspaceStore.getState().syncFromApi();
+    });
+  }, [apiReady, instanceName, layoutKey, visible]);
   // Reactive count of live panes. Driven by dockview's onDidLayoutChange (plus a
   // seed in onReady) so the empty-state overlay reliably hides whenever a pane
   // exists — independent of when panel params land or whether the open-tab
@@ -270,10 +289,12 @@ function SessionWorkspace({ instanceName, className = '', layoutKey, visible }: 
       useWorkspaceStore.getState().dropTab(tabId, refPaneId, dropEvent.position);
     });
     // Keep paneCount in sync with the live layout so the overlay reflects pane
-    // presence. onDidLayoutChange fires (asynchronously) on every add/remove.
-    const layout = event.api.onDidLayoutChange(() => {
-      setPaneCount(event.api.panels.length);
-    });
+    // presence. Removing the last panel leaves no layout to change, so count on
+    // add/remove as well as layout changes.
+    const count = () => setPaneCount(event.api.panels.length);
+    const layout = event.api.onDidLayoutChange(count);
+    const added = event.api.onDidAddPanel(count);
+    const removedPanel = event.api.onDidRemovePanel(count);
     const disposeAnimations = animatePaneLayout(event.api);
     setApiReady(true);
     // Seed the count after any restore so the overlay starts in the right state.
@@ -281,6 +302,8 @@ function SessionWorkspace({ instanceName, className = '', layoutKey, visible }: 
     disposeRef.current = () => {
       disposeAnimations();
       layout.dispose();
+      added.dispose();
+      removedPanel.dispose();
       overlay.dispose();
       dragOver.dispose();
       drop.dispose();

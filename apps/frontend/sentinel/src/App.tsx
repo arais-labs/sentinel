@@ -7,6 +7,7 @@ import { Navigate, Outlet, Route, Routes, useLocation, useNavigate, useParams } 
 import { NotificationHost } from './components/NotificationHost';
 
 import { FormWindow } from './components/session/FormWindow';
+import { PaneWindow } from './components/workspace/PaneWindow';
 import { DesktopShell } from './components/DesktopShell';
 import { AppShell } from './components/AppShell';
 import { Workspace } from './components/workspace/Workspace';
@@ -162,5 +163,6 @@ function ApplicationRoutes() {
 export default function App() {
   const location = useLocation();
   if (location.pathname === '/form') return <FormWindow />;
+  if (/^\/instances\/[^/]+\/pane$/.test(location.pathname)) return <PaneWindow />;
   return <><NotificationHost /><DesktopShell><ApplicationRoutes /></DesktopShell></>;
 }

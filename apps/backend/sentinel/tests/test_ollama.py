@@ -9,6 +9,7 @@ import httpx
 import pytest
 
 from sentral import (
+    ToolSchema,
     AgentRuntimeEngine,
     ConversationItem,
     GenerationConfig,
@@ -67,7 +68,12 @@ async def test_remote_discovery_chat_and_tool_replay():
             json={
                 "message": {
                     "tool_calls": [
-                        {"function": {"name": "sessions", "arguments": {"action": "list_sessions"}}}
+                        {
+                            "function": {
+                                "name": "sessions",
+                                "arguments": {"action": "list_sessions"},
+                            }
+                        }
                     ]
                 },
                 "done": True,
@@ -84,7 +90,10 @@ async def test_remote_discovery_chat_and_tool_replay():
     assert isinstance(call, ToolCallContent) and call.id
     assert reply.stop_reason == "tool_use" and reply.usage.input_tokens == 12
     await llm.chat(
-        [reply, ToolResultMessage(tool_call_id=call.id, tool_name="sessions", content="[]")],
+        [
+            reply,
+            ToolResultMessage(tool_call_id=call.id, tool_name="sessions", content="[]"),
+        ],
         "test:4b",
         tool_choice="none",
     )
@@ -93,6 +102,64 @@ async def test_remote_discovery_chat_and_tool_replay():
     assert isinstance(payload["messages"][0]["tool_calls"][0]["function"]["arguments"], dict)
     assert "tools" not in payload
     assert payload["think"] is False
+
+
+@pytest.mark.asyncio
+async def test_flattened_grouped_tool_calls_map_back_to_the_grouped_tool():
+    """Small models call "runtime.exec" instead of runtime with action=exec; both must work."""
+    tools = [
+        ToolSchema(
+            name="runtime",
+            description="Runtime",
+            parameters={
+                "properties": {
+                    "action": {"enum": ["exec", "read"]},
+                    "command": {"type": "string"},
+                }
+            },
+        ),
+        ToolSchema(
+            name="git_tool",
+            description="Git",
+            parameters={"properties": {"action": {"enum": ["read"]}}},
+        ),
+        ToolSchema(
+            name="smcp_mercury_get_accounts",
+            description="Mercury",
+            parameters={"properties": {}},
+        ),
+    ]
+    calls = [
+        {"function": {"name": "runtime.exec", "arguments": {"command": "ls"}}},
+        {"function": {"name": "git.read", "arguments": "{}"}},
+        {"function": {"name": "runtime_read", "arguments": {}}},
+        {
+            "function": {
+                "name": "runtime",
+                "arguments": {"action": "exec", "command": "id"},
+            }
+        },
+        {"function": {"name": "smcp_mercury_get_accounts", "arguments": {}}},
+        {"function": {"name": "nothing.here", "arguments": {}}},
+    ]
+
+    def handler(request):
+        return httpx.Response(200, json={"message": {"tool_calls": calls}, "done": True})
+
+    reply = await provider(handler).chat([UserMessage(content="go")], "test:4b", tools=tools)
+    got = [
+        (block.name, block.arguments)
+        for block in reply.content
+        if isinstance(block, ToolCallContent)
+    ]
+    assert got == [
+        ("runtime", {"command": "ls", "action": "exec"}),
+        ("git_tool", {"action": "read"}),
+        ("runtime", {"action": "read"}),
+        ("runtime", {"action": "exec", "command": "id"}),
+        ("smcp_mercury_get_accounts", {}),
+        ("nothing.here", {}),
+    ]
 
 
 @pytest.mark.asyncio
@@ -182,7 +249,8 @@ async def test_saved_token_is_never_reused_for_a_different_endpoint():
     service = SimpleNamespace(
         build_instance_settings=AsyncMock(
             return_value=SimpleNamespace(
-                ollama_base_url="https://original.example", ollama_api_key="original-secret"
+                ollama_base_url="https://original.example",
+                ollama_api_key="original-secret",
             )
         )
     )
@@ -319,7 +387,10 @@ async def test_removing_model_only_clears_matching_selection(monkeypatch, target
         app=SimpleNamespace(state=SimpleNamespace(ollama_pulls=OllamaPulls()))
     )
     result = await routes.remove_model(
-        routes.SaveEndpoint(base_url="https://remote.example", model=target), request, db, service
+        routes.SaveEndpoint(base_url="https://remote.example", model=target),
+        request,
+        db,
+        service,
     )
     assert result["cleared_selection"] is cleared
     llm.delete_model.assert_awaited_once_with(target)

@@ -25,9 +25,19 @@ export interface PayloadInfo {
   builtAt: string | null;
 }
 
+// A payload that needs a newer shell than the one running; the shell is only
+// updated by installing the DMG from the release page.
+export interface ShellUpdate {
+  version: string;
+  minShellVersion: string;
+  url: string;
+}
+
 export interface DesktopStatus {
   appUrl?: string;
   ready: boolean;
+  shellVersion?: string;
+  shellUpdate?: ShellUpdate | null;
   preparing?: boolean;
   payloadProgress?: PayloadProgress;
   development: boolean;
@@ -53,6 +63,7 @@ export interface PayloadUpdate {
   url: string;
   sha256: string;
   hasNewMigrations: boolean;
+  shellUpdate: ShellUpdate | null;
 }
 
 export type PayloadPhase =
@@ -87,6 +98,8 @@ export interface NotificationSettings { forms: boolean; completionSounds: boolea
 export interface SessionCompletion { sessionId: string; completionId: string | null; running: boolean; awaitingInput: boolean; }
 
 export interface PendingFormWindow { sessionId: string; formId: string; title: string; }
+export interface PaneWindowRequest { instance: string; session: string | null; tabId: string; paneId: string; title: string; }
+export interface PaneWindowClosed { instance: string; session: string | null; tabId: string; }
 
 export interface MicrophonePermission {
   status: 'not-determined' | 'granted' | 'denied' | 'restricted' | 'unknown';
@@ -114,6 +127,9 @@ export interface DesktopApi {
   resizeFormWindow(height: number): Promise<void>;
   finishFormWindow(waitForTurn: boolean): Promise<void>;
   onFormCloseRequested(listener: () => void): () => void;
+  openPaneWindow(request: PaneWindowRequest): Promise<void>;
+  dockPaneWindow(): Promise<void>;
+  onPaneWindowClosed(listener: (info: PaneWindowClosed) => void): () => void;
   socketOpen(id: string, url: string): Promise<void>;
   socketSend(id: string, data: string | Uint8Array): void;
   socketClose(id: string, code?: number, reason?: string): void;
@@ -158,6 +174,9 @@ export const IPC = {
   finishFormWindow: 'desktop:finishFormWindow',
   resizeFormWindow: 'desktop:resizeFormWindow',
   formCloseRequested: 'desktop:formCloseRequested',
+  openPaneWindow: 'desktop:openPaneWindow',
+  dockPaneWindow: 'desktop:dockPaneWindow',
+  paneWindowClosed: 'desktop:paneWindowClosed',
   socketOpen: 'desktop:socketOpen',
   socketSend: 'desktop:socketSend',
   socketClose: 'desktop:socketClose',

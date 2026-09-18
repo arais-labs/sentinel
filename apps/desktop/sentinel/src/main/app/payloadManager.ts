@@ -6,6 +6,7 @@ import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import type { PayloadInfo, PayloadUpdate, ReleaseChannel } from '../../shared/ipc.js';
 import { execFileText } from './shell.js';
+import { shellUpdateFor } from './version.js';
 import {
   hostStateRoot,
   payloadManifestPath,
@@ -19,6 +20,8 @@ interface PayloadManifest {
   version: string;
   channel: ReleaseChannel;
   commit: string;
+  minShellVersion?: string;
+  installer?: string;
   python: string;
   builtAt: string;
   alembicHeads: { manager: string[]; instance: string[] };
@@ -34,6 +37,8 @@ interface ReleaseIndex {
   channel: ReleaseChannel;
   version: string;
   commit: string;
+  minShellVersion?: string;
+  installer?: string;
   file: string;
   url?: string;
   sha256: string;
@@ -173,7 +178,7 @@ function resolveTarballUrl(index: ReleaseIndex): string {
 
 // Compares the installed payload against the channel's release index. Returns
 // null when no release is published or the channel is already current.
-export async function checkForUpdate(channel: ReleaseChannel): Promise<PayloadUpdate | null> {
+export async function checkForUpdate(channel: ReleaseChannel, shellVersion: string): Promise<PayloadUpdate | null> {
   const index = await fetchReleaseIndex(channel);
   if (!index) return null;
   const installed = await readManifest();
@@ -190,6 +195,7 @@ export async function checkForUpdate(channel: ReleaseChannel): Promise<PayloadUp
     url: resolveTarballUrl(index),
     sha256: index.sha256,
     hasNewMigrations: installedHeads !== targetHeads,
+    shellUpdate: shellUpdateFor(index, shellVersion),
   };
 }
 
