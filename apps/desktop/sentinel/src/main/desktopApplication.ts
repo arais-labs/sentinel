@@ -149,6 +149,9 @@ export function startDesktopApplication(): void {
       paneWindows.closeAll();
     });
 
+    window.webContents.on('console-message', event => {
+      if (event.level === 'error') manager.log(`main window: ${event.message} (${event.sourceId}:${event.lineNumber})`);
+    });
     window.webContents.setWindowOpenHandler(({ url }) => {
       if (isSentinelUrl(url)) return { action: 'allow' };
       openExternalLink(url);
