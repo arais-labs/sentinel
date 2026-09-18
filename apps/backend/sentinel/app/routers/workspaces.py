@@ -17,6 +17,7 @@ from app.models.manager import Machine
 from app.routers.workspace_browser import router as browser_router
 from app.services.modules.runtime_services import get_browser_pool
 from app.services.runtime import workspace_containers as containers
+from app.services.runtime import worker_catalog
 from app.services.runtime.directories import list_local_directories
 from app.services.runtime.distributions import Distribution, validate_distribution_tools
 from app.services.runtime.panes import TmuxPanes
@@ -78,6 +79,7 @@ class WorkspaceCreate(BaseModel):
 
 
 class WorkspaceUpdate(BaseModel):
+    revision: int | None = Field(default=None, ge=1)
     distribution: Distribution | None = None
     directory: str | None = Field(default=None, min_length=1, max_length=4096)
 
@@ -100,6 +102,7 @@ class WorkspaceUpdate(BaseModel):
 class WorkspaceResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: UUID
+    revision: int | None = None
     name: str
     machine_id: UUID
     directory: str
@@ -163,6 +166,42 @@ async def list_workspaces(db: AsyncSession = Depends(get_db), include_runtime: b
     ]
 
 
+@router.get("/workspaces/discover/{machine_id}", response_model=list[WorkspaceResponse])
+async def discover_worker_workspaces(
+    machine_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    manager: AsyncSession = Depends(get_manager_db),
+):
+    machine = await manager.get(Machine, machine_id)
+    if machine is None or machine.provider != "ssh":
+        raise HTTPException(404, "Remote worker not found")
+    await manager.close()
+    try:
+        async with asyncio.timeout(10):
+            snapshot = await worker_catalog.snapshot(machine_id)
+        result = []
+        for workspace_id, record in snapshot["workspaces"].items():
+            row = await worker_catalog.cache_record(db, machine_id, workspace_id, record)
+            state = snapshot.get("states", {}).get(workspace_id, {})
+            result.append(
+                WorkspaceResponse.model_validate(row).model_copy(
+                    update={
+                        "revision": record["revision"],
+                        "resources": record["spec"]["resources"],
+                        "container_state": state.get("state", "stopped"),
+                        "container_error": state.get("error"),
+                        "recovery_available": state.get("recovery_available", False),
+                        "recovery_backup": state.get("recovery_backup"),
+                    }
+                )
+            )
+        await db.commit()
+        return result
+    except Exception as exc:
+        await db.rollback()
+        raise HTTPException(503, str(exc) or "Worker connection timed out") from exc
+
+
 @router.get("/workspaces/{workspace_id}/status", response_model=WorkspaceResponse)
 async def get_workspace_status(workspace_id: UUID, db: AsyncSession = Depends(get_db)):
     row = await db.get(Workspace, workspace_id)
@@ -183,6 +222,7 @@ async def get_workspace_status(workspace_id: UUID, db: AsyncSession = Depends(ge
     return WorkspaceResponse.model_validate(row).model_copy(
         update={
             "container_state": state.get("state", "stopped"),
+            "revision": state.get("revision"),
             "container_error": state.get("error"),
             "container_message": state.get("message"),
             "recovery_backup": state.get("recovery_backup"),
@@ -205,7 +245,7 @@ async def create_workspace(
     if (
         machine.provider not in {"local", "ssh"}
         or (machine.provider == "local" and not containers.available())
-        or (machine.provider == "ssh" and not (machine.provider_config or {}).get("runtime_root"))
+        or (machine.provider == "ssh" and not (machine.provider_config or {}).get("host_key"))
     ):
         raise HTTPException(
             422,
@@ -213,12 +253,36 @@ async def create_workspace(
         )
     await manager.close()
     row = Workspace(**payload.model_dump(exclude={"resources"}))
-    db.add(row)
-    try:
+    if machine.provider == "ssh":
+        from uuid import uuid4
+
+        row.id = uuid4()
+        try:
+            record = await worker_catalog.configure(
+                db,
+                row,
+                name=row.name,
+                project=row.directory,
+                tools=row.development_tools,
+                distribution=row.distribution,
+                resources=(payload.resources or WorkspaceResources()).model_dump(),
+                revision=0,
+            )
+            await containers.start(row.id, row.directory, row.development_tools)
+        except Exception as exc:
+            raise HTTPException(502, str(exc)) from exc
+        return WorkspaceResponse.model_validate(row).model_copy(
+            update={"revision": record["revision"], "container_state": "preparing"}
+        )
+    async with get_request_run_registry(request).workspace_change_guard():
+        if await db.scalar(
+            select(Workspace.id).where(
+                Workspace.machine_id == row.machine_id, Workspace.name == row.name
+            )
+        ):
+            raise HTTPException(409, "A workspace with this name already exists")
+        db.add(row)
         await db.commit()
-    except IntegrityError as exc:
-        await db.rollback()
-        raise HTTPException(409, "A workspace with this name already exists") from exc
     await db.refresh(row)
     containers.bind(row.id, row.machine_id, row.distribution)
     await db.close()
@@ -383,6 +447,7 @@ async def update_workspace(
     payload: WorkspaceUpdate,
     request: Request,
     db: AsyncSession = Depends(get_db),
+    manager: AsyncSession = Depends(get_manager_db),
 ):
 
     async with get_request_run_registry(request).workspace_change_guard() as running:
@@ -390,6 +455,66 @@ async def update_workspace(
         if row is None:
             raise HTTPException(404, "Workspace not found")
         containers.bind(row.id, row.machine_id, row.distribution)
+        machine = await manager.get(Machine, row.machine_id)
+        await manager.close()
+        if machine is not None and machine.provider == "ssh":
+            if payload.revision is None:
+                raise HTTPException(409, "Refresh workspace settings before editing")
+            sessions = await _workspace_sessions(db, workspace_id)
+            if any(session.running for session in await _removal_sessions(db, sessions, running)):
+                raise HTTPException(
+                    409, "Wait for this workspace's agents to finish before changing its settings"
+                )
+            try:
+                snapshot = await worker_catalog.snapshot(row.machine_id)
+                current = snapshot["workspaces"][str(row.id)]["spec"]
+                record = await worker_catalog.configure(
+                    db,
+                    row,
+                    name=payload.name if payload.name is not None else current["name"],
+                    project=(
+                        payload.directory if payload.directory is not None else current["project"]
+                    ),
+                    tools=(
+                        payload.development_tools
+                        if payload.development_tools is not None
+                        else current["tools"]
+                    ),
+                    distribution=payload.distribution or current["distribution"],
+                    resources=(
+                        payload.resources.model_dump()
+                        if payload.resources
+                        else current["resources"]
+                    ),
+                    revision=payload.revision,
+                )
+                spec = record["spec"]
+                configuration_changed = any(
+                    current[key] != spec[key] for key in ("project", "tools", "resources")
+                )
+                if (
+                    configuration_changed
+                    and snapshot.get("states", {}).get(str(row.id), {}).get("state") == "running"
+                ):
+                    await containers.start(row.id, row.directory, row.development_tools)
+                if current["project"] != spec["project"]:
+                    instance_name = request.path_params["instance_name"]
+                    ws_manager = getattr(request.app.state, "ws_manager", None)
+                    for session in sessions:
+                        await invalidate_runtime_for_session(
+                            instance_name, session.id, stop_remote=False
+                        )
+                        if ws_manager:
+                            await ws_manager.broadcast(
+                                str(session.id),
+                                {"type": "workspace_changed", "workspace_id": str(row.id)},
+                            )
+                await db.refresh(row)
+            except Exception as exc:
+                raise HTTPException(409, str(exc)) from exc
+            return WorkspaceResponse.model_validate(row).model_copy(
+                update={"revision": record["revision"], "resources": record["spec"]["resources"]}
+            )
         if payload.distribution is not None and payload.distribution != row.distribution:
             raise HTTPException(
                 422,
@@ -409,6 +534,14 @@ async def update_workspace(
         name = payload.name.strip() if payload.name is not None else row.name
         if not name:
             raise HTTPException(422, "Enter a workspace name")
+        if await db.scalar(
+            select(Workspace.id).where(
+                Workspace.machine_id == row.machine_id,
+                Workspace.name == name,
+                Workspace.id != row.id,
+            )
+        ):
+            raise HTTPException(409, "A workspace with this name already exists")
         tools_changed = (
             payload.development_tools is not None
             and payload.development_tools != row.development_tools

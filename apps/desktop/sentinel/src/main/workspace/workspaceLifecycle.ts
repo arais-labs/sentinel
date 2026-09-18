@@ -43,7 +43,7 @@ export class WorkspaceLifecycle {
   private closing = false;
   private readonly manifest: string;
 
-  constructor(private readonly runtime: WorkspaceRuntime, private readonly root: string, private readonly graphics?: WorkspaceGraphics, private readonly remote = false) {
+  constructor(private readonly runtime: WorkspaceRuntime, private readonly root: string, private readonly graphics?: WorkspaceGraphics) {
     this.manifest = path.join(root, 'workspaces.json');
     runtime.events.on('progress', () => this.publishProgress());
     runtime.events.on('closed', () => {
@@ -73,42 +73,6 @@ export class WorkspaceLifecycle {
     // Only unfinished setup resumes. Shell commands and previously open terminals
     // are never replayed, and this work never gates backend startup.
     for (const id of resume) this.launch(id);
-  }
-
-  async reconcileRemote(): Promise<void> {
-    if (!this.remote) return;
-    await this.runtime.start();
-    const reply = await this.runtime.request('status', {}, 5000);
-    for (const [id, entry] of Object.entries(this.entries)) {
-      if (this.jobs.has(id)) continue;
-      if (entry.state === 'failed' && !entry.recoveryRequired && !entry.error?.startsWith('The workspace runtime stopped')) continue;
-      entry.state = reply.states?.[id] === 'failed' ? 'failed' : reply.states?.[id] === 'recovering' ? 'recovering' : reply.states?.[id] === 'running' ? 'running' : 'stopped';
-      entry.error = reply.errors?.[id];
-      entry.recoveryRequired = stateNeedsRecovery(reply, id);
-    }
-    await this.save();
-  }
-
-  async checkRemoteUpdate() {
-    if (!this.remote) throw new Error('Remote runtime required');
-    if (this.jobs.size) throw new Error('Wait for workspace setup to finish before updating the runtime');
-    const snapshot = await this.runtime.request('status');
-    for (const [id, state] of Object.entries(snapshot.states ?? {})) {
-      if (state === 'running' && !this.entries[id]) throw new Error(`Workspace ${id} is managed by another desktop. Stop it there before updating.`);
-    }
-    return {};
-  }
-
-  async resumeRemote(ids: string[]) {
-    if (!this.remote) throw new Error('Remote runtime required');
-    for (const id of ids) {
-      const entry = this.entries[id];
-      if (!entry) throw new Error(`Workspace ${id} is not registered on this desktop`);
-      await this.prepare(id, entry.project, entry.tools);
-      await this.jobs.get(id);
-      if (this.entries[id].state !== 'running') throw new Error(this.entries[id].error || `Could not restart ${id}`);
-    }
-    return {};
   }
 
   async overview() {
@@ -159,7 +123,7 @@ export class WorkspaceLifecycle {
     const resized = !!existing && Object.keys(resources).some(key => allocation[key as keyof WorkspaceResources] !== previousResources[key as keyof WorkspaceResources]);
     if (existing && allocation.disk_gib < previousResources.disk_gib) throw new Error('Workspace disks can only be increased');
     const relocated = !!existing && existing.project !== project;
-    if (relocated && !this.remote) {
+    if (relocated) {
       const resolved = await realpath(project);
       const storage = await realpath(this.root);
       if (resolved === '/' || resolved === storage || resolved.startsWith(storage + '/') || storage.startsWith(resolved + '/')) throw new Error('Project folder must not contain private runtime storage');
@@ -266,7 +230,6 @@ export class WorkspaceLifecycle {
     await this.save();
     try {
       await this.graphics?.stop(id);
-      if (this.remote) await this.runtime.start();
       if (this.runtime.isReady) await this.runtime.request(remove ? 'delete' : 'stop', { workspace: id });
       else if (remove) {
         // A dormant helper has no mounted disks. Never boot or download images

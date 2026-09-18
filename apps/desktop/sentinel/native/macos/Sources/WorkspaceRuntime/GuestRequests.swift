@@ -84,6 +84,15 @@ extension WorkspaceRuntime {
                         }
                     }
                 case "exec":
+                    try emit(try await executeGuest(request, container: container))
+
+            default: throw RuntimeError("Unknown guest action")
+            }
+        } catch { try? emit(Response(id: request.id, error: String(describing: error))) }
+    }
+
+    @MainActor static func executeGuest(_ request: Request, container: LinuxContainer?, input: (any ReaderStream)? = nil) async throws -> Response {
+        guard let id = request.workspace else { throw RuntimeError("Workspace ID is required") }
                     guard let container, let command = request.arguments, !command.isEmpty else {
                         throw RuntimeError("A running workspace and arguments are required")
                     }
@@ -92,21 +101,23 @@ extension WorkspaceRuntime {
                         config.arguments = command
                         config.workingDirectory = container.config.process.workingDirectory
                         config.environmentVariables = ["PATH=\(LinuxProcessConfiguration.defaultPath)", "HOME=/root", "TMPDIR=/tmp"]
+                        config.stdin = input
                         config.stdout = stdout
                         config.stderr = stderr
                     } }
                     do {
-                        let status = try await health.guest(id, seconds: Double(min(max(request.timeout ?? 300, 1), 1800)) + 5) { try await process.wait(timeoutInSeconds: min(max(request.timeout ?? 300, 1), 1800)) }
+                        let status = try await withTaskCancellationHandler {
+                            try await health.guest(id, seconds: Double(min(max(request.timeout ?? 300, 1), 1800)) + 5) { try await process.wait(timeoutInSeconds: min(max(request.timeout ?? 300, 1), 1800)) }
+                        } onCancel: {
+                            Task { try? await process.kill(.kill) }
+                        }
+                        try Task.checkCancellation()
                         try await health.guest(id) { try await process.delete() }
-                        try emit(Response(id: request.id, stdout: stdout.text, stderr: stderr.text,
-                                          exitCode: status.exitCode, truncated: stdout.truncated || stderr.truncated))
+                        return Response(id: request.id, stdout: stdout.text, stderr: stderr.text,
+                                          exitCode: status.exitCode, truncated: stdout.truncated || stderr.truncated)
                     } catch {
                         Task { try? await process.kill(.kill); try? await process.delete() }
-                        try? emit(Response(id: request.id, error: String(describing: error), stdout: stdout.text, stderr: stderr.text))
+                        throw error
                     }
-
-            default: throw RuntimeError("Unknown guest action")
-            }
-        } catch { try? emit(Response(id: request.id, error: String(describing: error))) }
     }
 }

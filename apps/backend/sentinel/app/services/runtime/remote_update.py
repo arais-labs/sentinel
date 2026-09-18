@@ -92,6 +92,7 @@ async def apply_update(
     progress,
     reinstall=False,
     owner_timeout=15,
+    migration_inputs=None,
 ):
     """Resume from observed manifest/ownership, never replay an uncertain mutation."""
 
@@ -158,11 +159,18 @@ async def apply_update(
                 "Runtime still owns workspace storage; update not applied"
             ) from exc
 
+    if migration_inputs is not None:
+        # Validate legacy inputs/disk inventory while the old service still runs.
+        # A failed preflight must never stop a user's workspaces.
+        await session.request("migration_plan", inputs=migration_inputs)
     await phase("staged")
     if live:
         await phase("stopping")
         await stop(current, running)
     await wait_for_owner_release()
+    if migration_inputs is not None:
+        await phase("migrating")
+        await session.request("migrate", inputs=migration_inputs)
     await phase("activating")
     try:
         await session.request("activate", manifest=target)
@@ -176,6 +184,7 @@ async def apply_update(
             previous
             and previous.get("updateProtocol") == 1
             and previous.get("storeVersion") == target["storeVersion"]
+            and previous.get("runtimeMigrations", []) == state.get("migrations", [])
         ):
             if not state["owner_free"]:
                 await stop(target, [])

@@ -71,11 +71,23 @@ enum RuntimeUpdate {
                 case "heartbeat": try reply(["ok": true])
                 case "inspect":
                     try reply(["owner_free": try ownerFree(root),
+                               "migrations": try RuntimeMigrations.completed(root: URL(fileURLWithPath: root)),
                                "manifest": try read(root + "/manifest.json"),
                                "journal": try read(root + "/update.json")])
                 case "journal":
                     guard let journal = request["journal"] as? [String: Any] else { throw RuntimeError("Missing update state") }
                     try write(journal, to: root + "/update.json")
+                    try reply(["ok": true])
+                case "migration_status":
+                    try reply(RuntimeMigrations.status(root: URL(fileURLWithPath: root)))
+                case "migration_plan", "migrate":
+                    let inputs = request["inputs"] as? [String: Any] ?? [:]
+                    let directory = URL(fileURLWithPath: root)
+                    if action == "migrate" {
+                        let owner = try lock(root + "/owner.lock", LOCK_EX)
+                        defer { close(owner) }
+                        try RuntimeMigrations.run(root: directory, inputs: inputs)
+                    } else { try RuntimeMigrations.plan(root: directory, inputs: inputs) }
                     try reply(["ok": true])
                 case "activate":
                     guard let manifest = request["manifest"] as? [String: Any],
@@ -90,6 +102,7 @@ enum RuntimeUpdate {
                     // the new process. Even a legacy client cannot race a start.
                     let owner = try lock(root + "/owner.lock", LOCK_EX)
                     defer { close(owner) }
+                    try RuntimeMigrations.checkActivation(root: URL(fileURLWithPath: root), manifest: manifest)
                     try write(manifest, to: root + "/manifest.json")
                     let pid = try launch([exe, "--owned-service", root, kernel, initial, workspace], owner: owner, root: root)
                     try reply(["ok": true, "pid": pid])

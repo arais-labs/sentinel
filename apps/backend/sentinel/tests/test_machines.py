@@ -39,6 +39,34 @@ def test_local_resolved_runtime_has_no_ssh_credentials() -> None:
         resolved.credentials()
 
 
+@pytest.mark.asyncio
+async def test_address_changes_preserve_worker_identity_but_account_changes_require_enrollment():
+    db = FakeDB()
+    machine = await create_machine(
+        db,
+        MachineCreateRequest(
+            name="Work Mac",
+            provider="ssh",
+            host="192.168.0.161",
+            port=22,
+            username="worker",
+            auth_type="password",
+            password="test-password",
+        ),
+    )
+    identity = {
+        "host_key": "pinned-key",
+        "worker_id": str(uuid4()),
+        "runtime_root": "/worker/runtime",
+    }
+    machine.provider_config = identity.copy()
+    await update_machine(db, machine.id, MachineUpdateRequest(host="192.168.0.149", port=2222))
+    assert machine.provider_config == identity
+    assert resolve_machine_secret(machine).worker_id == identity["worker_id"]
+    await update_machine(db, machine.id, MachineUpdateRequest(username="other-account"))
+    assert machine.provider_config == {}
+
+
 def test_ssh_resolved_runtime_still_builds_credentials() -> None:
     creds = _resolved("ssh", "private_key", secret="KEYDATA").credentials()
     assert creds.host == "127.0.0.1"

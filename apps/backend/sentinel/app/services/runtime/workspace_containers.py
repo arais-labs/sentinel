@@ -1,4 +1,4 @@
-"""Workspace lifecycle owned by the desktop, independent of backend reloads."""
+"""Route lifecycle commands to their owner: local desktop or remote worker."""
 
 from __future__ import annotations
 

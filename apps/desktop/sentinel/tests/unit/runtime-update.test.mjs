@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, execFileSync } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, open, readFile, rm, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import { createInterface } from 'node:readline';
 import { createConnection } from 'node:net';
 import { once } from 'node:events';
@@ -20,8 +21,17 @@ test('native update lease survives staging, excludes competitors, and hands off 
   };
   try {
     await mkdir(root + '/releases/new', { recursive: true });
-    execFileSync('swiftc', ['native/macos/Sources/WorkspaceRuntime/RemoteControl.swift', 'native/macos/Sources/WorkspaceRuntime/RuntimeUpdate.swift', 'tests/fixtures/RuntimeUpdateHarness.swift', '-o', root + '/releases/new/helper']);
+    execFileSync('swiftc', ['native/macos/Sources/WorkspaceRuntime/RemoteControl.swift', 'native/macos/Sources/WorkspaceRuntime/RuntimeUpdate.swift', 'native/macos/Sources/WorkspaceRuntime/WorkerWorkspaceModels.swift', 'native/macos/Sources/WorkspaceRuntime/Migrations/RuntimeMigrations.swift', 'native/macos/Sources/WorkspaceRuntime/Migrations/M001WorkerOwnership.swift', 'tests/fixtures/RuntimeUpdateHarness.swift', '-o', root + '/releases/new/helper']);
     await writeFile(root + '/workspace-data', 'preserve me');
+    const workspace = randomUUID();
+    await mkdir(`${root}/store/containers/${workspace}`, { recursive: true });
+    await writeFile(`${root}/store/containers/${workspace}/rootfs.ext4`, 'keep');
+    const disk = await open(`${root}/store/containers/${workspace}/rootfs.ext4`, 'r+');
+    await disk.truncate(8 * 1024 ** 3); await disk.close();
+    const inputs = { '001_worker_ownership': { workspaces: { [workspace]: { revision: 1, reconfigure: false, grow_disk: false,
+      spec: { name: 'Existing workspace', project: root, distribution: 'alpine', tools: [],
+        resources: { cpus: 2, memory_gib: 2, disk_gib: 8 }, steps: [{ message: 'Prepare', arguments: ['true'], timeout: 10 }] },
+    } } } };
     const abandoned = run(['--short-lease', root]);
     assert.equal((await abandoned.next()).event, 'locked');
     await once(abandoned.child, 'exit'); // No EOF or heartbeat: lease must expire.
@@ -34,10 +44,23 @@ test('native update lease survives staging, excludes competitors, and hands off 
     children.push(legacy);
     await once(legacy.stdout, 'data');
     assert.equal((await lease.send({ action: 'inspect' })).owner_free, false);
+    const migrations = await lease.send({ action: 'migration_status' });
+    assert.deepEqual(migrations.target, ['001_worker_ownership']);
+    assert.deepEqual(migrations.inputs, ['001_worker_ownership']);
+    assert.match((await lease.send({ action: 'migration_plan', inputs: {} })).error, /registrations/);
+    assert.equal((await lease.send({ action: 'migration_plan', inputs })).ok, true);
+    assert.match((await lease.send({ action: 'migrate', inputs })).error, /busy/);
     const manifest = { version: 'new', updateProtocol: 1, storeVersion: 1, executable: root + '/releases/new/helper', kernel: root + '/releases/new/kernel', initImage: 'init', workspaceImage: 'workspace' };
     assert.match((await lease.send({ action: 'activate', manifest })).error, /busy/);
     await assert.rejects(readFile(root + '/manifest.json'), { code: 'ENOENT' });
     const legacyExit = once(legacy, 'exit'); legacy.stdin.end(); await legacyExit;
+    assert.equal((await lease.send({ action: 'migrate', inputs })).ok, true);
+    const catalog = JSON.parse(await readFile(root + '/workspaces.json', 'utf8'));
+    assert.equal(catalog.workspaces[workspace].spec.name, 'Existing workspace');
+    assert.equal((await lease.send({ action: 'migrate', inputs: {} })).ok, true);
+    assert.equal(JSON.parse(await readFile(root + '/workspaces.json', 'utf8')).worker_id, catalog.worker_id);
+    assert.match((await lease.send({ action: 'activate', manifest })).error, /activation refused/);
+    manifest.runtimeMigrations = migrations.target;
     await lease.send({ action: 'journal', journal: { phase: 'activating', target: manifest } });
     const activated = await lease.send({ action: 'activate', manifest });
     assert.equal(activated.ok, true);

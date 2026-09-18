@@ -50,6 +50,44 @@ class RuntimeInstallRequest(BaseModel):
     host_key: str = Field(min_length=1, max_length=16384)
 
 
+class WorkerConnectRequest(BaseModel):
+    host_key: str = Field(min_length=1, max_length=16384)
+
+
+@router.post("/machines/{machine_id}/runtime/connect")
+async def connect_worker(
+    machine_id: UUID, payload: WorkerConnectRequest, db: AsyncSession = Depends(get_manager_db)
+):
+    """Trust and discover an existing worker without installing or updating it."""
+    row = await machines_module.get_machine(db, machine_id)
+    machine = machines_module.resolve_machine_secret(row)
+    if machine.provider != "ssh":
+        raise HTTPException(422, "Choose an SSH machine")
+    if machine.host_key and machine.host_key != payload.host_key:
+        raise HTTPException(409, "SSH identity changed; verify the machine before reconnecting")
+    try:
+        details = await remote_mac_module.inspect_installation(
+            replace(machine, host_key=payload.host_key)
+        )
+    except Exception as exc:
+        raise HTTPException(502, str(exc)) from exc
+    if not details["installed"] or not details.get("worker_id"):
+        raise HTTPException(409, "Update this machine to the worker runtime before connecting")
+    if machine.worker_id and machine.worker_id != details["worker_id"]:
+        raise HTTPException(409, "Worker identity changed; reconnect it as a new worker")
+    await db.refresh(row)
+    if str(row.updated_at or "") != machine.updated_at_marker:
+        raise HTTPException(409, "Machine settings changed; retry connection")
+    row.provider_config = {
+        "host_key": payload.host_key,
+        "worker_id": details["worker_id"],
+        "runtime_root": details["path"],
+        "runtime_version": details.get("installed_version"),
+    }
+    await db.commit()
+    return {"connected": True}
+
+
 @router.get("/machines/{machine_id}/runtime")
 async def inspect_remote_runtime(machine_id: UUID, db: AsyncSession = Depends(get_manager_db)):
 
@@ -196,6 +234,9 @@ async def install_remote_runtime(
         details = await remote_mac_module.inspect_installation(
             machines_module.resolve_machine_secret(row)
         )
+        if details.get("worker_id"):
+            row.provider_config = {**row.provider_config, "worker_id": details["worker_id"]}
+            await db.commit()
         return {
             "installed": True,
             "path": config["runtime_root"],
