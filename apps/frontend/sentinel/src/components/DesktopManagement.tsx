@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Loader2, RefreshCw, Server, Power } from 'lucide-react';
+import { Download, Loader2, RefreshCw, Server, Power } from 'lucide-react';
 import { ServiceLogs } from './ServiceLogs';
 import { Panel } from './ui/Panel';
 import { StatusChip } from './ui/StatusChip';
@@ -40,6 +40,10 @@ export function DesktopManagement({ sectionId = 'services' }: { sectionId?: 'ser
   const primaryButton = 'btn-primary h-10 px-4 gap-2 text-[10px] font-bold uppercase tracking-widest shrink-0';
   const dangerButton = 'inline-flex items-center justify-center gap-2 h-10 px-3 rounded-lg text-[10px] font-bold uppercase tracking-widest text-rose-500 hover:bg-rose-500/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed';
   const section = 'desktop-settings-panel';
+  // Shells older than the gate never see minShellVersion, so their next update is always the DMG.
+  const legacyShell = Boolean(api) && typeof (api as { openPaneWindow?: unknown }).openPaneWindow !== 'function';
+  const shellUpdate = update?.shellUpdate ?? status?.shellUpdate
+    ?? (legacyShell && update ? { version: update.version, minShellVersion: update.version, url: `https://github.com/arais-labs/sentinel/releases/tag/latest-${update.channel}` } : null);
   return <div className="settings-desktop-management">
     {(error || status?.error) && <p role="alert" className="text-rose-400">{error || status?.error}</p>}
       {sectionId === 'services' && <section className={section}>
@@ -78,13 +82,15 @@ export function DesktopManagement({ sectionId = 'services' }: { sectionId?: 'ser
       {sectionId === 'updates' && <section className={section}>
         <h2 className="text-sm font-bold uppercase tracking-widest">Updates</h2>
         {status?.development ? <p className="text-sm text-(--text-muted)">Running local source with live reload. Release updates are available in the installed app.</p> : <>
-        <p className="text-sm text-(--text-muted)">{status?.payload.installed ? `Installed version: ${status.payload.version}` : 'The app service is not installed yet. Check for an update or install a release file.'}</p>
+        <p className="text-sm text-(--text-muted)">{status?.shellVersion && `App ${status.shellVersion} · `}{status?.payload.installed ? `Service ${status.payload.version}` : 'The app service is not installed yet. Check for an update or install a release file.'}</p>
         <div className="flex flex-wrap gap-3 items-center">
           <label className="text-sm">Channel <select aria-label="Update channel" className="ml-2 rounded border border-(--border-subtle) bg-(--app-bg) px-3 py-2" value={channel} onChange={e => { setChannel(e.target.value as ReleaseChannel); setUpdate(undefined); }}><option value="stable">Stable</option><option value="beta">Beta</option></select></label>
           <button className={button} disabled={busy} onClick={() => void run(async () => { setUpdate(await api.checkForUpdate(channel)); })}>Check for updates</button>
           {devMode && <button className={button} disabled={busy} onClick={() => void run(() => api.installPayloadFromFile())}>Install PR app bundle…</button>}
-          {update && <button className="btn-primary px-4 py-2 text-sm" disabled={busy} onClick={() => void run(() => api.applyUpdate(update))}>Install {update.version}</button>}
+          {update && !shellUpdate && <button className="btn-primary px-4 py-2 text-sm" disabled={busy} onClick={() => void run(() => api.applyUpdate(update))}>Install {update.version}</button>}
+          {shellUpdate && <a className="btn-primary px-4 py-2 text-sm" href={shellUpdate.url} target="_blank" rel="noopener noreferrer"><Download size={14} />Download Sentinel {shellUpdate.version}</a>}
         </div>
+        {shellUpdate && <p role="status" className="text-sm">Sentinel {shellUpdate.version} needs app version {shellUpdate.minShellVersion} or newer. Install the new app from the release page; it includes the matching service.</p>}
         {update === null && <p role="status" className="text-sm">No update available on this channel.</p>}
         {progress && <div role="status" className="space-y-2 text-sm"><p>{progress.message}</p>{progress.fractionComplete !== undefined && <progress className="w-full" max={1} value={progress.fractionComplete} />}</div>}
         {update?.hasNewMigrations && <p className="text-sm">This update changes your instance data. Export a backup before installing.</p>}

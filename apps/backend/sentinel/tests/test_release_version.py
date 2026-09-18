@@ -9,7 +9,12 @@ import subprocess
 
 def test_release_version_sync_and_drift(tmp_path):
     root = Path(__file__).resolve().parents[4]
-    files = ["VERSION", "scripts/sync-version.sh", "apps/frontend/sentinel/src/lib/env.ts"]
+    files = [
+        "VERSION",
+        "MIN_SHELL_VERSION",
+        "scripts/sync-version.sh",
+        "apps/frontend/sentinel/src/lib/env.ts",
+    ]
     for folder in ["apps/backend/sentinel", "apps/tui"]:
         files.extend(f"{folder}/{name}" for name in ["pyproject.toml", "uv.lock"])
     for folder in ["apps/frontend/sentinel", "apps/desktop/sentinel"]:

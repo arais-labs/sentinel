@@ -852,6 +852,17 @@ body:has(.global-session-backdrop, dialog:modal)::after { display: none; }
 
 html.floating-form-root, .floating-form-root body, .floating-form-root #root { background: transparent !important; }
 .floating-form-viewport { height: 100dvh; overflow-y: auto; border-radius: 14px; }
+/* Pane window: one tab in its own desktop window, drag strip in place of the shell title bar. */
+.pane-window-root, .pane-window-root body, .pane-window-root #root { height: 100%; overflow: hidden; background: var(--app-bg); }
+.pane-window { display: grid; grid-template-rows: var(--desktop-titlebar-height, 42px) minmax(0, 1fr); height: 100dvh; background: var(--app-bg); color: var(--text-primary); }
+.pane-window-titlebar { -webkit-app-region: drag; display: flex; align-items: center; gap: 8px; padding: 0 12px 0 88px; font-size: 12px; color: var(--text-muted); border-bottom: 1px solid var(--border-subtle); user-select: none; min-width: 0; }
+.pane-window-titlebar .pane-header-title { flex-shrink: 0; font-weight: 500; color: var(--text-primary); }
+.pane-window-actions { -webkit-app-region: no-drag; display: flex; flex: 1; min-width: 0; align-items: center; overflow: hidden; }
+.pane-window-dock { -webkit-app-region: no-drag; margin-left: auto; display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border: 1px solid var(--border-subtle); border-radius: 999px; background: var(--surface-1); color: var(--text-secondary); font-size: 11px; cursor: pointer; }
+.pane-window-dock:hover { background: var(--surface-2); color: var(--text-primary); }
+.pane-window-content { min-height: 0; overflow: hidden; }
+.pane-window-content .h-screen { height: calc(100dvh - var(--desktop-titlebar-height, 42px)); }
+.pane-window-content .min-h-screen { min-height: calc(100dvh - var(--desktop-titlebar-height, 42px)); }
 .floating-form-window { display: flow-root; color: var(--text-primary); }
 .floating-form-window .agent-form { max-height: none; margin: 0; padding: 20px; box-shadow: none; border-radius: 14px; }
 .floating-form-window .agent-form > header { -webkit-app-region: drag; }

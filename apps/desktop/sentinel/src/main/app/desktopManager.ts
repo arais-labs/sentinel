@@ -14,8 +14,10 @@ import type {
   PayloadProgress,
   PayloadUpdate,
   ReleaseChannel,
+  ShellUpdate,
 } from '../../shared/ipc.js';
 import * as payload from './payloadManager.js';
+import { assertShellCompatible } from './version.js';
 import {
   hostStateRoot,
   backendPath,
@@ -55,6 +57,8 @@ type DesktopPidService = 'backend';
 export class DesktopManager {
   readonly notifications = new NotificationCenter(path.join(app.getPath('userData'), 'notifications.json'));
   private readonly supervisor = new ProcessSupervisor();
+
+  log(line: string): void { this.supervisor.appendManagerLog(line); }
   transport?: LocalTransport;
   private socketDirectory?: string;
   private logWriter?: DailyLogWriter;
@@ -96,6 +100,7 @@ export class DesktopManager {
   private preparation?: Promise<DesktopStatus>;
   private preparing = true;
   private payloadProgress?: PayloadProgress;
+  private shellUpdate: ShellUpdate | null = null;
 
   initialize(): Promise<DesktopStatus> {
     if (this.preparation) return this.preparation;
@@ -230,6 +235,8 @@ export class DesktopManager {
     return {
       appUrl,
       development: !app.isPackaged,
+      shellVersion: app.getVersion(),
+      shellUpdate: this.shellUpdate,
       operation: this.operation,
       preparing: this.preparing,
       payloadProgress: this.payloadProgress,
@@ -252,11 +259,41 @@ export class DesktopManager {
   async checkForUpdate(channel?: ReleaseChannel): Promise<PayloadUpdate | null> {
     const installed = await payload.readPayloadInfo();
     const target = channel ?? installed.channel ?? 'stable';
-    return payload.checkForUpdate(target);
+    const update = await payload.checkForUpdate(target, app.getVersion());
+    if (!channel || channel === installed.channel) {
+      this.shellUpdate = update?.shellUpdate ?? null;
+      void this.emitStatus();
+    }
+    return update;
+  }
+
+  // One launch-time check on the installed channel; a payload that needs a newer
+  // shell is announced once per required version.
+  async notifyShellUpdate(): Promise<void> {
+    let update: PayloadUpdate | null = null;
+    try { update = await this.checkForUpdate(); }
+    catch (error) {
+      this.supervisor.appendManagerLog(`Update check failed: ${error instanceof Error ? error.message : String(error)}`);
+      return;
+    }
+    const required = update?.shellUpdate;
+    if (!required) return;
+    const marker = path.join(app.getPath('userData'), 'shell-update.json');
+    let notified: string | null = null;
+    try { notified = (JSON.parse(await readFile(marker, 'utf8')) as { notified?: string }).notified ?? null; } catch { /* first time */ }
+    if (notified === required.version) return;
+    this.notifications.publish({
+      source: 'updates', key: `shell-update:${required.version}`, severity: 'warning',
+      title: `Sentinel ${required.version} needs a new app version`,
+      message: `This update requires app version ${required.minShellVersion} or newer (you have ${app.getVersion()}). Download the installer from ${required.url} to update.`,
+    });
+    try { await writeFile(marker, JSON.stringify({ notified: required.version }), { mode: 0o600 }); }
+    catch { /* the notice repeats next launch at worst */ }
   }
 
   // Downloads, verifies, and installs a payload update, then restarts services.
   async applyUpdate(update: PayloadUpdate): Promise<void> {
+    assertShellCompatible(update);
     const scratch = payload.downloadScratchPath();
     try {
       this.emitPayloadProgress('download', `Downloading ${update.version}…`);
@@ -282,13 +319,19 @@ export class DesktopManager {
     for (const channel of channels) {
       let update: PayloadUpdate | null = null;
       try {
-        update = await payload.checkForUpdate(channel);
+        update = await payload.checkForUpdate(channel, app.getVersion());
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
         this.supervisor.appendManagerLog(`Auto-install: ${channel} channel check failed: ${reason}`);
         continue;
       }
       if (!update) continue;
+      if (update.shellUpdate) {
+        this.supervisor.appendManagerLog(
+          `Auto-install: ${channel} ${update.version} needs app ${update.shellUpdate.minShellVersion}, skipping.`,
+        );
+        continue;
+      }
       this.supervisor.appendManagerLog(
         `Auto-install: installing latest ${channel} release (${update.version}).`,
       );
