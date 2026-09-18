@@ -1,3 +1,4 @@
+import { MCPSettings } from './MCPSettings';
 import { GitPage } from './GitPage';
 import { TelegramPage } from './TelegramPage';
 import { AppearanceSettings } from '../components/AppearanceControls';
@@ -11,7 +12,7 @@ import {
   ShieldAlert, Info, KeyRound, GitBranch, Send,
   Bot, Eye, EyeOff, Check, Loader2, HelpCircle, X,
   Trash2, AudioLines,
-  Archive, Download, Upload, Lock, Server, Type,
+  Archive, Download, Upload, Lock, Server, Type, Plug,
 } from 'lucide-react';
 
 import { DesktopManagement } from '../components/DesktopManagement';
@@ -343,7 +344,7 @@ export function SettingsPage({ initialSection = 'providers' }: { initialSection?
   const location = useLocation();
   const destination = location.state as { settingsInstance?: string; settingsSection?: string } | null;
   const voiceSettingsRequested = destination?.settingsInstance === instance && destination?.settingsSection === 'voice';
-  const [section, setSection] = useState<'providers' | 'voice' | 'backup' | 'services' | 'updates' | 'appearance' | 'git' | 'telegram'>(() => voiceSettingsRequested ? 'voice' : initialSection);
+  const [section, setSection] = useState<'providers' | 'voice' | 'backup' | 'services' | 'updates' | 'appearance' | 'git' | 'telegram' | 'mcp'>(() => voiceSettingsRequested ? 'voice' : initialSection);
   useEffect(() => {
     if (voiceSettingsRequested) setSection('voice');
   }, [location.key, voiceSettingsRequested]);
@@ -651,9 +652,11 @@ export function SettingsPage({ initialSection = 'providers' }: { initialSection?
           <button className="menu-selection-item" type="button" aria-current={section === 'appearance' ? 'page' : undefined} onClick={() => setSection('appearance')}><Type size={16} />Appearance</button>
           <button className="menu-selection-item" type="button" aria-current={section === 'git' ? 'page' : undefined} onClick={() => setSection('git')}><GitBranch size={16} />Git & GitHub</button>
           <button className="menu-selection-item" type="button" aria-current={section === 'telegram' ? 'page' : undefined} onClick={() => setSection('telegram')}><Send size={16} />Telegram</button>
+          <button className="menu-selection-item" type="button" aria-current={section === 'mcp' ? 'page' : undefined} onClick={() => setSection('mcp')}><Plug size={16} />MCP servers</button>
           {window.sentinelDesktop && <><button className="menu-selection-item" type="button" aria-current={section === 'services' ? 'page' : undefined} onClick={() => setSection('services')}><Server size={16} />Services</button><button className="menu-selection-item" type="button" aria-current={section === 'updates' ? 'page' : undefined} onClick={() => setSection('updates')}><Download size={16} />Updates</button></>}
         </nav>
         <main className="settings-content"><div className="settings-layout">
+        {section === 'mcp' && <MCPSettings />}
         {section === 'git' && <GitPage embedded />}
         {section === 'voice' && <VoiceSettings />}
         {section === 'telegram' && <TelegramPage embedded />}

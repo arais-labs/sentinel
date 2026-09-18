@@ -34,6 +34,7 @@ const sidebars = {
         'guides/computer-use',
         'guides/standalone-tui',
         'guides/creating-modules',
+        'guides/mcp',
         'guides/permissions',
         'guides/runtime-exec-security',
         'guides/multi-instance',

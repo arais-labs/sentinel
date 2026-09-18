@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies import get_db
 from app.models.modules import Module, ModulePermission
+from app.models.mcp import MCPServer
 from app.schemas.module_permissions import PermissionListResponse, PermissionOut, PermissionUpdate
 from app.services.modules.builtins import get_builtins
 from app.services.modules.custom_modules import (
@@ -17,6 +18,7 @@ from app.services.modules.custom_modules import (
 )
 from app.services.modules.definitions import ActionDefinition
 from app.services.modules.permissions import AGENT_PERMISSIONS
+from app.services.mcp.tools import permission_actions, server_namespaces
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +100,22 @@ async def _resolved_permissions(db: AsyncSession) -> dict[str, str]:
             for action, level in module_existing.items():
                 if level in VALID_PERMISSION_LEVELS:
                     resolved[f"{module.name}.{action}"] = level
+
+    mcp_servers = (
+        (
+            await db.execute(
+                select(MCPServer)
+                .where(MCPServer.enabled.is_(True))
+                .order_by(MCPServer.name, MCPServer.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    namespaces = server_namespaces(mcp_servers)
+    for server in mcp_servers:
+        for action in permission_actions(server, namespaces[server.id]):
+            resolved.setdefault(action, "approval")
 
     for action, level in stored_levels.items():
         if level in VALID_PERMISSION_LEVELS:

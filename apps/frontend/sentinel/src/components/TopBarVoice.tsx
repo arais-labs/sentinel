@@ -8,6 +8,7 @@ import { openVoiceSettings } from '../lib/workspace-navigation';
 import { resetVoiceSession } from '../lib/voice-session';
 import { useVoiceSessionStore } from '../store/voice-session-store';
 import { WorkspaceAttachment } from './session/WorkspaceAttachment';
+import { TopBarVoicePermissions } from './TopBarVoicePermissions';
 import './top-bar-voice.css';
 
 const statusLabels: Record<VoicePhase, string> = {
@@ -66,7 +67,8 @@ export function TopBarVoice({ instanceName }: { instanceName: string }) {
   useEffect(() => {
     if (!open) return;
     const outside = (event: PointerEvent) => {
-      if (event.target instanceof Node && !island.current?.contains(event.target) && !popover.current?.contains(event.target)) popover.current?.hidePopover();
+      if (event.target instanceof Node && !island.current?.contains(event.target) && !popover.current?.contains(event.target)
+        && !(event.target instanceof Element && event.target.closest('.topbar-voice-permissions-panel'))) popover.current?.hidePopover();
     };
     const escape = (event: KeyboardEvent) => {
       if (event.key === 'Escape') { event.preventDefault(); dismiss(); }
@@ -98,6 +100,7 @@ export function TopBarVoice({ instanceName }: { instanceName: string }) {
     <div className="topbar-voice-island-actions" inert={!open} aria-hidden={!open}>
       <div ref={setControlsTarget} className="topbar-voice-controls-slot" />
       <WorkspaceAttachment compact className="topbar-voice-settings" sessionId={voiceSessionId} instanceName={instanceName} busy={phase === 'thinking' || phase === 'speaking'} />
+      {voiceSessionId && <TopBarVoicePermissions instanceName={instanceName} sessionId={voiceSessionId} />}
       <button type="button" className="topbar-voice-settings" aria-label="Reset Voice conversation" title="Reset Voice conversation" onClick={reset}><RotateCcw size={16} /></button>
       <button type="button" className="topbar-voice-settings" aria-label="Voice settings" title="Voice settings" onClick={showSettings}><Settings2 size={16} /></button>
       <button type="button" className="topbar-voice-close" aria-label="Close Voice" title="Close Voice" onClick={dismiss}><X size={16} /></button>

@@ -1,3 +1,4 @@
+from app.models.mcp import MCPServer, MCPSessionExposure
 from app.models.audit import AuditLog
 from app.models.base import Base
 from app.models.git import GitAccount
@@ -18,6 +19,8 @@ from app.models.workspaces import SessionRuntimeCleanup, Workspace
 from app.models.voice import VoiceTrace, VoiceTraceEvent
 
 __all__ = [
+    "MCPServer",
+    "MCPSessionExposure",
     "Module",
     "ModuleRecord",
     "ModuleSecret",

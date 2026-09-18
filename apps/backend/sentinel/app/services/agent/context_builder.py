@@ -76,6 +76,7 @@ class ContextBuilder:
         agent_mode: AgentMode | str | None = None,
         token_budget: int | None = None,
         include_full_history: bool = False,
+        mcp_summary: str | None = None,
     ) -> list[AgentMessage]:
         """Build runtime context from policies, memory, summary, and recent history."""
         prompt = (system_prompt or self._default_system_prompt).strip()
@@ -120,6 +121,18 @@ class ContextBuilder:
                 )
             )
 
+        if mcp_summary:
+            context.append(
+                SystemMessage(
+                    content=mcp_summary,
+                    metadata={
+                        "layer": "policy",
+                        "kind": "mcp_servers",
+                        "title": "MCP Servers",
+                        "explanation": "Connected servers whose tools load on demand.",
+                    },
+                )
+            )
         context.extend(await self._memory_system_messages(db, pending_user_message))
 
         summary = await self._latest_summary(db, session_id)
