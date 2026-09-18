@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from uuid import UUID
 
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models import ToolApproval
 from app.services.tools.approval.providers.tool import ToolApprovalProvider
 from app.services.tools.approval.types import (
     ApprovalConflictError,
@@ -18,6 +21,19 @@ class ApprovalService:
     # per-instance database. There is no service-level session factory.
     def __init__(self) -> None:
         self._tool_provider = ToolApprovalProvider()
+
+    async def cancel_pending_on_startup(self, db: AsyncSession) -> None:
+        """Previous-process approval waiters cannot survive a backend restart."""
+        await db.execute(
+            update(ToolApproval)
+            .where(ToolApproval.status == "pending")
+            .values(
+                status="cancelled",
+                decision_note="Request interrupted. Please try again.",
+                resolved_at=datetime.now(UTC),
+            )
+        )
+        await db.commit()
 
     async def list_approvals(
         self,
