@@ -164,7 +164,30 @@ class OllamaProvider(LLMProvider):
         payload["think"] = False
         return payload
 
-    def _message(self, data, model):
+    @staticmethod
+    def _normalize_tool_call(name, arguments, tools):
+        """Map a flattened "<tool>.<action>" call back onto the grouped tool it came from."""
+        if not tools:
+            return name, arguments
+        by_name = {t.name: t for t in tools}
+        if name in by_name:
+            return name, arguments
+        for separator in (".", ":", "/", "_"):
+            head, found, tail = name.partition(separator)
+            if not found or not tail:
+                continue
+            tool = by_name.get(head) or by_name.get(f"{head}_tool")
+            if tool is None:
+                continue
+            actions = tool.parameters.get("properties", {}).get("action", {}).get("enum") or []
+            if separator == "_" and tail not in actions:
+                continue
+            merged = dict(arguments)
+            merged.setdefault("action", tail)
+            return tool.name, merged
+        return name, arguments
+
+    def _message(self, data, model, tools=None):
         message = data.get("message", {})
         blocks = []
         if message.get("thinking"):
@@ -174,12 +197,13 @@ class OllamaProvider(LLMProvider):
         for call in message.get("tool_calls", []):
             function = call["function"]
             args = function.get("arguments", {})
+            name, arguments = self._normalize_tool_call(
+                function["name"],
+                json.loads(args) if isinstance(args, str) else args,
+                tools,
+            )
             blocks.append(
-                ToolCallContent(
-                    id=call.get("id") or str(uuid4()),
-                    name=function["name"],
-                    arguments=json.loads(args) if isinstance(args, str) else args,
-                )
+                ToolCallContent(id=call.get("id") or str(uuid4()), name=name, arguments=arguments)
             )
         return AssistantMessage(
             content=blocks,
@@ -216,7 +240,7 @@ class OllamaProvider(LLMProvider):
             data = response.json()
             if data.get("error"):
                 raise ValueError("Ollama rejected generation. Check the selected model and server.")
-            return self._message(data, model)
+            return self._message(data, model, tools)
 
     async def stream(
         self,
@@ -259,7 +283,7 @@ class OllamaProvider(LLMProvider):
                             )
                     assembled["tool_calls"].extend(delta.get("tool_calls", []))
                     if data.get("done"):
-                        result = self._message({**data, "message": assembled}, model)
+                        result = self._message({**data, "message": assembled}, model, tools)
                         for index, block in enumerate(result.content, start=2):
                             if isinstance(block, ToolCallContent):
                                 yield AgentEvent(
