@@ -26,9 +26,11 @@ export function useWorkspaceLibrary(instanceName: string | undefined, active: bo
     const prefix = instanceName ? `/instances/${encodeURIComponent(instanceName)}` : '';
     setWorkspaces([]); setMachines([]); setLoading(true); setMachinesLoading(true); setError('');
 
-    const discovered = (rows: Workspace[]) => [
-      ...rows.filter(row => !workerRows.has(row.machine_id)), ...Array.from(workerRows.values()).flat(),
-    ];
+    const discovered = (rows: Workspace[]) => {
+      const merged = new Map(rows.filter(row => !remoteMachines.has(row.machine_id)).map(row => [row.id, row]));
+      for (const worker of workerRows.values()) for (const row of worker) merged.set(row.id, row);
+      return Array.from(merged.values());
+    };
     const refreshWorker = async (machine: Machine) => {
       if (workersPending.has(machine.id)) return;
       workersPending.add(machine.id);
@@ -74,6 +76,7 @@ export function useWorkspaceLibrary(instanceName: string | undefined, active: bo
         if (!disposed) {
           setMachines(rows);
           remoteMachines = new Set(rows.filter(machine => machine.provider === 'ssh').map(machine => machine.id));
+          setWorkspaces(current => discovered(current));
           for (const machine of rows) if (machine.provider === 'ssh') void refreshWorker(machine);
         }
       } catch { /* Machine names must not block the workspace catalog. Retry on the next refresh. */ }
