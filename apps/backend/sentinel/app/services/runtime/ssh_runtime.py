@@ -234,9 +234,18 @@ async def _resolve_runtime(
     async with ManagerSessionLocal() as db:
         machine = resolve_machine_secret(await get_machine(db, workspace.machine_id))
 
+    if machine.provider == "ssh":
+        from app.services.runtime import worker_catalog
+
+        snapshot = await worker_catalog.snapshot(machine.id)
+        record = snapshot.get("workspaces", {}).get(str(workspace.id))
+        if record is None:
+            raise InstanceRuntimeNotConfigured("This workspace no longer exists on its worker")
+        spec = record["spec"]
+        workspace.directory = spec["project"]
+        workspace.distribution = spec["distribution"]
+        workspace.development_tools = spec["tools"]
     workspace_containers.bind(workspace.id, workspace.machine_id, workspace.distribution)
-    if machine.provider == "ssh" and not machine.runtime_root:
-        raise InstanceRuntimeNotConfigured("Install Sentinel Runtime for this remote Mac first")
     binding = WorkspaceLocation(
         workspace.directory,
         "/var/lib/sentinel",

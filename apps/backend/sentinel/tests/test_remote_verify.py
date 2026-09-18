@@ -17,7 +17,7 @@ from tests.test_remote_mac import machine
 @pytest.fixture
 def installation(monkeypatch):
     root = "/Users/test/.sentinel/runtime"
-    hashes = [hashlib.sha256(str(i).encode()).hexdigest() for i in range(8)]
+    hashes = [hashlib.sha256(str(i).encode()).hexdigest() for i in range(13)]
     manifest = {
         "executable": root + "/releases/test/sentinel-workspace-runtime",
         "kernel": root + "/releases/test/kernel",

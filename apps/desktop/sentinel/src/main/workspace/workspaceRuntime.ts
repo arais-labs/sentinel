@@ -4,6 +4,11 @@ import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
 
 export interface RuntimeReply {
+  worker_id?: string;
+  workspaces?: Record<string, {
+    spec: { name: string; project: string; distribution: string; tools: string[]; resources: { cpus: number; memory_gib: number; disk_gib: number } };
+    revision: number; operation?: string; error?: string; recovery_backup?: string;
+  }>;
   process?: string;
   data?: string;
   states?: Record<string, string>;

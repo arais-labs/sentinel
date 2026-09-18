@@ -467,6 +467,8 @@ async def lifespan(app: FastAPI):
                 continue
             session_factory = instance_session_registry.session_factory(instance.database_name)
             try:
+                async with session_factory() as db:
+                    await app.state.approval_service.cancel_pending_on_startup(db)
                 await instance_runtime_context_registry.get_or_create(
                     app_state=app.state,
                     instance=instance,

@@ -1,4 +1,4 @@
-export interface Workspace { distribution?: "alpine" | "ubuntu" | "debian"; id: string; name: string; machine_id: string; directory: string; development_tools?: string[]; recovery_available?: boolean; recovery_backup?: string | null; container_state?: 'recovering' | 'checking' | 'preparing' | 'running' | 'stopped' | 'stopping' | 'failed' | 'unavailable'; container_error?: string | null; container_message?: string | null; resources?: { cpus: number; memory_gib: number; disk_gib: number } | null; }
+export interface Workspace { revision?: number | null; distribution?: "alpine" | "ubuntu" | "debian"; id: string; name: string; machine_id: string; directory: string; development_tools?: string[]; recovery_available?: boolean; recovery_backup?: string | null; container_state?: 'recovering' | 'checking' | 'preparing' | 'running' | 'stopped' | 'stopping' | 'failed' | 'unavailable'; container_error?: string | null; container_message?: string | null; resources?: { cpus: number; memory_gib: number; disk_gib: number } | null; }
 
 export interface Session {
   workspace_id?: string | null;

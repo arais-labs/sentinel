@@ -40,7 +40,7 @@ export function WorkspacesPanel({ onboarding = false, onAddMachine, page = false
     setSaving(true);
     try {
       if (editor === 'new') await api.post('/workspaces', draft);
-      else await api.patch(`/workspaces/${editor.id}`, { name: draft.name, directory: draft.directory, development_tools: draft.development_tools, resources: draft.resources });
+      else await api.patch(`/workspaces/${editor.id}`, { name: draft.name, directory: draft.directory, development_tools: draft.development_tools, resources: draft.resources, revision: editor.revision });
       if (instanceName && editor !== 'new' && draft.directory !== editor.directory) resetWorkspaceBrowser(instanceName, editor.id);
       setEditor(null); await reload();
     } catch (error) { notify.error(workspaceSaveError(error)); }
