@@ -36,13 +36,18 @@ test('provider cards are equal, ordered, and expand with styled Ollama controls'
     let speechInstalled = false;
     const voiceMutations = [];
     const chatRequests = [];
+    const usageRequests = [];
+    let oauth = true;
+    let usageFailure = false;
     await page.route('**/api/v1/**', async route => {
       const path = new URL(route.request().url()).pathname;
       const method = route.request().method();
       const body = method === 'GET' ? null : route.request().postDataJSON();
       if (path.includes('/sessions')) chatRequests.push(path);
+      if (path.endsWith('/usage')) usageRequests.push(path);
       assert.ok(!path.includes('/ollama/local'));
-      const status = {configured:true, auth_method:'oauth',auth_source:'cli',masked_key:'CLI · Auto-sync'};
+      const status = {configured:true, auth_method:oauth ? 'oauth' : 'api_key',auth_source:oauth ? 'cli' : 'manual',masked_key:oauth ? 'CLI · Auto-sync' : 'sk-…test'};
+      if (path.endsWith('/usage') && usageFailure) return route.fulfill({status:503,json:{detail:'Unavailable'}});
       let json = {items:[]};
       if (path.endsWith('/voice/status')) json = {ready:speechInstalled,model:'qwen3:4b',provider:'ollama',provider_configured:true,issues:[],runtime:{installed:speechInstalled,installing:false,running:false,phase:'ready',error:'',path:'/data/voice'}};
       else if (path.endsWith('/models') && method === 'GET') json = {models:['fast','normal','hard'].map(tier => ({tier,label:{fast:'Fast',normal:'Normal',hard:'Deep Think'}[tier],description:'',primary_provider_id:'anthropic',primary_model_id:`${tier}-model`,provider_options:[
@@ -52,6 +57,9 @@ test('provider cards are equal, ordered, and expand with styled Ollama controls'
       else if (path.endsWith('/voice/runtime/install')) {speechInstalled = true; voiceMutations.push(method); json = {installed:true};}
       else if (path.endsWith('/voice/runtime') && method === 'DELETE') {speechInstalled = false; voiceMutations.push(method); json = {installed:false};}
       else if (path.endsWith('/settings/api-keys/status')) json = {primary_provider:'openai',providers:{anthropic:status,openai:status,gemini:status}};
+      else if (path.endsWith('/usage')) json = {status:'available', checked_at:'2026-09-18T12:00:00Z', message:null, windows:[
+        {key:'weekly', label:path.includes('/gemini/') ? 'Gemini Pro' : 'Weekly', remaining_percent:73, resets_at:'2099-09-23T04:59:59Z'},
+      ]};
       else if (path.endsWith('/settings/ollama')) {
         json = {base_url:'http://127.0.0.1:11434',model:'qwen3:4b',configured:true,has_api_key:false};
         if (method === 'POST') mutations.push({method,path,body});
@@ -97,8 +105,15 @@ test('provider cards are equal, ordered, and expand with styled Ollama controls'
       const badges = await cards.nth(index).locator('.settings-provider-badges').boundingBox();
       assert.ok(badges.y >= heading.y + heading.height);
     }
+    await page.getByRole('region', {name:'OpenAI account usage'}).getByText('73% left').waitFor();
+    assert.equal(await cards.nth(2).getByRole('progressbar').count(), 0);
+    assert.equal(await page.getByRole('progressbar', {name:'Weekly remaining'}).count(), 2);
+    assert.equal(await page.getByRole('progressbar', {name:'Gemini Pro remaining'}).getAttribute('aria-valuenow'), '73');
+    assert.ok(usageRequests.every(path => !path.includes('/ollama/')));
+    await page.screenshot({path:'/tmp/sentinel-provider-usage.png',fullPage:true});
+    const summaries = await cards.locator('.settings-provider-summary').evaluateAll(nodes => nodes.map(node => node.getBoundingClientRect().height));
+    assert.ok(summaries.every(height => Math.abs(height - summaries[0]) < 1), JSON.stringify(summaries));
     const heights = await cards.evaluateAll(nodes => nodes.map(node => node.getBoundingClientRect().height));
-    assert.ok(heights.every(height => Math.abs(height - heights[0]) < 1), JSON.stringify(heights));
     const ollama = page.getByRole('region', {name:'Ollama provider'});
     assert.equal(await ollama.getByLabel('Server URL').count(), 0);
     await ollama.getByRole('button', {name:'Update',exact:true}).click();
@@ -108,7 +123,7 @@ test('provider cards are equal, ordered, and expand with styled Ollama controls'
     await assertInset(cards.nth(0), cards.nth(0).locator('.settings-provider-editor'));
     await cards.nth(0).getByRole('button',{name:'Cancel',exact:true}).click();
     assert.equal(await ollama.getByRole('button', {name:'Close',exact:true}).getAttribute('aria-expanded'), 'true');
-    assert.ok((await ollama.boundingBox()).height > heights[0] + 200);
+    assert.ok((await ollama.boundingBox()).height > heights[2] + 200);
     assert.ok(Math.abs((await cards.nth(0).boundingBox()).height - heights[0]) < 1);
     await ollama.getByRole('radio', {name:'qwen3:4b'}).waitFor();
     for (const name of ['Refresh models', 'Save provider', 'Add model']) {
@@ -143,7 +158,7 @@ test('provider cards are equal, ordered, and expand with styled Ollama controls'
     assert.equal(await ollama.getByRole('progressbar').getAttribute('aria-valuenow'), '50');
     assert.deepEqual(mutations.at(-1).body, {base_url:'https://remote.example/ollama',model:'new:4b'});
     await ollama.getByRole('button', {name:'Close',exact:true}).click();
-    assert.ok(Math.abs((await ollama.boundingBox()).height - heights[0]) < 1);
+    assert.ok(Math.abs((await ollama.boundingBox()).height - heights[2]) < 1);
     await ollama.getByRole('button', {name:'Configure',exact:true}).click();
     await ollama.getByRole('progressbar').waitFor();
     finishDownload = true;
@@ -229,6 +244,19 @@ test('provider cards are equal, ordered, and expand with styled Ollama controls'
     }
     await page.setViewportSize({width:1400,height:1000});
     await page.screenshot({path:'/tmp/sentinel-settings-inset-dividers.png',fullPage:true});
+    await page.getByRole('navigation',{name:'Settings sections'}).getByRole('button',{name:'LLM Providers',exact:true}).click();
+    const openaiUsage = page.getByRole('region', {name:'OpenAI account usage'});
+    await openaiUsage.getByText('73% left').waitFor();
+    usageFailure = true;
+    await openaiUsage.getByRole('button', {name:'Refresh OpenAI usage'}).click();
+    await openaiUsage.getByText('Usage is temporarily unavailable.').waitFor();
+    assert.equal(await openaiUsage.getByRole('progressbar').count(), 0);
+    oauth = false;
+    const usageCount = usageRequests.length;
+    await page.reload();
+    await page.getByText('API Key', {exact:true}).first().waitFor();
+    assert.equal(await page.getByRole('region', {name:/account usage/}).count(), 0);
+    assert.equal(usageRequests.length, usageCount, 'API-key cards must not request OAuth usage');
     assert.deepEqual(errors, []);
   } finally { await browser?.close(); await server.close(); }
 });
