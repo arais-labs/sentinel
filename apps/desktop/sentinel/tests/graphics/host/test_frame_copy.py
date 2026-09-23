@@ -15,7 +15,8 @@ from metal_support import require_metal_device  # noqa: E402 - standalone unitte
 @unittest.skipUnless(sys.platform == "darwin", "Requires macOS Metal")
 class MetalFrameCopyTests(unittest.TestCase):
     def test_pixels_ordering_backpressure_and_lifetime(self):
-        require_metal_device()
+        # Qualify the copy path on the same hardware required by the renderer.
+        require_metal_device(metal4=True)
         with tempfile.TemporaryDirectory(prefix="sentinel-frame-copy-") as temporary:
             executable = Path(temporary) / "frame-copy"
             video = DESKTOP / "native/graphics/video"
