@@ -12,7 +12,7 @@ from metal_support import require_metal_device  # noqa: E402 - standalone unitte
 class HostMesaTests(unittest.TestCase):
     @unittest.skipUnless(sys.platform == "darwin", "host Metal requires macOS")
     def test_hardware_capabilities_mip_views_and_buffer_storage(self):
-        require_metal_device()
+        require_metal_device(metal4=True)
         explicit = os.environ.get("SENTINEL_TEST_GRAPHICS_DIR")
         libraries = (
             Path(explicit).resolve()

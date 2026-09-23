@@ -14,7 +14,7 @@ from metal_support import require_metal_device  # noqa: E402 - standalone unitte
 
 class GraphicsCapabilitiesTests(unittest.TestCase):
     def test_timer_queries_match_the_host_and_are_honored_by_mesa(self):
-        require_metal_device()
+        require_metal_device(metal4=True)
         graphics = Path(
             os.environ.get(
                 "SENTINEL_TEST_GRAPHICS_DIR",

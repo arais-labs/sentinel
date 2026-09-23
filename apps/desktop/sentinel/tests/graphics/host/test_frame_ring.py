@@ -19,7 +19,7 @@ from metal_support import require_metal_device  # noqa: E402 - standalone unitte
 @unittest.skipUnless(sys.platform == "darwin", "Requires macOS Metal")
 class FrameRingTests(unittest.TestCase):
     def test_shared_context_pixels_resize_and_backpressure(self):
-        require_metal_device()
+        require_metal_device(metal4=True)
         package = Path(
             os.environ.get(
                 "SENTINEL_TEST_GRAPHICS_DIR",
