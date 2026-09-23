@@ -8,7 +8,7 @@
 .workspace-editor-body { padding: 22px 28px 24px; flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
 .workspace-editor-fields { display: grid; gap: 20px; }
 .workspace-editor-fields label { display: grid; gap: 9px; font-size: 12px; font-weight: 500; }
-.workspace-editor-fields input, .workspace-editor-select { width: 100%; min-width: 0; background: var(--surface-0); border: 1px solid var(--border-subtle); border-radius: 10px; height: 44px; padding: 0 13px; font-size: 13px; font-weight: 400; }
+.workspace-editor-fields input:not([type="radio"]):not([type="checkbox"]), .workspace-editor-select { width: 100%; min-width: 0; background: var(--surface-0); border: 1px solid var(--border-subtle); border-radius: 10px; height: 44px; padding: 0 13px; font-size: 13px; font-weight: 400; }
 .workspace-editor-fields input:focus-visible { outline: 2px solid var(--sentinel-blue); outline-offset: 2px; }
 .workspace-editor-fields small { font-size: 11px; color: var(--text-muted); font-weight: 400; }
 .workspace-editor-select { display: flex; align-items: center; gap: 10px; color: var(--text-secondary); }

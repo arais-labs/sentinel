@@ -7,7 +7,7 @@ import '../session/chat-header.css';
 import './remote-runtime-dialog.css';
 
 type AffectedWorkspace = { id: string; name: string; instance?: string | null };
-type Inspection = { host_key: string; fingerprint: string; installed: boolean; path: string; identity_verified: boolean; host_key_changed: boolean; installed_version?: string; available_version?: string; update_phase?: string; update_warning?: string; progress?: string; workspaces?: AffectedWorkspace[]; restart_check_failed?: boolean };
+type Inspection = { host_key: string; worker_id?: string; fingerprint: string; installed: boolean; path: string; identity_verified: boolean; host_key_changed: boolean; installed_version?: string; available_version?: string; update_phase?: string; update_warning?: string; progress?: string; workspaces?: AffectedWorkspace[]; restart_check_failed?: boolean };
 type Verification = { checks: { name: string; status: 'passed' | 'warning' | 'failed'; detail: string }[] };
 
 export function RemoteRuntimeDialog({ machine, onClose, onInstalled }: { machine: Machine; onClose: () => void; onInstalled: () => Promise<void> }) {
@@ -66,14 +66,21 @@ export function RemoteRuntimeDialog({ machine, onClose, onInstalled }: { machine
     finally { if (mounted.current) setVerifying(false); }
   }
   const affected = inspection?.workspaces ?? [];
+  const connecting = inspection?.installed && inspection.worker_id && !inspection.identity_verified;
   const recovery = inspection?.update_phase && !['complete', 'rolled_back'].includes(inspection.update_phase);
-  const action = !inspection?.installed ? 'Install' : recovery ? 'Recover' : inspection.installed_version && inspection.installed_version === inspection.available_version ? 'Repair' : 'Update';
+  const action = connecting ? 'Connect' : !inspection?.installed ? 'Install' : recovery ? 'Recover' : inspection.installed_version && inspection.installed_version === inspection.available_version ? 'Repair' : 'Update';
   const blocked = loading || !inspection || inspection.host_key_changed || (!inspection.identity_verified && !trusted) || installing || verifying || Boolean(inspection.progress);
   async function install() {
     if (blocked || updating.current || !inspection) return;
     updating.current = true;
     setInstalling(true); setError(''); setNotice(''); setProgress('Preparing runtime…');
     try {
+      if (connecting) {
+        await api.post(`${endpoint}/connect`, { host_key: inspection.host_key });
+        await onInstalled();
+        onClose();
+        return;
+      }
       const result = await api.post<{ approval_required?: boolean; workspaces?: string[]; workspace_details?: AffectedWorkspace[]; warning?: string }>(endpoint, {
         approved: true, reinstall: inspection.installed, host_key: inspection.host_key,
         approved_workspaces: affected.map(workspace => workspace.id),
@@ -106,10 +113,10 @@ export function RemoteRuntimeDialog({ machine, onClose, onInstalled }: { machine
       <div className="min-h-0 space-y-4 overflow-y-auto px-5 pb-5 text-sm">
         {loading && <p className="flex items-center gap-2 text-(--text-secondary)" role="status"><Loader2 size={14} className="animate-spin" />Checking runtime and running workspaces…</p>}
         {complete ? <p className="flex items-center gap-2" role="status"><Check size={16} className="text-(--accent-solid)" />Runtime installed successfully.</p> : inspection && !loading && <>
-          <p className="text-(--text-secondary)">{action === 'Repair' ? 'Replace the installed runtime with a fresh copy.' : action === 'Recover' ? 'Finish the interrupted runtime update.' : action === 'Install' ? 'Set up Sentinel to run workspaces on this machine.' : 'Install the runtime included with this app.'}</p>
+          <p className="text-(--text-secondary)">{connecting ? 'Connect to this worker and discover its workspaces. Nothing will restart.' : action === 'Repair' ? 'Replace the installed runtime with a fresh copy.' : action === 'Recover' ? 'Finish the interrupted runtime update.' : action === 'Install' ? 'Set up Sentinel to run workspaces on this machine.' : 'Install the runtime included with this app.'}</p>
           {notice && <p role="status" className="text-amber-400">{notice}</p>}
           {inspection.host_key_changed ? <p role="alert" className="text-rose-400">This machine’s SSH identity changed. Verify its identity before updating.</p> : !inspection.identity_verified && <div className="space-y-2 rounded-xl bg-(--surface-0) p-3"><p className="text-(--text-secondary)">First connection · SSH fingerprint</p><p className="break-all font-mono text-xs select-text">{inspection.fingerprint}</p><label className="flex items-start gap-2"><input type="checkbox" checked={trusted} disabled={installing} onChange={event => setTrusted(event.target.checked)} className="mt-1 accent-(--accent-solid)" />I trust this machine’s SSH identity.</label></div>}
-          {!inspection.host_key_changed && <div className="space-y-2 rounded-xl bg-(--surface-0) p-3">
+          {!inspection.host_key_changed && !connecting && <div className="space-y-2 rounded-xl bg-(--surface-0) p-3">
             {inspection.restart_check_failed && <p role="status" className="text-amber-400">Could not check which workspaces are running. Any running workspace listed here may need to restart.</p>}
             {affected.length > 0 ? <><p className="font-medium">{inspection.restart_check_failed ? 'Workspaces that may restart' : `Will restart ${affected.length === 1 ? '1 workspace' : `${affected.length} workspaces`}`}</p><ul className="space-y-1">{affected.map(workspace => <li key={workspace.id} className="break-words"><span>{workspace.name}</span>{workspace.instance && <span className="text-xs text-(--text-muted)"> · {workspace.instance}</span>}{workspace.name === 'Unregistered workspace' && <span className="block font-mono text-xs text-(--text-muted)">{workspace.id}</span>}</li>)}</ul><p className="text-(--text-secondary)">Files and tools stay. Running commands and terminals will stop.</p></> : <p className="text-(--text-secondary)">{inspection.restart_check_failed ? 'Restart approval will be requested if a running workspace is found.' : 'No running workspaces need to restart.'} Files and tools stay.</p>}
           </div>}
@@ -144,7 +151,7 @@ export function RemoteRuntimeDialog({ machine, onClose, onInstalled }: { machine
       </div>
       <footer className="flex shrink-0 flex-wrap justify-end gap-2 border-t border-(--border-subtle) p-4">
         <button autoFocus disabled={installing} onClick={onClose} className="btn-secondary h-9 px-4 text-xs">{complete ? 'Done' : 'Cancel'}</button>
-        {!complete && (!inspection || inspection.progress) && !loading ? <button onClick={() => void loadPlan()} className="btn-primary h-9 px-4 text-xs">Check again</button> : !complete && <button disabled={blocked} onClick={() => void install()} className="btn-primary h-9 px-4 text-xs">{installing ? `${action === 'Repair' ? 'Repairing' : action === 'Recover' ? 'Recovering' : action === 'Install' ? 'Installing' : 'Updating'}…` : affected.length ? `${action} & restart` : `${action} runtime`}</button>}
+        {!complete && (!inspection || inspection.progress) && !loading ? <button onClick={() => void loadPlan()} className="btn-primary h-9 px-4 text-xs">Check again</button> : !complete && <button disabled={blocked} onClick={() => void install()} className="btn-primary h-9 px-4 text-xs">{installing ? `${connecting ? 'Connecting' : action === 'Repair' ? 'Repairing' : action === 'Recover' ? 'Recovering' : action === 'Install' ? 'Installing' : 'Updating'}…` : !connecting && affected.length ? `${action} & restart` : `${action} runtime`}</button>}
       </footer>
     </div>
   </dialog>, document.body);

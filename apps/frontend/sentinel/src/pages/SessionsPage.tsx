@@ -16,7 +16,6 @@ import { ComposerActivityPills } from '../components/session/ComposerActivityPil
 import { ComposerTerminalPills } from '../components/session/ComposerTerminalPills';
 import { ComposerDictation } from '../components/session/ComposerDictation';
 import { StreamToolCard } from '../components/session/StreamToolCard';
-import { WorkspaceRuntimeStats, WorkspaceMetricsProvider } from '../components/session/WorkspaceRuntimeStats';
 import { ModelSwitchDialog } from '../components/session/ModelSwitchDialog';
 import { SessionModelControls, SessionTierOptions, providerLabel } from '../components/session/SessionModelControls';
 import { resolveModelSelection, type SessionModelChoice } from '../lib/model-selection';
@@ -2341,11 +2340,10 @@ export function SessionsPage() {
               <div className="chat-header-actions flex w-full min-w-0 items-center gap-2">
                 {/* Status */}
                 <div className="flex min-w-0 shrink-0 items-center gap-2.5">
-                  <WorkspaceMetricsProvider sessionId={activeSessionId} instanceName={instanceName ?? null}>
                   <button type="button"
                     ref={connectionPillRef}
                     aria-expanded={statusTooltip === 'connection'} aria-haspopup="dialog"
-                    aria-label={`Connection, workspace and context usage: ${contextPercent === null ? 'unavailable' : `${contextPercent}%`}`}
+                    aria-label={`Connection and context usage: ${contextPercent === null ? 'unavailable' : `${contextPercent}%`}`}
                     onFocus={showConnectionDetails}
                     onBlur={hideConnectionDetails}
                     onClick={() => { setConnectionPinned(true); showConnectionDetails(); }}
@@ -2373,7 +2371,6 @@ export function SessionsPage() {
                         <div className={`h-1.5 w-1.5 rounded-full ${!activeSessionId ? 'bg-(--text-muted)' : streaming.connection === 'connected' ? 'bg-emerald-500' : 'bg-rose-500'}`} />
                         <span className={!activeSessionId ? 'text-(--text-secondary)' : streaming.connection === 'connected' ? 'text-emerald-500 font-bold' : 'text-rose-500 font-bold'}>{!activeSessionId ? 'Connects when you send your first message' : streaming.connection.toUpperCase()}</span>
                       </div>
-                      <WorkspaceRuntimeStats />
                       <div className="mt-3 pt-3 border-t border-(--border-subtle)">
                           <div className="mb-3">
                             <div className="flex items-center justify-between mb-2">
@@ -2405,7 +2402,6 @@ export function SessionsPage() {
                     document.body,
                   )}
 
-                  </WorkspaceMetricsProvider>
                 <WorkspaceAttachment sessionId={activeSessionId} instanceName={instanceName ?? null} busy={streamBusy} />
                 <button
                     onClick={compactContext}

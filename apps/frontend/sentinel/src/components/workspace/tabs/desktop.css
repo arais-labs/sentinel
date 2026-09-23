@@ -105,6 +105,15 @@
   line-height: 1.7;
   max-width: 390px;
 }
+.workspace-desktop-empty .runtime-update-notice {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+}
+.workspace-desktop-empty [role='alert'] {
+  color: var(--text-danger, #e58b79);
+}
 .workspace-desktop button.workspace-desktop-primary {
   padding: 9px 16px;
   background: color-mix(in srgb, var(--sentinel-blue) 9%, var(--desktop-face));
@@ -207,3 +216,26 @@ html.dark :is(.sentinel-pane-header[data-tour-pane='desktop'], .workspace-deskto
   --chat-header-label: #d1d2d8;
   --chat-header-shadow: 2px 3px 8px #0000001a, 7px 8px 24px #00000030, -4px -4px 15px #ffffff03, inset 0 1px 0 #ffffff06;
 }
+.desktop-wallpapers {
+  padding: 12px;
+  background: var(--surface-1);
+  color: var(--text-primary);
+  border-bottom: 1px solid var(--desktop-edge);
+  flex-shrink: 0;
+}
+.desktop-wallpapers-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+.desktop-wallpapers-heading > span { font-size: 14px; font-weight: 600; }
+.desktop-wallpapers-heading small { display: block; margin-top: 3px; font-size: 11px; font-weight: 400; color: var(--text-secondary); }
+.desktop-wallpapers-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(140px, 100%), 1fr)); gap: 12px; max-height: 40vh; overflow-y: auto; padding: 3px; }
+.workspace-desktop .desktop-wallpapers-grid button { display: flex; flex-direction: column; align-items: stretch; justify-content: flex-start; gap: 0; min-width: 0; padding: 0; overflow: hidden; border: 1px solid var(--border-subtle); border-radius: 12px; background: var(--surface-0); box-shadow: none; text-align: left; transition: border-color 200ms, background-color 200ms, box-shadow 200ms, transform 200ms; }
+.workspace-desktop .desktop-wallpapers-grid button:hover:not(:disabled) { transform: translateY(-2px); background: var(--surface-2); border-color: var(--accent-solid); }
+.workspace-desktop .desktop-wallpapers-grid button:is([aria-pressed="true"], [data-applying="true"]) { border-color: var(--accent-solid); background: color-mix(in srgb, var(--accent-solid) 10%, var(--surface-0)); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-solid) 18%, transparent); }
+.workspace-desktop .desktop-wallpapers-grid button:disabled { opacity: 1; }
+.desktop-wallpaper-preview { display: block; position: relative; width: 100%; aspect-ratio: 16 / 10; overflow: hidden; background: var(--surface-0); }
+.desktop-wallpaper-preview img { display: block; width: 100%; height: 100%; object-fit: contain; transition: opacity 240ms ease; }
+.desktop-wallpaper-badge { position: absolute; top: 8px; right: 8px; display: grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; background: var(--surface-0); color: var(--accent-solid); border: 1px solid var(--accent-solid); animation: wallpaper-selected 200ms ease-out; }
+.desktop-wallpaper-label { display: block; padding: 10px 12px; font-size: 12px; font-weight: 500; color: var(--text-primary); white-space: normal; overflow-wrap: anywhere; }
+.desktop-wallpaper-label small { display: block; min-height: 15px; margin-top: 3px; font-size: 10px; color: var(--accent-solid); }
+.desktop-wallpapers p { color: var(--text-secondary); margin-top: 8px; }
+@keyframes wallpaper-selected { from { opacity: 0; transform: scale(.7); } to { opacity: 1; transform: scale(1); } }
+@media (prefers-reduced-motion: reduce) { .workspace-desktop .desktop-wallpapers-grid button, .desktop-wallpaper-preview img { transition: none; } .desktop-wallpaper-badge { animation: none; } }

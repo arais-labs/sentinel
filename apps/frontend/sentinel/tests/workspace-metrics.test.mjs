@@ -39,12 +39,29 @@ test('workspace metrics collect before hover, share history, and retain it acros
     });
     await page.goto(`${server.resolvedUrls.local[0]}tests/fixtures/workspace-metrics.html`);
     await page.waitForFunction(() => window.metricRequests === 1);
+    assert.match(await page.locator('.workspace-performance-chip').first().getAttribute('aria-label'), /RAM 26%/);
+    assert.equal(await page.locator('.workspace-performance-fill').first().evaluate(node => getComputedStyle(node).color), 'rgb(173, 145, 237)');
+    const waveMovement = await page.locator('.workspace-performance-fill svg').first().evaluate(async svg => {
+      svg.pauseAnimations();
+      const edge = svg.querySelectorAll('path')[1];
+      svg.setCurrentTime(0);
+      await new Promise(resolve => requestAnimationFrame(resolve));
+      const before = edge.getBBox().width;
+      svg.setCurrentTime(2);
+      await new Promise(resolve => requestAnimationFrame(resolve));
+      const after = edge.getBBox().width;
+      svg.unpauseAnimations();
+      return Math.abs(after - before) * svg.getBoundingClientRect().width / 1000;
+    });
+    assert.ok(waveMovement > 1, `The chip wave must visibly move, got ${waveMovement}px`);
     assert.equal(await page.locator('.workspace-runtime-stats').count(), 0);
     for (let n = 2; n <= 21; n++) {
       await page.clock.fastForward(3000);
       await page.waitForFunction(n => window.metricRequests === n, n);
     }
-    await page.getByRole('button', { name: 'Toggle metrics', exact: true }).click();
+    await page.locator('.workspace-performance-chip').first().click();
+    assert.match(await page.locator('.workspace-performance-chip').first().getAttribute('aria-label'), /CPU 36%/);
+    assert.equal(await page.locator('.workspace-performance-fill').first().evaluate(node => node.style.color), 'rgb(99, 184, 239)');
     const cpu = page.locator('[data-metric="cpu"] .workspace-stat-trace');
     const path = await cpu.getAttribute('d');
     assert.equal((path.match(/L/g) || []).length, 20, 'History must already exist on first open');
@@ -54,11 +71,12 @@ test('workspace metrics collect before hover, share history, and retain it acros
     assert.equal(style.stroke, 'rgb(99, 184, 239)');
     assert.equal(await page.locator('.workspace-stat-axis').first().evaluate(node => getComputedStyle(node).display), 'flex');
     await page.locator('.session-telemetry-panel').screenshot({ path: '/tmp/sentinel-workspace-metrics.png' });
-    await page.getByRole('button', { name: 'Toggle metrics', exact: true }).click();
-    await page.getByRole('button', { name: 'Toggle metrics', exact: true }).click();
+    await page.keyboard.press('Escape');
+    await page.locator('.workspace-performance-chip').first().click();
     assert.equal(await cpu.getAttribute('d'), path, 'Popover reopen must preserve history');
     await page.getByRole('button', { name: 'Toggle header', exact: true }).click();
     await page.getByRole('button', { name: 'Toggle header', exact: true }).click();
+    await page.locator('.workspace-performance-chip').first().click();
     await cpu.waitFor();
     assert.equal(await cpu.getAttribute('d'), path, 'Returning to the workspace must preserve history');
     await page.evaluate(() => { window.failMetrics = true; });

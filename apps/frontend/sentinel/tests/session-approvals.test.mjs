@@ -78,6 +78,7 @@ test('session approval controls grant, persist, revoke and stay usable in both t
     await page.goto(url);
     const write = page.locator('.session-preview-approval').filter({hasText:'git.write'});
     await write.getByRole('button', {name:'Allow for this session',exact:true}).click();
+    await page.getByRole('button', {name:/^Session permissions/}).click();
     await page.getByRole('button', {name:'Revoke git.write',exact:true}).waitFor();
     assert.deepEqual(decisions, [{scope:'session'}]);
     assert.equal(await page.getByRole('region', {name:'Sessionless approval'}).getByRole('button', {name:'Allow for this session',exact:true}).count(), 0);
@@ -86,6 +87,7 @@ test('session approval controls grant, persist, revoke and stay usable in both t
     assert.equal(parsed.action, 'git.write');
     // Reopening the UI reloads persistent permissions from the backend.
     await page.reload();
+    await page.getByRole('button', {name:/^Session permissions/}).click();
     await page.getByRole('button', {name:'Revoke git.write',exact:true}).waitFor();
     for (const dark of [true, false]) {
       await page.evaluate(dark => document.documentElement.classList.toggle('dark', dark), dark);

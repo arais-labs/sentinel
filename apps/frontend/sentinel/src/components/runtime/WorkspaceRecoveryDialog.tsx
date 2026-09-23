@@ -5,8 +5,9 @@ import { api } from '../../lib/api';
 import type { Workspace } from '../../types/api';
 import './remote-runtime-dialog.css';
 
-export function WorkspaceRecoveryDialog({ workspace, onClose, onStarted }: {
+export function WorkspaceRecoveryDialog({ workspace, onClose, onStarted, onReinstall, onRemove }: {
   workspace: Workspace; onClose: () => void; onStarted: () => Promise<void>;
+  onReinstall: () => void; onRemove: () => void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const backdrop = useRef(false);
@@ -33,6 +34,15 @@ export function WorkspaceRecoveryDialog({ workspace, onClose, onStarted }: {
     <div className="space-y-4 px-5 pb-5">
       <p>Stop the VM, save a disk backup, repair its filesystem, and restart this workspace.</p>
       <p className="text-(--text-secondary)">Running commands and unsaved work will be lost. Your project folder is kept. If repair fails, the workspace stays stopped and keeps its backup.</p>
+      {workspace.container_error && <details className="text-xs text-(--text-secondary)"><summary className="cursor-pointer">Recovery details</summary><p className="mt-2 break-words [overflow-wrap:anywhere]">{workspace.container_error}</p></details>}
+      <div className="space-y-3 rounded-xl border border-(--border-subtle) p-4">
+        <p className="font-medium">Can’t recover, or don’t need the Linux files?</p>
+        <p className="text-(--text-secondary)">Reinstall for a fresh Linux environment, or delete the workspace. Both erase VM-only data and recovery backups, but keep your project folder and conversations. You’ll confirm before anything is erased.</p>
+        <div className="flex flex-wrap gap-2">
+          <button disabled={busy} className="btn-secondary h-9 px-3 text-xs" onClick={onReinstall}>Reinstall Linux…</button>
+          <button disabled={busy} className="btn-secondary h-9 px-3 text-xs" onClick={onRemove}>Delete workspace…</button>
+        </div>
+      </div>
       {error && <p role="alert" className="workspace-container-error">{error}</p>}
     </div>
     <footer className="flex flex-wrap justify-end gap-2 border-t border-(--border-subtle) p-4">
