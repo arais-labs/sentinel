@@ -86,14 +86,12 @@ def main():
     parser.add_argument("--mesa-sha256", required=True)
     parser.add_argument("--mesa-source", type=Path, required=True)
     parser.add_argument("--mesa-source-sha256", required=True)
-    parser.add_argument(
-        "--assets",
-        type=Path,
-        default=Path(__file__).resolve().parents[3] / "native/graphics/packaging/gpu-2404",
-    )
+    parser.add_argument("--assets", type=Path)
     parser.add_argument("--cache", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    if args.assets is None:
+        args.assets = Path(__file__).resolve().parents[3] / "native/graphics/packaging/gpu-2404"
     if platform.system() != "Linux" or platform.machine() not in {"aarch64", "arm64"}:
         parser.error("Run in the existing Linux arm64 builder, not on macOS")
     if os.geteuid() != 0:
