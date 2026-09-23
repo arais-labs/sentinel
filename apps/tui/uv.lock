@@ -460,7 +460,7 @@ wheels = [
 
 [[package]]
 name = "sentinel-tui"
-version = "2.3.7"
+version = "2.3.9"
 source = { editable = "." }
 dependencies = [
     { name = "jsonschema" },

@@ -1,7 +1,7 @@
 {
   "name": "sentinel-desktop",
   "private": true,
-  "version": "2.3.7",
+  "version": "2.3.9",
   "description": "Sentinel desktop management app",
   "type": "module",
   "main": "dist/main/main.js",
@@ -18,7 +18,8 @@
     "payload:build": "node scripts/packaging/payload-build.mjs build",
     "dev": "node scripts/dev/workspace-runtime-dev.mjs && electron-vite dev --watch",
     "test": "tsc -p tsconfig.json --outDir .test-dist && node --test tests/unit/*.test.mjs",
-    "test:graphics-build": "PYTHONPATH=scripts/packaging/graphics python3 -m unittest discover -s tests/unit -p 'test_*.py'",
+    "test:graphics-build": "PYTHONPATH=scripts/packaging/graphics python3 -m unittest discover -s tests/unit -p 'test_*.py' && python3 -m unittest discover -s native/graphics/packaging/klipper -p 'test_*.py'",
+    "test:linux": "tsc -p tsconfig.json --outDir .test-dist && python3 tests/qualification/run.py",
     "build": "electron-vite build",
     "postbuild": "node --check dist/main/main.js && node --check dist/preload/preload.mjs"
   },
