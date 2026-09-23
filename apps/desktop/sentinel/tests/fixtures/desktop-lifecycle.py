@@ -11,6 +11,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+sys.path.insert(0, str(Path(sys.argv[1]).resolve().parent))
 loader = importlib.machinery.SourceFileLoader("desktop_session", sys.argv[1])
 spec = importlib.util.spec_from_loader(loader.name, loader)
 session = importlib.util.module_from_spec(spec)
