@@ -5,11 +5,14 @@ import sys
 import unittest
 
 ROOT = Path(__file__).resolve().parents[4]
+sys.path.insert(0, str(ROOT / "tests"))
+from metal_support import require_metal_device  # noqa: E402 - standalone unittest discovery
 
 
 class HostMesaTests(unittest.TestCase):
     @unittest.skipUnless(sys.platform == "darwin", "host Metal requires macOS")
     def test_hardware_capabilities_mip_views_and_buffer_storage(self):
+        require_metal_device()
         explicit = os.environ.get("SENTINEL_TEST_GRAPHICS_DIR")
         libraries = (
             Path(explicit).resolve()

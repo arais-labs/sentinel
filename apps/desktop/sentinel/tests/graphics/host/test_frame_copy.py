@@ -8,11 +8,14 @@ import unittest
 from pathlib import Path
 
 DESKTOP = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(DESKTOP / "tests"))
+from metal_support import require_metal_device  # noqa: E402 - standalone unittest discovery
 
 
 @unittest.skipUnless(sys.platform == "darwin", "Requires macOS Metal")
 class MetalFrameCopyTests(unittest.TestCase):
     def test_pixels_ordering_backpressure_and_lifetime(self):
+        require_metal_device()
         with tempfile.TemporaryDirectory(prefix="sentinel-frame-copy-") as temporary:
             executable = Path(temporary) / "frame-copy"
             video = DESKTOP / "native/graphics/video"

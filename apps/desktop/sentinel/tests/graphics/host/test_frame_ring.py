@@ -12,11 +12,14 @@ import unittest
 from pathlib import Path
 
 DESKTOP = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(DESKTOP / "tests"))
+from metal_support import require_metal_device  # noqa: E402 - standalone unittest discovery
 
 
 @unittest.skipUnless(sys.platform == "darwin", "Requires macOS Metal")
 class FrameRingTests(unittest.TestCase):
     def test_shared_context_pixels_resize_and_backpressure(self):
+        require_metal_device()
         package = Path(
             os.environ.get(
                 "SENTINEL_TEST_GRAPHICS_DIR",

@@ -2,15 +2,19 @@
 
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 DESKTOP = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(DESKTOP / "tests"))
+from metal_support import require_metal_device  # noqa: E402 - standalone unittest discovery
 
 
 class GraphicsCapabilitiesTests(unittest.TestCase):
     def test_timer_queries_match_the_host_and_are_honored_by_mesa(self):
+        require_metal_device()
         graphics = Path(
             os.environ.get(
                 "SENTINEL_TEST_GRAPHICS_DIR",
