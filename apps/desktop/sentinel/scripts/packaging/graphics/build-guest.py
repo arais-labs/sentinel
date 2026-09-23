@@ -353,6 +353,27 @@ def stage_inputs(output):
         shutil.copy2(cached_source(pin), Path(output) / "mesa.tar.xz")
 
 
+def linux_build_script(commands):
+    # Root is required for distro package installation, but the bind-mounted
+    # temporary output belongs to the host runner. Restore it even on failure;
+    # leave the persistent compiler cache alone. Do not follow output symlinks.
+    return (
+        "set -eu\n"
+        "export PYTHONDONTWRITEBYTECODE=1\n"
+        "export SENTINEL_GRAPHICS_INPUTS=/output\n"
+        "restore_output_owner() {\n"
+        "  status=$?\n"
+        "  trap - EXIT\n"
+        f"  chown -hR {os.getuid()}:{os.getgid()} /output || {{\n"
+        '    if [ "$status" -eq 0 ]; then status=1; fi\n'
+        "  }\n"
+        '  exit "$status"\n'
+        "}\n"
+        "trap restore_output_owner EXIT\n"
+        "(\n" + commands + "\n)\n"
+    ).encode()
+
+
 def build_linux():
     if platform.machine() not in {"aarch64", "arm64"}:
         raise RuntimeError("Guest graphics builds require a native Linux ARM64 host")
@@ -379,15 +400,14 @@ def build_linux():
             "sh",
             build_image,
             "-s",
-            input=(
-                "export SENTINEL_GRAPHICS_INPUTS=/output\n"
-                + commands
+            input=linux_build_script(
+                commands
                 + (
                     ""
                     if provider or klipper
                     else '\ntar -C "$SENTINEL_GRAPHICS_BUNDLE" -cJf /output/graphics.tar.xz .\n'
                 )
-            ).encode(),
+            ),
         )
         record_core(output)
         if klipper:
@@ -616,7 +636,8 @@ if klipper:
         for path in klipper.verify(root):
             publish_file(path, dest / build_target / path.relative_to(root))
     print(
-        f"Verified native package target ready (not release-qualified): {build_target}", flush=True
+        f"Verified native package target ready (not release-qualified): {build_target}",
+        flush=True,
     )
     sys.exit(0)
 

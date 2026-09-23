@@ -428,6 +428,35 @@ class GuestGraphicsTests(unittest.TestCase):
                 (native / "lib" / name).touch()
             exec(compile(check, str(source), "exec"), {})
 
+    def test_linux_output_cleanup_preserves_build_failure_and_reports_cleanup_failure(
+        self,
+    ):
+        self.execute("kernel")
+        for build_status, cleanup_status, expected in (
+            (0, 0, 0),
+            (7, 0, 7),
+            (0, 9, 1),
+            (7, 9, 7),
+        ):
+            with self.subTest(build=build_status, cleanup=cleanup_status):
+                commands = (
+                    'test "$PYTHONDONTWRITEBYTECODE" = 1 || exit 99\n'
+                    'test "$SENTINEL_GRAPHICS_INPUTS" = /output || exit 98\n'
+                    # A recipe's own EXIT trap must not replace wrapper cleanup.
+                    "trap ':' EXIT\n"
+                    f"exit {build_status}\n"
+                )
+                script = self.namespace["linux_build_script"](commands).decode()
+                result = subprocess.run(
+                    ["sh"],
+                    input=f'chown() {{ printf "owner:%s\\n" "$*"; return {cleanup_status}; }}\n'
+                    + script,
+                    text=True,
+                    capture_output=True,
+                )
+                self.assertEqual(result.returncode, expected, result.stderr)
+                self.assertEqual(result.stdout, f"owner:-hR {os.getuid()}:{os.getgid()} /output\n")
+
     def docker(self, args, **kwargs):
         self.assertEqual(args[:3], ["docker", "run", "--rm"])
         self.assertEqual(args[args.index("--platform") + 1], "linux/arm64")
