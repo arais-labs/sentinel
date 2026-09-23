@@ -6,6 +6,7 @@ import Synchronization
 /// Status never waits on guest RPCs. Process startup timeouts fail the request;
 /// lifecycle/guest health failures retain the existing recovery safeguards.
 final class WorkspaceHealth: Sendable {
+    static let processStartupTimeout: Double = 60
     struct Snapshot {
         var states: [String: String] = [:]
         var errors: [String: String] = [:]
@@ -77,7 +78,7 @@ final class WorkspaceHealth: Sendable {
             $0.states[id] = "recovering"
         }
     }
-    @MainActor func processStartup<T: Sendable>(_ id: String, seconds: Double = 60,
+    @MainActor func processStartup<T: Sendable>(_ id: String, seconds: Double = WorkspaceHealth.processStartupTimeout,
         operation: @escaping @MainActor () async throws -> T) async throws -> T {
         let generation = Self.requestGeneration ?? generation(id)
         guard generation == self.generation(id) else { throw CancellationError() }
