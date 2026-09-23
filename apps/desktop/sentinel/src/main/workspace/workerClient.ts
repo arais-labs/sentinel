@@ -43,6 +43,7 @@ export class WorkerClient {
     }
     if (action === 'reinstall') {
       if (values.confirmed !== true) throw new Error('Confirm erasing the workspace Linux disk before reinstalling');
+      if (values.spec && values.revision == null) throw new Error('Refresh workspace settings before reinstalling');
       const status = await this.runtime.request('status');
       requireRuntimeCapability(status.capabilities, 'workspace-reinstall-v1', true);
       const inventory = await this.runtime.request('workspaces');

@@ -2,7 +2,27 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { WorkerClient } from '../../.test-dist/main/workspace/workerClient.js';
 
-const record = { revision: 3, spec: { name: 'Remote', project: '/remote/project', tools: ['git'], distribution: 'ubuntu', resources: { cpus: 4, memory_gib: 8, disk_gib: 64 } } };
+const record = { revision: 3, spec: { name: 'Remote', project: '/remote/project', tools: ['git'], distribution: 'ubuntu', desktop: 'none', resources: { cpus: 4, memory_gib: 8, disk_gib: 64 } } };
+
+test('reinstall edits require the reviewed revision and reject stale edits', async () => {
+  const calls = [];
+  const client = new WorkerClient({ async request(action, values) {
+    calls.push([action, values]);
+    return action === 'workspaces' ? { workspaces: { example: record } } : { capabilities: ['workspace-reinstall-v1'] };
+  } });
+  const edit = { workspace: 'example', confirmed: true, spec: { name: 'New name' } };
+  await assert.rejects(client.request('reinstall', edit), /Refresh workspace settings/);
+  assert.equal(calls.length, 0);
+  await assert.rejects(client.request('reinstall', { ...edit, revision: 2 }), /settings changed/);
+  assert.equal(calls.some(([action]) => action === 'workspace_reinstall'), false);
+  await client.request('reinstall', { ...edit, revision: 3 });
+  const [action, request] = calls.at(-1);
+  assert.equal(action, 'workspace_reinstall');
+  assert.equal(request.revision, 3);
+  assert.equal(request.spec.name, 'New name');
+  assert.equal(request.spec.project, record.spec.project);
+  assert.deepEqual(request.spec.resources, record.spec.resources);
+});
 
 test('a fresh client discovers worker-owned configuration and operation state', async () => {
   const calls = [];

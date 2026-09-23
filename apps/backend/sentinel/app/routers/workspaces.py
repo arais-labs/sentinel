@@ -431,18 +431,41 @@ async def reinstall_workspace(
         if machine is None or machine.provider not in {"local", "ssh"}:
             raise HTTPException(422, "Choose a local or enrolled remote Mac")
         settings = payload.settings
+        record = None
+        current = {
+            "distribution": row.distribution,
+            "desktop": row.desktop,
+            "browser": row.browser,
+            "project": row.directory,
+            "tools": row.development_tools,
+            "name": row.name,
+        }
+        if machine.provider == "ssh" and settings:
+            if settings.revision is None:
+                raise HTTPException(409, "Refresh workspace settings before reinstalling")
+            snapshot = await worker_catalog.snapshot(row.machine_id)
+            record = snapshot["workspaces"][str(row.id)]
+            if settings.revision != record["revision"]:
+                raise HTTPException(409, "Workspace settings changed. Refresh before reinstalling")
+            current = record["spec"]
         distribution = (
-            settings.distribution if settings and settings.distribution else row.distribution
+            settings.distribution if settings and settings.distribution else current["distribution"]
         )
-        desktop = settings.desktop if settings and settings.desktop is not None else row.desktop
-        browser = settings.browser if settings and settings.browser else row.browser
-        directory = settings.directory if settings and settings.directory else row.directory
+        desktop = (
+            settings.desktop if settings and settings.desktop is not None else current["desktop"]
+        )
+        browser = (
+            settings.browser
+            if settings and settings.browser
+            else current.get("browser", "chromium")
+        )
+        directory = settings.directory if settings and settings.directory else current["project"]
         tools = (
             settings.development_tools
             if settings and settings.development_tools is not None
-            else row.development_tools
+            else current["tools"]
         )
-        name = settings.name.strip() if settings and settings.name is not None else row.name
+        name = settings.name.strip() if settings and settings.name is not None else current["name"]
         if not name:
             raise HTTPException(422, "Enter a workspace name")
         if browser == "chrome" and distribution == "alpine":
@@ -456,11 +479,15 @@ async def reinstall_workspace(
                 await asyncio.to_thread(list_local_directories, directory)
             except OSError as exc:
                 raise HTTPException(422, "Choose an existing, accessible project folder") from exc
-        if name != row.name and await db.scalar(
-            select(Workspace.id).where(
-                Workspace.machine_id == row.machine_id,
-                Workspace.name == name,
-                Workspace.id != row.id,
+        if (
+            machine.provider == "local"
+            and name != row.name
+            and await db.scalar(
+                select(Workspace.id).where(
+                    Workspace.machine_id == row.machine_id,
+                    Workspace.name == name,
+                    Workspace.id != row.id,
+                )
             )
         ):
             raise HTTPException(409, "A workspace with this name already exists")
@@ -481,12 +508,6 @@ async def reinstall_workspace(
             resources = settings.resources.model_dump() if settings and settings.resources else None
             spec = None
             if machine.provider == "ssh" and settings:
-                snapshot = await worker_catalog.snapshot(row.machine_id)
-                record = snapshot["workspaces"][str(row.id)]
-                if settings.revision is not None and settings.revision != record["revision"]:
-                    raise HTTPException(
-                        409, "Workspace settings changed. Refresh before reinstalling"
-                    )
                 spec = {
                     **record["spec"],
                     "name": name,

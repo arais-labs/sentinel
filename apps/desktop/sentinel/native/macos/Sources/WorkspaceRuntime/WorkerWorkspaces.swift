@@ -8,6 +8,7 @@ import Foundation
     private let file: URL
     private(set) var catalog: Catalog
     private var jobs: [String: Task<Void, Never>] = [:]
+    private var reinstallNames: [String: String] = [:]
     private var perform: Perform?
 
     init(root: URL) throws {
@@ -65,6 +66,13 @@ import Foundation
         return value
     }
 
+    private func requireUniqueName(_ name: String, workspace: String) throws {
+        guard !catalog.workspaces.contains(where: { $0.key != workspace && $0.value.spec.name == name }),
+              !reinstallNames.contains(where: { $0.key != workspace && $0.value == name }) else {
+            throw RuntimeError("A workspace with this name already exists on this worker")
+        }
+    }
+
     func configure(_ request: Request) throws -> Response {
         guard let id = request.workspace, UUID(uuidString: id) != nil, let spec = request.spec else {
             throw RuntimeError("Workspace ID and configuration are required")
@@ -75,9 +83,7 @@ import Foundation
         guard request.revision == (previous?.revision ?? 0) else {
             throw RuntimeError("Workspace settings changed. Refresh before editing again.")
         }
-        guard !catalog.workspaces.contains(where: { $0.key != id && $0.value.spec.name == spec.name }) else {
-            throw RuntimeError("A workspace with this name already exists on this worker")
-        }
+        try requireUniqueName(spec.name, workspace: id)
         if let previous {
             guard previous.spec.distribution == spec.distribution else { throw RuntimeError("Existing workspace disks cannot change distribution") }
             guard spec.resources.disk_gib >= previous.spec.resources.disk_gib else { throw RuntimeError("Workspace disks can only be increased") }
@@ -101,23 +107,29 @@ import Foundation
         }
         try requireIdle(id)
         let entry = try record(id)
+        if reinstall && request.spec != nil && request.revision == nil {
+            throw RuntimeError("Refresh workspace settings before reinstalling")
+        }
         if let revision = request.revision, revision != entry.revision {
             throw RuntimeError("Workspace settings changed. Refresh before retrying.")
         }
         var plan = request.spec ?? entry.spec
         if let steps = request.steps { plan.steps = steps }
         try plan.validate()
+        if reinstall { try requireUniqueName(plan.name, workspace: id) }
         if !reinstall && plan != entry.spec { throw RuntimeError("Changing workspace settings requires configuration") }
         guard let perform else { throw RuntimeError("Worker is not ready") }
         var next = catalog
         next.workspaces[id]?.operation = "preparing"
         next.workspaces[id]?.error = nil
         try save(next)
+        if reinstall { reinstallNames[id] = plan.name }
         jobs[id] = Task { await self.prepare(id, steps: plan.steps, reinstall: reinstall, replacement: request.spec, perform: perform) }
         return Response(id: request.id, event: "preparing")
     }
 
     private func prepare(_ id: String, steps: [WorkerSetupStep], reinstall: Bool = false, replacement: WorkerWorkspaceSpec? = nil, perform: Perform) async {
+        defer { if reinstall { reinstallNames.removeValue(forKey: id) } }
         do {
             try Task.checkCancellation()
             let entry = try record(id), spec = replacement ?? entry.spec

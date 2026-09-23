@@ -158,6 +158,55 @@ import Testing
         #expect(worker.catalog.workspaces[id]?.revision == 4)
     }
 
+    @Test func reinstallRejectsUnreviewedStaleAndDuplicateSettingsBeforeDiskOperations() throws {
+        let root = try directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let worker = try WorkerWorkspaces(root: root), id = UUID().uuidString.lowercased()
+        let other = UUID().uuidString.lowercased()
+        _ = try worker.configure(Request(id: "a", action: "workspace_configure", workspace: id, spec: spec(), revision: 0))
+        _ = try worker.configure(Request(id: "b", action: "workspace_configure", workspace: other, spec: spec("Taken"), revision: 0))
+        let before = try Data(contentsOf: root.appendingPathComponent("workspaces.json"))
+        var calls = 0
+        worker.attach { request in calls += 1; return Response(id: request.id) }
+        for revision: Int? in [nil, 0] {
+            #expect(throws: RuntimeError.self) {
+                try worker.start(Request(id: "edit", action: "workspace_reinstall", workspace: id, spec: spec("New"), revision: revision, confirmed: true))
+            }
+        }
+        #expect(throws: RuntimeError.self) {
+            try worker.start(Request(id: "duplicate", action: "workspace_reinstall", workspace: id, spec: spec("Taken"), revision: 1, confirmed: true))
+        }
+        #expect(calls == 0)
+        #expect(try Data(contentsOf: root.appendingPathComponent("workspaces.json")) == before)
+    }
+
+    @Test func reinstallReservesNameUntilFailureAndReleasesItAfterwards() async throws {
+        let root = try directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let worker = try WorkerWorkspaces(root: root), id = UUID().uuidString.lowercased()
+        let other = UUID().uuidString.lowercased()
+        _ = try worker.configure(Request(id: "a", action: "workspace_configure", workspace: id, spec: spec(), revision: 0))
+        _ = try worker.configure(Request(id: "b", action: "workspace_configure", workspace: other, spec: spec("Other"), revision: 0))
+        let started = AsyncStream<Void>.makeStream(), release = AsyncStream<Void>.makeStream()
+        worker.attach { _ in
+            started.continuation.yield(())
+            for await _ in release.stream { break }
+            throw RuntimeError("Deletion refused")
+        }
+        _ = try worker.start(Request(id: "rename", action: "workspace_reinstall", workspace: id, spec: spec("Reserved"), revision: 1, confirmed: true))
+        for await _ in started.stream { break }
+        #expect(throws: RuntimeError.self) {
+            try worker.configure(Request(id: "edit", action: "workspace_configure", workspace: other, spec: spec("Reserved"), revision: 1))
+        }
+        #expect(throws: RuntimeError.self) {
+            try worker.start(Request(id: "reinstall", action: "workspace_reinstall", workspace: other, spec: spec("Reserved"), revision: 1, confirmed: true))
+        }
+        release.continuation.finish()
+        await worker.finishJobs()
+        _ = try worker.configure(Request(id: "retry", action: "workspace_configure", workspace: other, spec: spec("Reserved"), revision: 1))
+        #expect(worker.catalog.workspaces[other]?.spec.name == "Reserved")
+    }
+
     @Test func reinstallRequiresConfirmationAndRebuildsOnlySelectedDisk() async throws {
         let root = try directory()
         defer { try? FileManager.default.removeItem(at: root) }
