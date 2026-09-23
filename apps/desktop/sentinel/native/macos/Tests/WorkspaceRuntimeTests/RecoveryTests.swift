@@ -3,6 +3,27 @@ import Testing
 @testable import WorkspaceRuntime
 
 @MainActor struct RecoveryTests {
+    @Test func failedWorkspaceAllowsDestructiveExitAndDeletionClearsPersistentFault() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let id = UUID().uuidString
+        let health = WorkspaceHealth()
+        try health.restore(root: root)
+        health.fault(id, "Repair cannot complete")
+        for action in ["delete", "workspace_delete", "workspace_reinstall", "recover", "workspace_recover"] {
+            try health.check(id, action: action)
+        }
+        for action in ["start", "workspace_start", "exec"] {
+            #expect(throws: (any Error).self) { try health.check(id, action: action) }
+        }
+        let generation = health.generation(id)
+        try health.remove(id)
+        #expect(health.generation(id) > generation)
+        let restored = WorkspaceHealth()
+        try restored.restore(root: root)
+        #expect(!restored.failed(id))
+        #expect(restored.status("probe").states?[id] == nil)
+    }
     func uncooperative(_ delay: Double) async -> Int {
         await withCheckedContinuation { continuation in
             DispatchQueue.global().asyncAfter(deadline: .now() + delay) { continuation.resume(returning: 7) }

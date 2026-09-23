@@ -1,0 +1,10 @@
+diff --git a/klipper/autotests/CMakeLists.txt b/klipper/autotests/CMakeLists.txt
+--- a/klipper/autotests/CMakeLists.txt
++++ b/klipper/autotests/CMakeLists.txt
+@@ -3,3 +3,6 @@
++ecm_add_test(startuprestoretest.cpp TEST_NAME klipper-startuprestoretest
++    LINK_LIBRARIES Qt::Test klipper)
++
+ # Test History Cycler
+ ecm_add_test(historycyclertest.cpp TEST_NAME klipper-testHistoryCycler
+     LINK_LIBRARIES Qt::Test klipper)

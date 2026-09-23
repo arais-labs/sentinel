@@ -20,18 +20,20 @@ function post(socketPath, payload) {
   });
 }
 
-test('remote workspace uses existing lifecycle through tunnel and closing bridge preserves VM ownership', { skip: process.platform !== 'darwin', timeout: 15000 }, async () => {
+test('remote bridge discovers worker configuration and disconnect never changes VM ownership', { skip: process.platform !== 'darwin', timeout: 15000 }, async () => {
   const directory = await mkdtemp('/tmp/sentinel-remote-');
   const workspace = randomUUID(), machine = randomUUID();
   const calls = [], clients = new Set();
   const states = {};
+  const workspaces = {};
   const remote = createServer(socket => {
     clients.add(socket); socket.on('close', () => clients.delete(socket));
-    socket.write('{"event":"ready"}\n');
+    socket.write('{"event":"ready","protocol_version":2}\n');
     createInterface({ input: socket }).on('line', line => {
       const value = JSON.parse(line); calls.push(value);
-      if (value.action === 'start') states[value.workspace] = 'running';
-      socket.write(JSON.stringify({ id: value.id, states, exitCode: 0 }) + '\n');
+      if (value.action === 'workspace_configure') workspaces[value.workspace] = { spec: value.spec, revision: 1 };
+      if (value.action === 'workspace_start') states[value.workspace] = 'running';
+      socket.write(JSON.stringify({ id: value.id, states, workspaces, worker_id: machine, exitCode: 0 }) + '\n');
     });
   });
   let bridge;
@@ -40,27 +42,23 @@ test('remote workspace uses existing lifecycle through tunnel and closing bridge
     const localRuntime = { events: new EventEmitter(), deployment: async () => ({ executable: directory + '/helper', kernel: directory + '/kernels/hash/kernel' }), request: async () => { throw new Error('Local runtime must not receive remote commands'); } };
     bridge = await openWorkspaceRuntimeBridge(localRuntime, directory + '/local.sock', 'test', { status: () => ({ states: {} }) });
     const registered = await post(bridge.socketPath, { action: 'remote_register', machine, socket: directory + '/control.sock', bridge: directory + '/bridge.sock' });
-    await post(registered.socket, { action: 'prepare', workspace, project: '/Users/remote/project', tools: [] });
-    for (let attempt = 0; attempt < 100; attempt++) {
-      const status = await post(registered.socket, { action: 'status' });
-      if (status.states[workspace]?.state === 'running') break;
-      await new Promise(resolve => setTimeout(resolve, 10));
-    }
+    await post(registered.socket, { action: 'configure', workspace, name: 'Example', project: '/Users/remote/project', tools: [], revision: 0 });
+    await post(registered.socket, { action: 'prepare', workspace });
     assert.equal((await post(registered.socket, { action: 'status' })).states[workspace].state, 'running');
-    assert.equal(calls.find(call => call.action === 'start').project, '/Users/remote/project');
-    await post(registered.socket, { action: 'graphics_start', workspace });
-    assert.equal(calls.filter(call => call.action === 'graphics_start').length, 1);
+    assert.equal(calls.find(call => call.action === 'workspace_configure').spec.project, '/Users/remote/project');
+    assert.equal(calls.find(call => call.action === 'workspace_start').project, undefined);
+    await post(registered.socket, { action: 'workspace_resume', approved_workspaces: [workspace] });
+    assert.deepEqual(calls.find(call => call.action === 'workspace_resume').approved_workspaces, [workspace]);
+    await post(registered.socket, { action: 'display_start', workspace });
+    assert.equal(calls.filter(call => call.action === 'display_start').length, 1);
     assert.equal(calls.some(call => call.action === 'process_start'), false, 'Viewer must not start a graphics relay back to itself');
     await post(registered.socket, { action: 'port_forward', workspace, port: 5901 });
     assert.equal(calls.find(call => call.action === 'port_forward').port, 5901);
-    await post(registered.socket, { action: 'check_remote_update' });
-    const starts = calls.filter(call => call.action === 'start').length;
-    states[workspace] = 'stopped';
+    const starts = calls.filter(call => call.action === 'workspace_start').length;
     await post(bridge.socketPath, { action: 'remote_register', machine, socket: directory + '/control.sock', bridge: directory + '/bridge.sock' });
-    await post(registered.socket, { action: 'resume_remote', workspaces: [workspace] });
-    assert.equal(calls.filter(call => call.action === 'start').length, starts + 1);
+    assert.equal(calls.filter(call => call.action === 'workspace_start').length, starts);
     assert.equal((await post(registered.socket, { action: 'status' })).states[workspace].state, 'running');
-    await assert.rejects(post(registered.socket, { action: 'resume_remote', workspaces: [randomUUID()] }), /not registered/);
+    assert.equal((await post(registered.socket, { action: 'status' })).workspaces[workspace].spec.name, 'Example');
     await bridge.close(); bridge = null;
     assert.equal(calls.some(call => call.action === 'graphics_stop'), false, 'Viewer disconnect must preserve remote rendering');
     assert.equal(states[workspace], 'running');

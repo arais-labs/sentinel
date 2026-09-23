@@ -1,0 +1,17 @@
+diff --git a/klipper/historymodel.cpp b/klipper/historymodel.cpp
+--- a/klipper/historymodel.cpp
++++ b/klipper/historymodel.cpp
+@@ -578,9 +578,12 @@ bool HistoryModel::loadHistory()
+     endResetModel();
+ 
+-    m_clip->setMimeData(m_items[0], SystemClipboard::SelectionMode(SystemClipboard::Clipboard | SystemClipboard::Selection));
++    // Loading saved history must not replace a newer application selection.
++    m_clip->setMimeData(m_items[0],
++                        SystemClipboard::SelectionMode(SystemClipboard::Clipboard | SystemClipboard::Selection),
++                        SystemClipboard::ClipboardUpdateReason::PreventEmptyClipboard);
+ 
+     return true;
+ }
+ 
+ bool HistoryModel::saveClipboardHistory()
+ {

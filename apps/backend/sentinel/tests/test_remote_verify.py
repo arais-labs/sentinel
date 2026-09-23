@@ -10,22 +10,54 @@ from fastapi import HTTPException
 
 from app.routers import machines
 from app.services.runtime import remote_verify as verify
-from app.services.runtime.remote_mac import RuntimeUnavailable
+from app.services.runtime.remote_mac import RuntimeUnavailable, runtime_assets
 from tests.test_remote_mac import machine
+from tests.workspace_image_assets import image_names
+from app.services.runtime.workspace_image_assets import runtime_version
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("inventory", [None, [], ["workspace-images/../../escape"]])
+async def test_invalid_image_inventory_is_rejected_before_remote_execution(installation, inventory):
+    installation.documents["manifest.json"]["workspaceImageFiles"] = inventory
+    report = await verify.verify_installation(installation.machine)
+    assert report["checks"][0]["status"] == "failed"
+    installation.conn.run.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_image_inventory_tampering_changes_release_hash(installation):
+    manifest = installation.documents["manifest.json"]
+    manifest["workspaceImageFiles"] = [
+        name.replace("a" * 64, "b" * 64) for name in manifest["workspaceImageFiles"]
+    ]
+    report = await verify.verify_installation(installation.machine)
+    assert (
+        next(check for check in report["checks"] if check["name"] == "Runtime files")["status"]
+        == "failed"
+    )
+    installation.status.assert_not_awaited()
 
 
 @pytest.fixture
 def installation(monkeypatch):
     root = "/Users/test/.sentinel/runtime"
-    hashes = [hashlib.sha256(str(i).encode()).hexdigest() for i in range(8)]
+    files = runtime_assets(
+        {
+            "executable": root + "/releases/test/sentinel-workspace-runtime",
+            "kernel": root + "/releases/test/kernel",
+            "workspaceImageFiles": image_names(),
+        },
+        installed=True,
+    )
+    count = len(files)
+    hashes = [hashlib.sha256(str(i).encode()).hexdigest() for i in range(count)]
     manifest = {
         "executable": root + "/releases/test/sentinel-workspace-runtime",
         "kernel": root + "/releases/test/kernel",
         "initImage": "init",
-        "workspaceImage": "workspace",
-        "version": hashlib.sha256(json.dumps([*hashes, "init", "workspace"]).encode()).hexdigest()[
-            :16
-        ],
+        "workspaceImageFiles": image_names(),
+        "version": runtime_version([name for _, name in files], hashes, "init"),
     }
     documents = {"manifest.json": manifest, "update.json": {"phase": "complete"}}
 
@@ -70,8 +102,14 @@ async def test_verification_checks_all_assets_and_only_requests_status(installat
     report = await verify.verify_installation(installation.machine)
     assert all(check["status"] == "passed" for check in report["checks"])
     commands = [call.args[0] for call in installation.conn.run.call_args_list]
-    assert "graphics/guest-bridge.py" in commands[0]
+    assert "graphics/icd.json" in commands[0]
+    assert "graphics/libvulkan_kosmickrisp.dylib" in commands[0]
+    assert "graphics/gpu-bridge.py" not in commands[0]
+    assert "graphics/kernel-linux-arm64.tar.xz" in commands[0]
+    assert "graphics/desktop-runtime.tar.xz" in commands[0]
     assert "graphics/libEGL.dylib" in commands[0]
+    assert "workspace-images/manifest.json" in commands[0]
+    assert all(name in commands[0] for name in image_names())
     assert "codesign --verify --strict" in commands[1]
     assert "codesign --verify --strict" in commands[2]
     installation.status.assert_awaited_once_with(

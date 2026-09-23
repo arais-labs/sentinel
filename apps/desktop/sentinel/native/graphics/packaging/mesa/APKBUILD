@@ -1,0 +1,69 @@
+# Native Alpine package identities; locally maintained Sentinel virtual-GPU build.
+# Compiler output is provided by build-guest.sh, not rebuilt by this recipe.
+pkgname=mesa
+pkgver=26.1.6
+pkgrel=1
+pkgdesc="Mesa DRI OpenGL library (Sentinel virtual GPU build)"
+url="https://www.mesa3d.org"
+arch="aarch64"
+license="MIT AND SGI-B-2.0 AND BSL-1.0"
+subpackages="$pkgname-dev $pkgname-egl $pkgname-gl $pkgname-gles $pkgname-gbm $pkgname-dri-gallium:gallium"
+depends_dev="libdrm-dev libxdamage-dev libxshmfence-dev"
+options="!check"
+source=""
+
+package() {
+	install -d "$pkgdir/usr/lib" "$pkgdir/usr/share/doc/mesa" "$pkgdir/usr/share/licenses/mesa"
+	for name in EGL GL GLESv1_CM GLESv2 gbm; do
+		cp -a "$SENTINEL_MESA_STAGE/usr/lib/lib$name".so* "$pkgdir/usr/lib/"
+	done
+	cp -a "$SENTINEL_MESA_STAGE/usr/lib/libgallium-26.1.6.so" "$pkgdir/usr/lib/"
+	cp -a "$SENTINEL_MESA_STAGE/usr/lib/gbm" "$SENTINEL_MESA_STAGE/usr/lib/dri" "$pkgdir/usr/lib/"
+	cp -a "$SENTINEL_MESA_STAGE/usr/include" "$pkgdir/usr/"
+	cp -a "$SENTINEL_MESA_STAGE/usr/lib/pkgconfig" "$pkgdir/usr/lib/"
+	if [ -d "$SENTINEL_MESA_STAGE/usr/share/drirc.d" ]; then
+		install -d "$pkgdir/usr/share"
+		cp -a "$SENTINEL_MESA_STAGE/usr/share/drirc.d" "$pkgdir/usr/share/"
+	fi
+	install -m644 "$startdir/provenance.json" "$pkgdir/usr/share/doc/mesa/sentinel-build.json"
+	install -m644 "$startdir/license.rst" "$pkgdir/usr/share/licenses/mesa/license.rst"
+}
+
+dev() {
+	# Alpine's normal split owns real headers, pkg-config files and linker links.
+	# No Rusticl link exists in this build, so it must not acquire that dependency.
+	default_dev
+	for name in mesa mesa-egl mesa-gl mesa-gles mesa-gbm mesa-dri-gallium; do
+		depends="$depends $name=$pkgver-r$pkgrel"
+	done
+}
+
+egl() {
+	pkgdesc="Mesa libEGL runtime libraries (Sentinel virtual GPU build)"
+	depends="mesa=$pkgver-r$pkgrel mesa-gles=$pkgver-r$pkgrel"
+	amove usr/lib/libEGL.so*
+}
+
+gl() {
+	pkgdesc="Mesa libGL runtime libraries (Sentinel virtual GPU build)"
+	depends="mesa=$pkgver-r$pkgrel"
+	amove usr/lib/libGL.so*
+}
+
+gles() {
+	pkgdesc="Mesa OpenGL ES runtime libraries (Sentinel virtual GPU build)"
+	depends="mesa=$pkgver-r$pkgrel"
+	amove usr/lib/libGLES*.so*
+}
+
+gbm() {
+	pkgdesc="Mesa gbm runtime library (Sentinel virtual GPU build)"
+	depends="mesa=$pkgver-r$pkgrel"
+	amove usr/lib/libgbm.so.*
+}
+
+gallium() {
+	pkgdesc="Mesa Gallium DRI driver for Sentinel virtual GPU"
+	depends="mesa=$pkgver-r$pkgrel"
+	amove usr/lib/dri
+}

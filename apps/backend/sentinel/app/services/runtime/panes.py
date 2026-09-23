@@ -11,7 +11,11 @@ from uuid import uuid4
 
 from app.schemas.runtime import RuntimeExecResult
 import app.services.runtime.container_transport as container_transport
-from app.services.runtime.tmux import build_pane_feed_script, tmux_host_socket_path
+from app.services.runtime.tmux import (
+    build_host_tmux_command,
+    build_pane_feed_script,
+    tmux_host_socket_path,
+)
 from app.services.runtime.workspace import workspace_paths
 
 FOREGROUND_WAIT_SECONDS = 20
@@ -40,23 +44,29 @@ class TmuxPanes:
         return result.stdout
 
     async def tree(self, session_id):
-        # Listing does not create a shell.
-
+        # Inspection must never boot a workspace, even if it stops mid-listing.
         if (
             isinstance(self.manager.ssh, container_transport.ContainerTransport)
             and not await self.manager.ssh.is_ready()
         ):
             return []
         socket = tmux_host_socket_path(session_id, root=self.manager.workspace_location)
-        exists = await self.manager.ssh.run(
-            await self.manager._tmux_command(["-S", socket, "has-session", "-t", "sentinel"]),
-            timeout=15,
-        )
-        if exists.exit_status != 0:
+
+        async def inspect(args):
+            transport = self.manager.ssh
+            if isinstance(transport, container_transport.ContainerTransport):
+                return await transport.run_if_running(
+                    build_host_tmux_command(["-S", socket, *args], os_name="linux"), timeout=15
+                )
+            return await transport.run(
+                await self.manager._tmux_command(["-S", socket, *args]), timeout=15
+            )
+
+        exists = await inspect(["has-session", "-t", "sentinel"])
+        if exists is None or exists.exit_status != 0:
             return []
         try:
-            rows = await self.command(
-                session_id,
+            result = await inspect(
                 [
                     "list-panes",
                     "-s",
@@ -67,13 +77,15 @@ class TmuxPanes:
                     "x#{q:pane_current_command} x#{q:window_name} x#{q:pane_title} x#{q:host}",
                 ],
             )
+            if result is None:
+                return []
+            if result.exit_status != 0:
+                raise RuntimeError((result.stderr or "tmux operation failed").strip())
+            rows = result.stdout
         except RuntimeError:
             # The final pane may exit between the existence check and listing.
-            alive = await self.manager.ssh.run(
-                await self.manager._tmux_command(["-S", socket, "has-session", "-t", "sentinel"]),
-                timeout=15,
-            )
-            if alive.exit_status != 0:
+            alive = await inspect(["has-session", "-t", "sentinel"])
+            if alive is None or alive.exit_status != 0:
                 return []
             raise
         windows = {}

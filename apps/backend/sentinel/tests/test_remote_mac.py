@@ -40,7 +40,7 @@ async def test_install_requires_explicit_approval_before_accessing_machine():
 
 
 def test_remote_runtime_rejects_unenrolled_machine():
-    with pytest.raises(RemoteMacError, match="Install Sentinel Runtime"):
+    with pytest.raises(RemoteMacError, match="Verify this machine's SSH identity"):
         RemoteMacRuntime(machine())
 
 
@@ -159,7 +159,7 @@ async def test_status_wait_cancellation_does_not_cancel_reconnection(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_changing_ssh_target_requires_new_enrollment(monkeypatch):
+async def test_changing_address_preserves_pinned_worker_identity(monkeypatch):
     from types import SimpleNamespace
 
     from app.schemas.machines import MachineUpdateRequest
@@ -173,6 +173,8 @@ async def test_changing_ssh_target_requires_new_enrollment(monkeypatch):
     )
     monkeypatch.setattr(machines, "get_machine", AsyncMock(return_value=row))
     await machines.update_machine(AsyncMock(), uuid4(), MachineUpdateRequest(host="new"))
+    assert row.provider_config == {"host_key": "old-key", "runtime_root": "/old"}
+    await machines.update_machine(AsyncMock(), uuid4(), MachineUpdateRequest(username="different"))
     assert row.provider_config == {}
 
 
@@ -216,6 +218,7 @@ async def test_runtime_upgrade_lifecycle(
     workspace = str(uuid4())
     old = {
         "version": "old",
+        "runtimeMigrations": ["001_worker_ownership"],
         "executable": "/old/helper",
         "kernel": "/old/kernel",
         "updateProtocol": 1,
@@ -296,10 +299,8 @@ async def test_runtime_upgrade_lifecycle(
                 raise RuntimeError("new runtime failed")
 
         async def operation(self, action, **values):
-            if action == "check_remote_update":
-                events.append("preflight")
-                return
-            assert values["workspaces"] == [workspace]
+            assert action == "workspace_resume"
+            assert values["approved_workspaces"] == [workspace]
             events.append("restart")
 
         async def close(self):
@@ -323,14 +324,31 @@ async def test_runtime_upgrade_lifecycle(
             pass
 
         async def request(self, action, **values):
+            if action == "migration_status":
+                return {"target": ["001_worker_ownership"], "inputs": []}
+            if action == "migration_plan":
+                events.append("migration_plan")
+            if action == "migrate":
+                assert self.free
+                events.append("migrate")
             if action == "inspect":
                 return {
+                    "migrations": ["001_worker_ownership"],
                     "manifest": json.loads(files[manifest_path]),
                     "owner_free": self.free,
                     "journal": None,
                 }
             if action == "activate":
                 assert self.free
+                if values["manifest"]["version"] != "old":
+                    from pathlib import PurePosixPath
+                    from tests.workspace_image_assets import image_names
+
+                    target = values["manifest"]
+                    assert target["workspaceImageFiles"] == image_names()
+                    release = PurePosixPath(target["executable"]).parent
+                    for name in image_names():
+                        assert str(release / name) in files
                 files[manifest_path] = json.dumps(values["manifest"])
                 self.free = False
                 events.append("activate:" + values["manifest"]["version"])
@@ -353,10 +371,13 @@ async def test_runtime_upgrade_lifecycle(
         "executable": str(tmp_path / "helper"),
         "kernel": str(tmp_path / "kernel"),
         "initImage": "init@digest",
-        "workspaceImage": "workspace@digest",
     }
+    from tests.workspace_image_assets import write_images
+
+    write_images(tmp_path)
     (tmp_path / "graphics").mkdir()
     for path, name in remote.runtime_assets(assets)[2:]:
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(name)
     args = (machine(), "key", assets, [workspace] if approved else [])
     if stage_error:

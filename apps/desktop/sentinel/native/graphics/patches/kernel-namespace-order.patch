@@ -1,0 +1,31 @@
+Subject: [PATCH] nstree: allocate globally ordered namespace IDs
+
+Backport the globally sequential allocation from upstream commit
+3760342fd6312416491d536144e39297fa5b1950 (nstree: assign fixed ids to
+the initial namespaces), without its unrelated fixed initial-ID ABI changes.
+
+Linux 6.18's per-CPU cookie batches violate mnt_ns_loop()'s ordering
+assumption: a new namespace can have an ID below its parent, causing a
+valid namespace bind mount to fail with EINVAL. Retain the cycle check;
+restore globally monotonic allocation for every namespace instead.
+
+--- a/kernel/nstree.c
++++ b/kernel/nstree.c
+@@ -81,7 +81,7 @@ struct ns_tree time_ns_tree = {
+ 	.type = CLONE_NEWTIME,
+ };
+ 
+-DEFINE_COOKIE(namespace_cookie);
++static atomic64_t namespace_cookie = ATOMIC64_INIT(0);
+ 
+ static inline struct ns_common *node_to_ns(const struct rb_node *node)
+ {
+@@ -241,7 +241,6 @@ struct ns_common *ns_tree_lookup_rcu(u64 ns_id, int ns_type)
+  */
+ u64 ns_tree_gen_id(struct ns_common *ns)
+ {
+-	guard(preempt)();
+-	ns->ns_id = gen_cookie_next(&namespace_cookie);
++	ns->ns_id = atomic64_inc_return(&namespace_cookie);
+ 	return ns->ns_id;
+ }

@@ -17,7 +17,7 @@ import os
 import shutil
 import tempfile
 from functools import lru_cache
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from shlex import quote
 from uuid import uuid4
 
@@ -28,6 +28,12 @@ import app.database as database_module
 import app.services.runtime.machines as machines_module
 from app.config import settings
 from app.services.runtime.ssh_client import SSHClient
+from app.services.runtime.compatibility import RuntimeCompatibilityError
+from app.services.runtime.workspace_image_assets import (
+    local_image_files,
+    runtime_version,
+    validate_image_files,
+)
 
 
 class RemoteMacError(RuntimeError):
@@ -38,7 +44,7 @@ class RuntimeUnavailable(RemoteMacError):
     pass
 
 
-def runtime_assets(assets):
+def runtime_assets(assets, *, installed=False):
     """All host-side assets are versioned and verified as one remote release."""
     executable = Path(assets["executable"])
     files = [
@@ -47,23 +53,49 @@ def runtime_assets(assets):
     ]
     graphics = executable.parent / "graphics"
     for name in (
-        "sentinel-graphics-renderer",
+        "sentinel-desktop-renderer",
         "libEGL.dylib",
-        "libGLESv2.dylib",
+        "libgallium-26.3.0-devel.dylib",
         "libepoxy.0.dylib",
         "libvirglrenderer.1.dylib",
-        "guest-bridge.py",
+        "libvulkan_kosmickrisp.dylib",
+        "libvulkan.1.dylib",
+        "libSPIRV-Tools.dylib",
+        "icd.json",
+        "gpu-start.sh",
+        "install-guest.py",
+        "install-browser-graphics.py",
+        "gpu-2404.snap",
+        "gpu-2404.json",
+        "mesa-linux-arm64.tar.xz",
+        "mesa-linux-arm64.json",
+        "mesa-linux-arm64-glibc.tar.xz",
+        "mesa-linux-arm64-glibc.json",
+        "kernel-linux-arm64.tar.xz",
+        "kernel-linux-arm64.json",
+        "desktop-runtime.tar.xz",
+        "desktop-runtime.json",
+        "Mesa-LICENSE",
+        "libepoxy-LICENSE",
+        "virglrenderer-LICENSE",
+        "remote-virtio-gpu-LICENSE",
+        "licenses/vulkan-loader-LICENSE.txt",
+        "licenses/spirv-tools-LICENSE",
     ):
         files.append((graphics / name, "graphics/" + name))
+    image_files = (
+        validate_image_files(assets.get("workspaceImageFiles"))
+        if installed
+        else local_image_files(executable.parent)
+    )
+    files.extend((executable.parent / name, name) for name in image_files)
     return files
 
 
 @lru_cache(maxsize=8)
-def _available_version(files, init_image, workspace_image):
+def _available_version(files, init_image):
     hashes = [hashlib.sha256(Path(file[0]).read_bytes()).hexdigest() for file in files]
-    return hashlib.sha256(json.dumps([*hashes, init_image, workspace_image]).encode()).hexdigest()[
-        :16
-    ]
+    return runtime_version([file[1] for file in files], hashes, init_image)
 
 
 async def available_version():
@@ -72,14 +104,13 @@ async def available_version():
     try:
         assets = await workspace_containers.local_request("deployment", prepare=False)
         files = []
-        for path, _ in runtime_assets(assets):
+        for path, name in runtime_assets(assets):
             stat = path.stat()
-            files.append((str(path), stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns))
+            files.append((str(path), name, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns))
         return await asyncio.to_thread(
             _available_version,
             tuple(files),
             assets["initImage"],
-            assets["workspaceImage"],
         )
     except Exception:
         # Missing local assets / desktop bridge are unknown, never "up to date".
@@ -145,38 +176,42 @@ async def fingerprint(machine: machines_module.ResolvedMachine) -> dict:
 
 
 async def inspect_installation(machine):
-    """Read durable update state without starting or probing the service."""
+    """Read durable worker state without starting the service."""
     client = SSHClient(machine.credentials())
     try:
-        conn = await client._ensure_conn()
-        root = machine.runtime_root
-        if not root:
-            home = await conn.run('printf "%s\\n" "$HOME"', check=True, timeout=10)
-            home = home.stdout.rstrip("\n")
-            if not home.startswith("/") or any(char in home for char in ("\0", "\n", "\r")):
-                raise RemoteMacError("SSH returned an invalid home directory")
-            root = home.rstrip("/") + "/.sentinel/runtime"
-        async with conn.start_sftp_client() as sftp:
-
-            async def read(name):
-                try:
-                    async with sftp.open(root + "/" + name) as file:
-                        return json.loads(await file.read())
-                except asyncssh.SFTPNoSuchFile:
-                    return {}
-
-            manifest = await read("manifest.json")
-            journal = await read("update.json")
-            return {
-                "installed": bool(manifest),
-                "path": root,
-                "installed_version": manifest.get("version"),
-                "update_phase": journal.get("phase"),
-                "update_error": journal.get("error"),
-                "update_warning": journal.get("warning"),
-            }
+        return await read_installation(await client._ensure_conn(), machine.runtime_root)
     finally:
         await client.close()
+
+
+async def read_installation(conn, root):
+    if not root:
+        home = await conn.run('printf "%s\\n" "$HOME"', check=True, timeout=10)
+        home = home.stdout.rstrip("\n")
+        if not home.startswith("/") or any(char in home for char in ("\0", "\n", "\r")):
+            raise RemoteMacError("SSH returned an invalid home directory")
+        root = home.rstrip("/") + "/.sentinel/runtime"
+    async with conn.start_sftp_client() as sftp:
+
+        async def read(name):
+            try:
+                async with sftp.open(root + "/" + name) as file:
+                    return json.loads(await file.read())
+            except asyncssh.SFTPNoSuchFile:
+                return {}
+
+        manifest = await read("manifest.json")
+        journal = await read("update.json")
+        catalog = await read("workspaces.json")
+        return {
+            "installed": bool(manifest),
+            "path": root,
+            "installed_version": manifest.get("version"),
+            "worker_id": catalog.get("worker_id"),
+            "update_phase": journal.get("phase"),
+            "update_error": journal.get("error"),
+            "update_warning": journal.get("warning"),
+        }
 
 
 class UpdateApprovalRequired(RemoteMacError):
@@ -328,9 +363,7 @@ async def _install(
                 for path, _ in files
             )
         )
-        version = hashlib.sha256(
-            json.dumps([*hashes, assets["initImage"], assets["workspaceImage"]]).encode()
-        ).hexdigest()[:16]
+        version = runtime_version([name for _, name in files], hashes, assets["initImage"])
 
         # Each staging area is private to this attempt. Concurrent desktops must
         # never overwrite an executable another updater has already verified.
@@ -345,7 +378,8 @@ async def _install(
             install_progress[str(machine.id)] = phase.replace("_", " ").capitalize()
 
         progress("Uploading and verifying runtime assets")
-        await conn.run(f"umask 077; mkdir -p {quote(release + '/graphics')}", check=True)
+        directories = sorted({str(PurePosixPath(release, name).parent) for _, name in files})
+        await conn.run("umask 077; mkdir -p " + " ".join(map(quote, directories)), check=True)
         async with conn.start_sftp_client() as sftp:
             for (source, name), expected in zip(files, hashes):
                 remote = release + "/" + name
@@ -362,21 +396,23 @@ async def _install(
                     raise RemoteMacError("Transferred runtime asset checksum does not match")
                 await sftp.posix_rename(remote + ".partial", remote)
             await sftp.chmod(release + "/sentinel-workspace-runtime", 0o700)
-            await sftp.chmod(release + "/graphics/sentinel-graphics-renderer", 0o700)
+            await sftp.chmod(release + "/graphics/sentinel-desktop-renderer", 0o700)
         progress("Verifying runtime signature")
         await conn.run(
             f"/usr/bin/codesign --verify --strict {quote(release + '/sentinel-workspace-runtime')}",
             check=True,
         )
         await conn.run(
-            f"/usr/bin/codesign --verify --strict {quote(release + '/graphics/sentinel-graphics-renderer')}",
+            f"/usr/bin/codesign --verify --strict {quote(release + '/graphics/sentinel-desktop-renderer')}",
             check=True,
         )
         manifest = {
             "executable": release + "/sentinel-workspace-runtime",
             "kernel": release + "/kernel",
             "initImage": assets["initImage"],
-            "workspaceImage": assets["workspaceImage"],
+            "workspaceImageFiles": [
+                name for _, name in files if name.startswith("workspace-images/")
+            ],
             "version": version,
             "updateProtocol": 1,
             "storeVersion": 1,
@@ -384,6 +420,11 @@ async def _install(
         }
         progress("Acquiring remote update lock")
         async with remote_update.UpdateSession(conn, manifest["executable"], root) as session:
+            from app.services.runtime import migration_inputs
+
+            manifest["runtimeMigrations"], inputs = await migration_inputs.prepare(
+                session, machine.id
+            )
             runtime = RemoteMacRuntime(
                 dataclasses.replace(machine, host_key=host_key, runtime_root=root)
             )
@@ -403,9 +444,6 @@ async def _install(
                     ) from exc
 
             async def stop(current, running):
-                if running:
-                    # Check this desktop can resume every approved workspace.
-                    await runtime.operation("check_remote_update")
                 cached = runtimes.pop(str(machine.id), None)
                 if cached:
                     await cached.close()
@@ -425,9 +463,7 @@ async def _install(
                 await service_request(conn, transport, root, "status")
 
             async def resume(ids):
-                # connect attaches to the already-ready service under the lease;
-                # it must never launch another owner here.
-                await runtime.operation("resume_remote", workspaces=ids)
+                await runtime.operation("workspace_resume", approved_workspaces=ids)
 
             try:
                 await remote_update.apply_update(
@@ -440,6 +476,7 @@ async def _install(
                     approved=approved_workspaces or [],
                     progress=progress,
                     reinstall=reinstall,
+                    migration_inputs=inputs,
                 )
                 cached = runtimes.pop(str(machine.id), None)
                 if cached:
@@ -453,10 +490,8 @@ async def _install(
 
 class RemoteMacRuntime:
     def __init__(self, machine):
-        if not machine.host_key or not machine.runtime_root:
-            raise RemoteMacError(
-                "Install Sentinel Runtime for this machine before creating a workspace"
-            )
+        if not machine.host_key:
+            raise RemoteMacError("Verify this machine's SSH identity before connecting")
         self.machine = machine
         self.ssh = SSHClient(machine.credentials())
         self.lock = asyncio.Lock()
@@ -491,7 +526,15 @@ class RemoteMacRuntime:
                 return
             await self.ssh.close()
             conn = await self.ssh._ensure_conn()
-            root = self.machine.runtime_root
+            installation = await read_installation(conn, self.machine.runtime_root)
+            if not installation["installed"]:
+                raise RemoteMacError("Sentinel Runtime is not installed on this worker")
+            root = installation["path"]
+            if self.machine.worker_id and installation.get("worker_id") != self.machine.worker_id:
+                raise RemoteMacError(
+                    "This account's worker identity changed. Verify the worker before reconnecting."
+                )
+            self.machine = dataclasses.replace(self.machine, runtime_root=root)
             async with conn.start_sftp_client() as sftp:
                 async with sftp.open(root + "/manifest.json") as file:
                     manifest = json.loads(await file.read())
@@ -512,7 +555,6 @@ class RemoteMacRuntime:
                 root,
                 manifest["kernel"],
                 manifest["initImage"],
-                manifest["workspaceImage"],
             ]
             # A private store lock rejects duplicate owners. No boot/login service.
             # Do not replay mutations after a dropped connection.
@@ -547,7 +589,6 @@ class RemoteMacRuntime:
                 raise
             finally:
                 if old_directory:
-
                     shutil.rmtree(old_directory, ignore_errors=True)
 
     async def operation(self, action, **values):
@@ -570,6 +611,7 @@ class RemoteMacRuntime:
                     self.listener = None
                 raise
             result = response.json()
+            RuntimeCompatibilityError.check(result, machine_id=self.machine.id)
             if response.is_error or result.get("error"):
                 raise RemoteMacError(result.get("error", "Remote workspace request failed"))
             return result
@@ -586,7 +628,6 @@ class RemoteMacRuntime:
             self.listener.close()
         await self.ssh.close()
         if self.directory:
-
             shutil.rmtree(self.directory, ignore_errors=True)
 
 

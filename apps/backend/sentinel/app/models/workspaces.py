@@ -12,12 +12,16 @@ from app.models.column_types import UTCDateTime
 
 class Workspace(Base):
     __tablename__ = "workspaces"
+    # Remote names belong to the worker. Historical client references can retain
+    # a name that the worker has since reused; UUID is the cache identity.
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
-    name: Mapped[str] = mapped_column(String(120), unique=True)
+    name: Mapped[str] = mapped_column(String(120))
     machine_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
     directory: Mapped[str] = mapped_column(Text)
     distribution: Mapped[str] = mapped_column(String(32), default="alpine", server_default="alpine")
+    desktop: Mapped[str] = mapped_column(String(16), default="none", server_default="none")
+    browser: Mapped[str] = mapped_column(String(16), default="chromium", server_default="chromium")
     development_tools: Mapped[list[str]] = mapped_column(JSON, default=list, server_default="[]")
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=func.now())
 

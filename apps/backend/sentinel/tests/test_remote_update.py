@@ -10,6 +10,102 @@ OLD = {"version": "old", "storeVersion": 1, "updateProtocol": 1}
 NEW = {"version": "new", "storeVersion": 1, "updateProtocol": 1}
 
 
+class MigrationSession:
+    def __init__(self, *, preflight_error=False, migration_error=False):
+        self.state = {
+            "manifest": deepcopy(OLD),
+            "owner_free": False,
+            "journal": None,
+            "migrations": [],
+        }
+        self.events = []
+        self.preflight_error = preflight_error
+        self.migration_error = migration_error
+
+    async def request(self, action, **values):
+        self.events.append((action, deepcopy(values)))
+        if action == "inspect":
+            return deepcopy(self.state)
+        if action == "migration_plan" and self.preflight_error:
+            raise RemoteMacError("Missing workspace registration")
+        if action == "journal":
+            self.state["journal"] = deepcopy(values["journal"])
+        if action == "migrate":
+            assert self.state["owner_free"]
+            if self.migration_error:
+                raise RemoteMacError("Migration failed")
+            self.state["migrations"] = ["001_worker_ownership"]
+        if action == "activate":
+            assert self.state["owner_free"]
+            assert values["manifest"]["runtimeMigrations"] == self.state["migrations"]
+            self.state["manifest"] = deepcopy(values["manifest"])
+            self.state["owner_free"] = False
+
+
+@pytest.mark.asyncio
+async def test_migration_preflight_failure_never_stops_the_old_service():
+    session = MigrationSession(preflight_error=True)
+    cb = callbacks(session, ["workspace"])
+    with pytest.raises(RemoteMacError, match="Missing workspace"):
+        await apply_update(
+            session,
+            {**NEW, "runtimeMigrations": ["001_worker_ownership"]},
+            migration_inputs={},
+            **cb,
+        )
+    cb["stop"].assert_not_called()
+    assert session.state["manifest"] == OLD
+    assert session.state["journal"] is None
+
+
+@pytest.mark.asyncio
+async def test_migrations_run_under_ownership_before_activation_and_resume():
+    session = MigrationSession()
+    cb = callbacks(session, ["workspace"])
+    await apply_update(
+        session, {**NEW, "runtimeMigrations": ["001_worker_ownership"]}, migration_inputs={}, **cb
+    )
+    actions = [action for action, _ in session.events]
+    assert actions.index("migration_plan") < actions.index("migrate") < actions.index("activate")
+    cb["stop"].assert_awaited_once()
+    cb["resume"].assert_awaited_once_with(["workspace"])
+
+
+@pytest.mark.asyncio
+async def test_failed_migration_does_not_activate_or_resume():
+    session = MigrationSession(migration_error=True)
+    cb = callbacks(session, ["workspace"])
+    with pytest.raises(RemoteMacError, match="Migration failed"):
+        await apply_update(
+            session,
+            {**NEW, "runtimeMigrations": ["001_worker_ownership"]},
+            migration_inputs={},
+            **cb,
+        )
+    assert not any(action == "activate" for action, _ in session.events)
+    cb["resume"].assert_not_called()
+    assert session.state["journal"]["phase"] == "migrating"
+
+
+@pytest.mark.asyncio
+async def test_failed_activation_after_migration_never_rolls_back_to_incompatible_runtime():
+    session = MigrationSession()
+    cb = callbacks(session, ["workspace"])
+    cb["validate"].side_effect = RemoteMacError("New runtime failed")
+    with pytest.raises(RemoteMacError, match="needs recovery"):
+        await apply_update(
+            session,
+            {**NEW, "runtimeMigrations": ["001_worker_ownership"]},
+            migration_inputs={},
+            **cb,
+        )
+    assert [
+        values["manifest"]["version"] for action, values in session.events if action == "activate"
+    ] == ["new"]
+    cb["resume"].assert_not_called()
+    assert session.state["journal"]["phase"] == "recovery_required"
+
+
 class Session:
     def __init__(self, current=OLD, live=False, journal=None):
         self.state = {
@@ -234,7 +330,6 @@ async def test_only_update_owner_can_attach_during_transaction(monkeypatch, upda
                     "executable": "/new/helper",
                     "kernel": "/kernel",
                     "initImage": "init",
-                    "workspaceImage": "workspace",
                 }
             )
             yield SimpleNamespace(read=AsyncMock(return_value=json.dumps(value)))

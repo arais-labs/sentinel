@@ -2,6 +2,8 @@ import Containerization
 import Foundation
 
 extension WorkspaceRuntime {
+    // Match guest graphics_environment.py. Exec/PTY bypass PAM and shell profiles.
+    static let guestGPUEnvironment = ["VK_LOADER_DRIVERS_SELECT=*virtio*"]
     /// Creation, exec and initial PTY setup share one startup budget. Cleanup
     /// stays with the operation so a late reply cannot publish an orphan process.
     @MainActor private static func startGuestProcess(_ id: String, request: Request,
@@ -55,8 +57,9 @@ extension WorkspaceRuntime {
                     let input = Input(), output = Output(pid)
                     let process = try await startGuestProcess(id, request: request) { try await container.exec(pid) { config in
                         config.arguments = command
+                        config.capabilities = .allCapabilities
                         config.workingDirectory = container.config.process.workingDirectory
-                        config.environmentVariables = ["PATH=/root/.local/bin:\(LinuxProcessConfiguration.defaultPath)", "HOME=/root", "TMPDIR=/tmp", "TERM=xterm-256color"]
+                        config.environmentVariables = ["PATH=/root/.local/bin:\(LinuxProcessConfiguration.defaultPath)", "HOME=/root", "TMPDIR=/tmp", "TERM=xterm-256color"] + guestGPUEnvironment
                         config.terminal = request.terminal ?? false
                         config.stdin = input
                         config.stdout = output
@@ -84,29 +87,41 @@ extension WorkspaceRuntime {
                         }
                     }
                 case "exec":
+                    try emit(try await executeGuest(request, container: container))
+
+            default: throw RuntimeError("Unknown guest action")
+            }
+        } catch { try? emit(Response(id: request.id, error: String(describing: error))) }
+    }
+
+    @MainActor static func executeGuest(_ request: Request, container: LinuxContainer?, input: (any ReaderStream)? = nil) async throws -> Response {
+        guard let id = request.workspace else { throw RuntimeError("Workspace ID is required") }
                     guard let container, let command = request.arguments, !command.isEmpty else {
                         throw RuntimeError("A running workspace and arguments are required")
                     }
                     let stdout = Capture(), stderr = Capture()
                     let process = try await startGuestProcess(id, request: request) { try await container.exec(UUID().uuidString) { config in
                         config.arguments = command
+                        config.capabilities = .allCapabilities
                         config.workingDirectory = container.config.process.workingDirectory
-                        config.environmentVariables = ["PATH=\(LinuxProcessConfiguration.defaultPath)", "HOME=/root", "TMPDIR=/tmp"]
+                        config.environmentVariables = ["PATH=\(LinuxProcessConfiguration.defaultPath)", "HOME=/root", "TMPDIR=/tmp"] + guestGPUEnvironment
+                        config.stdin = input
                         config.stdout = stdout
                         config.stderr = stderr
                     } }
                     do {
-                        let status = try await health.guest(id, seconds: Double(min(max(request.timeout ?? 300, 1), 1800)) + 5) { try await process.wait(timeoutInSeconds: min(max(request.timeout ?? 300, 1), 1800)) }
+                        let status = try await withTaskCancellationHandler {
+                            try await health.guest(id, seconds: Double(min(max(request.timeout ?? 300, 1), 1800)) + 5) { try await process.wait(timeoutInSeconds: min(max(request.timeout ?? 300, 1), 1800)) }
+                        } onCancel: {
+                            Task { try? await process.kill(.kill) }
+                        }
+                        try Task.checkCancellation()
                         try await health.guest(id) { try await process.delete() }
-                        try emit(Response(id: request.id, stdout: stdout.text, stderr: stderr.text,
-                                          exitCode: status.exitCode, truncated: stdout.truncated || stderr.truncated))
+                        return Response(id: request.id, stdout: stdout.text, stderr: stderr.text,
+                                          exitCode: status.exitCode, truncated: stdout.truncated || stderr.truncated)
                     } catch {
                         Task { try? await process.kill(.kill); try? await process.delete() }
-                        try? emit(Response(id: request.id, error: String(describing: error), stdout: stdout.text, stderr: stderr.text))
+                        throw error
                     }
-
-            default: throw RuntimeError("Unknown guest action")
-            }
-        } catch { try? emit(Response(id: request.id, error: String(describing: error))) }
     }
 }

@@ -40,6 +40,7 @@ async def test_new_machine_reads_existing_installation(monkeypatch, installed):
     assert paths == [
         "/Users/test/.sentinel/runtime/manifest.json",
         "/Users/test/.sentinel/runtime/update.json",
+        "/Users/test/.sentinel/runtime/workspaces.json",
     ]
     client.close.assert_awaited_once()
 

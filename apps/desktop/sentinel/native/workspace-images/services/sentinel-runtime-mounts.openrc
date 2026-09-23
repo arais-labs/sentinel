@@ -1,0 +1,12 @@
+#!/sbin/openrc-run
+description="Publish workspace runtime mounts to child namespaces"
+
+depend() {
+    before dbus elogind
+}
+
+start() {
+    ebegin "$description"
+    mount --make-rshared /run
+    eend $?
+}

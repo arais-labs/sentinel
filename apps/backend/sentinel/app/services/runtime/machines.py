@@ -58,6 +58,7 @@ class ResolvedMachine:
     updated_at_marker: str
     host_key: str | None = None
     runtime_root: str | None = None
+    worker_id: str | None = None
 
     def credentials(self) -> SSHCredentials:
         if self.provider == "local" or self.auth_type == "local":
@@ -152,16 +153,9 @@ async def update_machine(
     payload: MachineUpdateRequest,
 ) -> Machine:
     runtime = await get_machine(db, machine_id)
-    endpoint_changed = any(
-        value is not None and value != getattr(runtime, field)
-        for field, value in (
-            ("host", payload.host),
-            ("port", payload.port),
-            ("username", payload.username),
-        )
-    )
-    if endpoint_changed:
-        # Enrollment belongs to one SSH account and host, never a replacement target.
+    if payload.username is not None and payload.username.strip() != runtime.username:
+        # A different account owns a different worker. Address changes retain the
+        # pinned SSH identity; connecting to another host fails verification.
         runtime.provider_config = {}
     if payload.name is not None:
         runtime.name = payload.name.strip()
@@ -238,6 +232,7 @@ def resolve_machine_secret(runtime: Machine) -> ResolvedMachine:
         secret=str(runtime.encrypted_secret),
         host_key=(runtime.provider_config or {}).get("host_key"),
         runtime_root=(runtime.provider_config or {}).get("runtime_root"),
+        worker_id=(runtime.provider_config or {}).get("worker_id"),
         updated_at_marker=str(runtime.updated_at or ""),
     )
 

@@ -1,0 +1,105 @@
+--- a/src/gallium/drivers/zink/zink_resource.c
++++ b/src/gallium/drivers/zink/zink_resource.c
+@@ -22,6 +22,7 @@
+  */
+ 
+ #include "zink_resource.h"
++#include "zink_buffer_ranges.h"
+ 
+ #include "zink_batch.h"
+ #include "zink_clear.h"
+@@ -3250,6 +3251,11 @@
+    u_rwlock_rdlock(&res->obj->copy_lock);
+    struct pipe_box *b = res->obj->copies[level].data;
+    unsigned num_boxes = util_dynarray_num_elements(&res->obj->copies[level], struct pipe_box);
++   if (res->base.b.target == PIPE_BUFFER) {
++      bool ret = zink_buffer_range_intersects(b, num_boxes, box);
++      u_rwlock_rdunlock(&res->obj->copy_lock);
++      return ret;
++   }
+    bool (*intersect)(const struct pipe_box *, const struct pipe_box *);
+    /* determine intersection function based on dimensionality */
+    switch (res->base.b.target) {
+@@ -3285,6 +3291,15 @@
+ zink_resource_copy_box_add(struct zink_context *ctx, struct zink_resource *res, unsigned level, const struct pipe_box *box)
+ {
+    u_rwlock_wrlock(&res->obj->copy_lock);
++   if (res->base.b.target == PIPE_BUFFER) {
++      struct util_dynarray *ranges = &res->obj->copies[level];
++      unsigned count = util_dynarray_num_elements(ranges, struct pipe_box);
++      util_dynarray_append(ranges, *box);
++      count = zink_buffer_range_add(ranges->data, count, box);
++      ranges->size = count * sizeof(struct pipe_box);
++      res->obj->copies_valid = true;
++      goto out;
++   }
+    if (res->obj->copies_valid) {
+       struct pipe_box *b = res->obj->copies[level].data;
+       unsigned num_boxes = util_dynarray_num_elements(&res->obj->copies[level], struct pipe_box);
+--- /dev/null
++++ b/src/gallium/drivers/zink/zink_buffer_ranges.h
+@@ -0,0 +1,64 @@
++#ifndef ZINK_BUFFER_RANGES_H
++#define ZINK_BUFFER_RANGES_H
++
++#include "pipe/p_state.h"
++#include <stdint.h>
++#include <string.h>
++
++static inline uint64_t
++zink_buffer_range_end(const struct pipe_box *box)
++{
++   return (uint64_t)(unsigned)box->x + (unsigned)box->width;
++}
++
++static inline unsigned
++zink_buffer_range_search(const struct pipe_box *boxes, unsigned count,
++                         uint64_t offset, bool adjacent)
++{
++   unsigned low = 0, high = count;
++   while (low < high) {
++      unsigned middle = low + (high - low) / 2;
++      uint64_t end = zink_buffer_range_end(&boxes[middle]);
++      if (end < offset || (!adjacent && end == offset))
++         low = middle + 1;
++      else
++         high = middle;
++   }
++   return low;
++}
++
++static inline bool
++zink_buffer_range_intersects(const struct pipe_box *boxes, unsigned count,
++                             const struct pipe_box *box)
++{
++   if (!box->width)
++      return false;
++   unsigned index = zink_buffer_range_search(boxes, count, (unsigned)box->x, false);
++   return index < count && (unsigned)boxes[index].x < zink_buffer_range_end(box);
++}
++
++static inline unsigned
++zink_buffer_range_add(struct pipe_box *boxes, unsigned count,
++                      const struct pipe_box *box)
++{
++   if (!box->width)
++      return count;
++   uint64_t start = (unsigned)box->x, end = zink_buffer_range_end(box);
++   unsigned first = zink_buffer_range_search(boxes, count, start, true);
++   unsigned last = first;
++   while (last < count && (unsigned)boxes[last].x <= end) {
++      if ((unsigned)boxes[last].x < start)
++         start = (unsigned)boxes[last].x;
++      uint64_t previous_end = zink_buffer_range_end(&boxes[last]);
++      if (previous_end > end)
++         end = previous_end;
++      last++;
++   }
++   memmove(boxes + first + 1, boxes + last, (count - last) * sizeof(*boxes));
++   boxes[first] = *box;
++   boxes[first].x = (int)start;
++   boxes[first].width = (int)(end - start);
++   return count - (last - first) + 1;
++}
++
++#endif

@@ -33,6 +33,7 @@ class MachineStatus(StrEnum):
 class MachineProviderConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     host_key: str | None = None
+    worker_id: str | None = None
     runtime_root: str | None = None
     runtime_version: str | None = None
 

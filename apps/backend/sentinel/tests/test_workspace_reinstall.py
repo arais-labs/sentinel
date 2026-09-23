@@ -10,12 +10,26 @@ from tests.test_workspace_removal import linked_workspace
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("payload", [None, {}, {"confirmed": False}])
+async def test_reinstall_requires_explicit_destructive_confirmation(
+    workspace_app, monkeypatch, payload
+):
+    client, *_ = workspace_app
+    workspace_id, _ = await linked_workspace(workspace_app)
+    reinstall = AsyncMock()
+    monkeypatch.setattr(containers, "reinstall", reinstall)
+    response = await client.post(f"workspaces/{workspace_id}/reinstall", json=payload)
+    assert response.status_code == 422
+    reinstall.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_reinstall_preserves_workspace_and_session_bindings(workspace_app, monkeypatch):
     client, factory, _, first, _, _ = workspace_app
     workspace_id, _ = await linked_workspace(workspace_app)
     reinstall = AsyncMock()
     monkeypatch.setattr(containers, "reinstall", reinstall)
-    response = await client.post(f"workspaces/{workspace_id}/reinstall")
+    response = await client.post(f"workspaces/{workspace_id}/reinstall", json={"confirmed": True})
     assert response.status_code == 200, response.text
     assert response.json()["container_state"] == "preparing"
     async with factory() as db:
@@ -31,6 +45,23 @@ async def test_reinstall_preserves_workspace_and_session_bindings(workspace_app,
 
 
 @pytest.mark.asyncio
+async def test_confirmed_os_change_reinstalls_and_updates_workspace(workspace_app, monkeypatch):
+    client, factory, *_ = workspace_app
+    workspace_id, _ = await linked_workspace(workspace_app)
+    reinstall = AsyncMock()
+    monkeypatch.setattr(containers, "reinstall", reinstall)
+    response = await client.post(
+        f"workspaces/{workspace_id}/reinstall",
+        json={"confirmed": True, "settings": {"distribution": "ubuntu"}},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["distribution"] == "ubuntu"
+    assert reinstall.await_args.kwargs["distribution"] == "ubuntu"
+    async with factory() as db:
+        assert (await db.get(Workspace, workspace_id)).distribution == "ubuntu"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("active", ["parent", "child"])
 async def test_reinstall_blocks_active_agents(workspace_app, monkeypatch, active):
     client, _, _, first, _, registry = workspace_app
@@ -39,7 +70,9 @@ async def test_reinstall_blocks_active_agents(workspace_app, monkeypatch, active
     monkeypatch.setattr(containers, "reinstall", reinstall)
     run = await registry.start(str(first.id if active == "parent" else child.id), asyncio.sleep(60))
     try:
-        response = await client.post(f"workspaces/{workspace_id}/reinstall")
+        response = await client.post(
+            f"workspaces/{workspace_id}/reinstall", json={"confirmed": True}
+        )
         assert response.status_code == 409, response.text
         reinstall.assert_not_awaited()
     finally:
@@ -59,6 +92,6 @@ async def test_reinstall_blocks_busy_workspace(workspace_app, monkeypatch, state
         "statuses",
         AsyncMock(return_value={str(workspace_id): {"state": state}}),
     )
-    response = await client.post(f"workspaces/{workspace_id}/reinstall")
+    response = await client.post(f"workspaces/{workspace_id}/reinstall", json={"confirmed": True})
     assert response.status_code == 409, response.text
     reinstall.assert_not_awaited()

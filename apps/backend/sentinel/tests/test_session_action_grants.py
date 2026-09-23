@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.models import Base, Session, SessionActionGrant, ToolApproval
 from app.routers.approvals import list_session_grants, revoke_session_grant
-from app.services.tools.approval import approval_waiters
+from app.services.tools.approval import ApprovalService, approval_waiters
 from app.services.tools.approval.providers.tool import ToolApprovalProvider
 from app.services.tools.approval.types import ApprovalConflictError
 from app.services.tools.executor import ToolExecutionError, ToolExecutor
@@ -74,6 +74,79 @@ async def resolve(store, aid, scope="session", decision="approve"):
             note=None,
             scope=scope,
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("expired", [False, True])
+@pytest.mark.parametrize("has_session", [False, True])
+async def test_startup_cancels_leftover_pending_approvals(store, expired, has_session):
+    sid = await session(store) if has_session else None
+    expires = datetime.now(UTC) + timedelta(minutes=-1 if expired else 5)
+    aid = await pending(store, sid, expires=expires)
+    service = ApprovalService()
+
+    async with store() as db:
+        await service.cancel_pending_on_startup(db)
+    async with store() as db:
+        row = await db.get(ToolApproval, aid)
+        assert row.status == "cancelled"
+        assert row.decision_note == "Request interrupted. Please try again."
+        assert row.resolved_at is not None
+        resolved_at = row.resolved_at
+        assert row.expires_at == expires
+        records, total = await service.list_approvals(
+            db, status_filter="pending", limit=100, offset=0
+        )
+        assert records == []
+        assert total == 0
+
+    # A subsequent startup must preserve the original cancellation record.
+    async with store() as db:
+        await service.cancel_pending_on_startup(db)
+    async with store() as db:
+        assert (await db.get(ToolApproval, aid)).resolved_at == resolved_at
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["approved", "rejected", "cancelled", "timed_out"])
+async def test_startup_preserves_resolved_approvals_and_session_permissions(store, status):
+    sid = await session(store)
+    aid = await pending(store, sid, status=status)
+    resolved_at = datetime.now(UTC) - timedelta(minutes=1)
+    async with store() as db:
+        row = await db.get(ToolApproval, aid)
+        row.decision_note = "Original decision"
+        row.decision_by = "local"
+        row.resolved_at = resolved_at
+        db.add(SessionActionGrant(session_id=sid, action="git.write", approved_by="local"))
+        await db.commit()
+
+    async with store() as db:
+        await ApprovalService().cancel_pending_on_startup(db)
+    async with store() as db:
+        row = await db.get(ToolApproval, aid)
+        assert row.status == status
+        assert row.decision_note == "Original decision"
+        assert row.decision_by == "local"
+        assert row.resolved_at == resolved_at
+        assert await db.scalar(select(SessionActionGrant.id)) is not None
+
+
+@pytest.mark.asyncio
+async def test_new_approvals_work_normally_after_startup_cleanup(store):
+    service = ApprovalService()
+    async with store() as db:
+        await service.cancel_pending_on_startup(db)
+    sid = await session(store)
+    aid = await pending(store, sid)
+    async with store() as db:
+        records, total = await service.list_approvals(
+            db, status_filter="pending", limit=100, offset=0
+        )
+        assert total == 1
+        assert records[0].approval_id == str(aid)
+        assert records[0].can_resolve
+    assert (await resolve(store, aid, scope="once")).status == "approved"
 
 
 @pytest.mark.asyncio

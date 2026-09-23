@@ -1,4 +1,6 @@
 import path from 'node:path';
+import { WorkerClient } from '../workspace/workerClient.js';
+import { runtimeMigrationInputs } from '../workspace/migrations/runtimeMigrationInputs.js';
 import type { NotificationCenter } from '../app/notifications.js';
 import { WebSocketServer, WebSocket } from 'ws';
 import { randomUUID } from 'node:crypto';
@@ -7,12 +9,12 @@ import { chmod } from 'node:fs/promises';
 import { timingSafeEqual } from 'node:crypto';
 import { WorkspaceRuntime } from '../workspace/workspaceRuntime.js';
 import { WorkspaceLifecycle } from '../workspace/workspaceLifecycle.js';
-import { WorkspaceGraphics } from '../workspace/workspaceGraphics.js';
+import { RuntimeCompatibilityError } from '../workspace/runtimeCompatibility.js';
 
-const actions = new Set(['status', 'recover', 'prepare', 'reinstall', 'exec', 'stop', 'delete', 'graphics_start', 'graphics_stop', 'port_forward', 'deployment', 'remote_register', 'resume_remote', 'check_remote_update']);
+const actions = new Set(['status', 'recover', 'prepare', 'reinstall', 'exec', 'stop', 'delete', 'display_start', 'port_forward', 'deployment', 'remote_register', 'configure', 'workspaces', 'workspace_resume', 'runtime_migration_inputs']);
 
-export async function openWorkspaceRuntimeBridge(runtime: WorkspaceRuntime, socketPath: string, token: string, lifecycle: WorkspaceLifecycle, graphics?: WorkspaceGraphics, notifications?: NotificationCenter) {
-  const remotes = new Map<string, { socket: string; bridge: Awaited<ReturnType<typeof openWorkspaceRuntimeBridge>>; lifecycle: WorkspaceLifecycle }>();
+export async function openWorkspaceRuntimeBridge(runtime: WorkspaceRuntime, socketPath: string, token: string, lifecycle: WorkspaceLifecycle, notifications?: NotificationCenter, worker?: WorkerClient) {
+  const remotes = new Map<string, { socket: string; bridge: Awaited<ReturnType<typeof openWorkspaceRuntimeBridge>>; runtime: WorkspaceRuntime }>();
   const expectedToken = Buffer.from(token);
   const authorized = (value: unknown) => {
     const supplied = Buffer.from(String(value || ''));
@@ -52,38 +54,31 @@ export async function openWorkspaceRuntimeBridge(runtime: WorkspaceRuntime, sock
         if (!/^[0-9a-f-]{36}$/i.test(values.machine) || typeof values.socket !== 'string' || !values.socket.startsWith('/tmp/sentinel-remote-') || values.bridge !== path.join(path.dirname(values.socket), 'bridge.sock')) throw new Error('Invalid remote runtime tunnel');
         const existing = remotes.get(values.machine);
         if (existing && existing.socket === values.socket) {
-          await existing.lifecycle.reconcileRemote();
+          await existing.runtime.start();
           reply = { socket: existing.bridge.socketPath };
         } else {
-          if (existing) { await existing.bridge.close(); await existing.lifecycle.close(); remotes.delete(values.machine); }
-          const deployment = await runtime.deployment();
-          const remoteRuntime = new WorkspaceRuntime({ command: '/usr/bin/nc', args: ['-U', values.socket], onProgress: () => {}, onFailure: () => {}, log: () => {} });
-          const graphics = new WorkspaceGraphics(remoteRuntime, path.join(path.dirname(deployment.executable), 'graphics'));
-          const remoteLifecycle = new WorkspaceLifecycle(remoteRuntime, path.join(path.dirname(deployment.kernel), '..', '..', 'remotes', values.machine), graphics, true);
-          await remoteLifecycle.load();
+          if (existing) { await existing.bridge.close(); await existing.runtime.stop(); remotes.delete(values.machine); }
+          const remoteRuntime = new WorkspaceRuntime({ remote: true, command: '/usr/bin/nc', args: ['-U', values.socket], onProgress: () => {}, onFailure: () => {}, log: () => {} });
           try {
-            await remoteLifecycle.reconcileRemote();
-            const bridge = await openWorkspaceRuntimeBridge(remoteRuntime, values.bridge, token, remoteLifecycle, graphics, notifications);
-            remotes.set(values.machine, { socket: values.socket, bridge, lifecycle: remoteLifecycle });
+            await remoteRuntime.start();
+            const bridge = await openWorkspaceRuntimeBridge(remoteRuntime, values.bridge, token, lifecycle, notifications, new WorkerClient(remoteRuntime));
+            remotes.set(values.machine, { socket: values.socket, bridge, runtime: remoteRuntime });
             reply = { socket: bridge.socketPath };
-          } catch (error) { await remoteLifecycle.close(); throw error; }
+          } catch (error) { await remoteRuntime.stop(); throw error; }
         }
       }
-      else if (action === 'check_remote_update') reply = await lifecycle.checkRemoteUpdate();
-      else if (action === 'resume_remote') reply = await lifecycle.resumeRemote(values.workspaces);
+      else if (worker) reply = await worker.request(action, values);
+      else if (action === 'runtime_migration_inputs') reply = await runtimeMigrationInputs((await runtime.deployment(false)).root, values.machine, values.references);
       else if (action === 'deployment') reply = await runtime.deployment(values.prepare !== false);
       else if (action === 'status') reply = await lifecycle.overview();
       else if (action === 'recover') { await lifecycle.recover(values.workspace); reply = { state: 'recovering' }; }
-      else if (action === 'graphics_start' || action === 'graphics_stop') {
-        if (!graphics) throw new Error('Desktop graphics resources are missing');
-        if (action === 'graphics_start') {
-          if (lifecycle.status().states[values.workspace]?.state !== 'running') throw new Error('Start the workspace before its desktop');
-          await graphics.start(values.workspace);
-        } else await graphics.stop(values.workspace);
-        reply = {};
+      else if (action === 'display_start') {
+        if (lifecycle.status().states[values.workspace]?.state !== 'running') throw new Error('Start the workspace before its desktop');
+        reply = await runtime.request(action, values);
       }
       else if (action === 'prepare' || action === 'reinstall') {
-        await lifecycle.prepare(values.workspace, values.project, values.tools || [], action === 'reinstall', values.resources, values.notificationContext, values.distribution);
+        if (action === 'reinstall' && values.confirmed !== true) throw new Error('Confirm erasing the workspace Linux disk before reinstalling');
+        await lifecycle.prepare(values.workspace, values.project, values.tools || [], action === 'reinstall', values.resources, values.notificationContext, values.distribution, values.desktop, values.browser);
         reply = { state: 'preparing' };
       } else if (action === 'stop' || action === 'delete') {
         await lifecycle.stop(values.workspace, action === 'delete');
@@ -91,8 +86,9 @@ export async function openWorkspaceRuntimeBridge(runtime: WorkspaceRuntime, sock
       } else reply = await runtime.request(action, values, 31 * 60_000);
       response.end(JSON.stringify(reply));
     } catch (error) {
-      response.writeHead(error instanceof SyntaxError ? 400 : 502)
-        .end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+      response.writeHead(error instanceof RuntimeCompatibilityError ? 409 : error instanceof SyntaxError ? 400 : 502)
+        .end(JSON.stringify({ error: error instanceof Error ? error.message : String(error),
+          ...(error instanceof RuntimeCompatibilityError ? { code: error.code, details: error.details } : {}) }));
     }
   });
   server.on('upgrade', (request, socket, head) => {
@@ -148,7 +144,7 @@ export async function openWorkspaceRuntimeBridge(runtime: WorkspaceRuntime, sock
   return {
     socketPath,
     close: async () => {
-      for (const remote of remotes.values()) { await remote.bridge.close(); await remote.lifecycle.close(); }
+      for (const remote of remotes.values()) { await remote.bridge.close(); await remote.runtime.stop(); }
       remotes.clear();
       return new Promise<void>((resolve, reject) => {
       for (const client of streams.clients) client.terminate();

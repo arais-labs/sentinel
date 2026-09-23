@@ -1,0 +1,8 @@
+option('mesa_source', type: 'string')
+option('mesa_build', type: 'string')
+option('epoxy_source', type: 'string')
+option('epoxy_build', type: 'string')
+option('library_dir', type: 'string')
+option('icd', type: 'string')
+option('queue_defines', type: 'array', value: [])
+option('repetitions', type: 'integer', min: 1, max: 100, value: 3)

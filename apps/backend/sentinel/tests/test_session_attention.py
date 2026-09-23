@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker
 from app.database.engine import create_database_engine
-from app.models import Base, ToolApproval
+from app.models import Base, Session, ToolApproval
 from app.services.sessions.attention import pending_approval_sessions
 from app.routers.sessions import _session_list_item_response
 
@@ -20,6 +20,8 @@ async def test_only_live_pending_approvals_need_attention(tmp_path):
     pending, resolved, expired, other = [uuid4() for _ in range(4)]
     now = datetime.now(UTC)
     async with factory() as db:
+        db.add_all(Session(id=sid, user_id="local") for sid in (pending, resolved, expired, other))
+        await db.flush()
         for sid, state, expiry in [
             (pending, "pending", 1),
             (resolved, "approved", 1),

@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "source_authority": "../../sources.lock.json",
+  "fixed_enabled_features": [
+    "custom_border",
+    "rgb32_texel",
+    "border_from_image",
+    "geometry",
+    "transform_feedback",
+    "vertexPipelineStoresAndAtomics"
+  ],
+  "disabled_features": [
+    "image_view_min_lod"
+  ],
+  "retained_constraints": [
+    "Transform-feedback emulation without an application geometry shader rejects adjacency topologies.",
+    "Geometry multi-stream output remains rejected.",
+    "Existing M5 R9G9B9E5 transfer-format safety check remains enabled."
+  ],
+  "qualification_policy": [
+    "Pre-fragment SSBO and image operations use real GPU storage; side-effecting geometry executes once before rasterization.",
+    "Linked raster output widths exclude transform-feedback-only components while preserving the complete captured records.",
+    "Fragment and compute memory features remain available.",
+    "Fixed feature support replaces the prototype experimental runtime switch.",
+    "ANGLE-only multisample helpers and renderer-name-based MSAA downgrades are excluded.",
+    "Diagnostic-only kosmicomp command-line changes are excluded.",
+    "Fresh-library bounded qualification is recorded in tests/graphics/host/mesa/qualification.json; this is not full OpenGL conformance."
+  ]
+}

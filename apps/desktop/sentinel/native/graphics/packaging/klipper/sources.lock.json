@@ -1,0 +1,56 @@
+{
+  "schema": 1,
+  "ubuntu": {
+    "release": "26.04",
+    "architecture": "arm64",
+    "version": "6.6.6",
+    "sourceVersion": "4:6.6.6-0ubuntu0.1",
+    "package": "libklipper6",
+    "baseUrl": "https://ports.ubuntu.com/ubuntu-ports/pool/universe/p/plasma-workspace/",
+    "files": {
+      "plasma-workspace_6.6.6-0ubuntu0.1.dsc": "e4f67a33f3f34c7db92408a61d638c60660496717196d23bd87547f1b67edd06",
+      "plasma-workspace_6.6.6.orig.tar.xz": "c9ffe4110b59e465ab2d5d431db2185fec6ea109fa39e4f3cac04c9553c28a7b",
+      "plasma-workspace_6.6.6-0ubuntu0.1.debian.tar.xz": "9d75ea01d4b9bf5e9bb81b8002862e52e87029571880f720c1155153bac8001d"
+    }
+  },
+  "debian": {
+    "release": "13",
+    "architecture": "arm64",
+    "version": "6.3.6",
+    "sourceVersion": "4:6.3.6-2",
+    "package": "libklipper6",
+    "baseUrl": "https://deb.debian.org/debian/pool/main/p/plasma-workspace/",
+    "files": {
+      "plasma-workspace_6.3.6-2.dsc": "c5c5902ff59648e8d7bc4d051f306acfd58e5fb0727748d8488d8100e984d4ea",
+      "plasma-workspace_6.3.6.orig.tar.xz": "5a572c78587018bc7b64cf7fd691a8f058fde030ffcb988e1e4d7c01a3e878c0",
+      "plasma-workspace_6.3.6.orig.tar.xz.asc": "bb9a8039186cbcd915c44e5329013d36535b01cf2c487ffa5f841bb352cafe8e",
+      "plasma-workspace_6.3.6-2.debian.tar.xz": "2054e2f36c4a0029f82b3e07cfd48751070b4ac823bce8fc7b6dc5c966e7a7af"
+    }
+  },
+  "alpine": {
+    "release": "3.24",
+    "architecture": "aarch64",
+    "version": "6.6.6",
+    "packageRevision": 1,
+    "sourceDateEpoch": 1783664212,
+    "aportsCommit": "138d9fa71be5330d46365462d12d3ffb2b4def58",
+    "source": {
+      "url": "https://download.kde.org/stable/plasma/6.6.6/plasma-workspace-6.6.6.tar.xz",
+      "sha256": "c9ffe4110b59e465ab2d5d431db2185fec6ea109fa39e4f3cac04c9553c28a7b"
+    },
+    "recipe": {
+      "url": "https://raw.githubusercontent.com/alpinelinux/aports/138d9fa71be5330d46365462d12d3ffb2b4def58/community/plasma-workspace/APKBUILD",
+      "sha256": "05f441199a3e6a4110f1e03caf248693826d47a89e7d655cac2027fe6ddab64a"
+    },
+    "distroPatch": {
+      "url": "https://raw.githubusercontent.com/alpinelinux/aports/138d9fa71be5330d46365462d12d3ffb2b4def58/community/plasma-workspace/0001-plasma-workspace-sddm-wayland-session-install-to-KDE_INSTALL_LIBDIR.patch",
+      "sha256": "0202b80fc7aab6a794307a7977e3b158c0dca8381e6ec90a6df60ccc7a4226dd"
+    },
+    "owner": {
+      "name": "plasma-workspace-libs",
+      "version": "6.6.6-r0",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/community/aarch64/plasma-workspace-libs-6.6.6-r0.apk",
+      "sha256": "8d589163a74a729e264b8d4859d08f605d22d4965f02649b6f3843794e5a66c8"
+    }
+  }
+}

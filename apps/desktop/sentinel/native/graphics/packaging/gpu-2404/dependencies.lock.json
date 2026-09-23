@@ -1,0 +1,440 @@
+{
+  "schema": 1,
+  "architecture": "arm64",
+  "distribution": "ubuntu-noble",
+  "packages": [
+    {
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/g/gcc-14/gcc-14-base_14.2.0-4ubuntu2%7e24.04.1_arm64.deb",
+      "filename": "gcc-14-base_14.2.0-4ubuntu2~24.04.1_arm64.deb",
+      "size": 50984,
+      "sha256": "bddbe21061fdc73a23e7de79ece91693bf61aa22d634d1c69c5048385c114968"
+    },
+    {
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/g/gcc-14/libgcc-s1_14.2.0-4ubuntu2%7e24.04.1_arm64.deb",
+      "filename": "libgcc-s1_14.2.0-4ubuntu2~24.04.1_arm64.deb",
+      "size": 61884,
+      "sha256": "5b191f79ad985a9a653dbba45214619f729f9178a9bdf92f7c68db06c50d070b"
+    },
+    {
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/g/glibc/libc6_2.39-0ubuntu8.9_arm64.deb",
+      "filename": "libc6_2.39-0ubuntu8.9_arm64.deb",
+      "size": 2776414,
+      "sha256": "ad109797c5f78a5eeb6d4c296bfbaae68b239111a0c9ac0eb97b8d430284ac45"
+    },
+    {
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/x/xz-utils/liblzma5_5.6.1%2breally5.4.5-1ubuntu0.3_arm64.deb",
+      "filename": "liblzma5_5.6.1+really5.4.5-1ubuntu0.3_arm64.deb",
+      "size": 125976,
+      "sha256": "2f58fd7de725efd0dbebe9d4442049fdacd7c2e8242f4288a13a688d50507245"
+    },
+    {
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/libm/libmd/libmd0_1.1.0-2build1.1_arm64.deb",
+      "filename": "libmd0_1.1.0-2build1.1_arm64.deb",
+      "size": 24616,
+      "sha256": "c28583825f7191cdc8b6b71c6150e2cbfc29616d6570680e5284fabc19765ea5"
+    },
+    {
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/n/ncurses/libtinfo6_6.4%2b20240113-1ubuntu2.2_arm64.deb",
+      "filename": "libtinfo6_6.4+20240113-1ubuntu2.2_arm64.deb",
+      "size": 104652,
+      "sha256": "00570dce13bd89b31e4f433001fb0a55436e57a76370afbae6c5ac491b3dd3e9"
+    },
+    {
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/libz/libzstd/libzstd1_1.5.5%2bdfsg2-2build1.1_arm64.deb",
+      "filename": "libzstd1_1.5.5+dfsg2-2build1.1_arm64.deb",
+      "size": 271278,
+      "sha256": "ea7d6e9fde577ea14dbf07fdfb74d6287eb09c6cba4a9d63abdcb87b0ec54bcc"
+    },
+    {
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/z/zlib/zlib1g_1.3.dfsg-3.1ubuntu2.2_arm64.deb",
+      "filename": "zlib1g_1%3a1.3.dfsg-3.1ubuntu2.2_arm64.deb",
+      "size": 61898,
+      "sha256": "e55ab3b4fb7b6edc4a628e28ec13f8780b08abe427d33ae148f030d8586d0e9a"
+    },
+    {
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/libb/libbsd/libbsd0_0.12.1-1build1.1_arm64.deb",
+      "filename": "libbsd0_0.12.1-1build1.1_arm64.deb",
+      "size": 40970,
+      "sha256": "cdf9ff601244e64482584d9d9b98aa54a573c081ab5956227c737307196c1ce3"
+    },
+    {
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/e/elfutils/libelf1t64_0.190-1.1ubuntu0.1_arm64.deb",
+      "filename": "libelf1t64_0.190-1.1ubuntu0.1_arm64.deb",
+      "size": 58420,
+      "sha256": "ba200bd93e3a1ade40e2c71540f55e7016c60f11e1b9fe1a76ef975de99b87f5"
+    },
+    {
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/e/expat/libexpat1_2.6.1-2ubuntu0.5_arm64.deb",
+      "filename": "libexpat1_2.6.1-2ubuntu0.5_arm64.deb",
+      "size": 86188,
+      "sha256": "c202f80537790929983f52220cbf29145652a6a2a7d9977be0c66fcc1ef72dcc"
+    },
+    {
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/libf/libffi/libffi8_3.4.6-1build1_arm64.deb",
+      "filename": "libffi8_3.4.6-1build1_arm64.deb",
+      "size": 22716,
+      "sha256": "a4d4607144bc599328a913d7312761fd8f4a650d67c7d5058f1f3667d771d37c"
+    },
+    {
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/g/gcc-14/libstdc%2b%2b6_14.2.0-4ubuntu2%7e24.04.1_arm64.deb",
+      "filename": "libstdc++6_14.2.0-4ubuntu2~24.04.1_arm64.deb",
+      "size": 750976,
+      "sha256": "f84a05ac45a6884109b6527e911081a38263b89e042fc94a338cf975f61a330c"
+    },
+    {
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/i/icu/libicu74_74.2-1ubuntu3.1_arm64.deb",
+      "filename": "libicu74_74.2-1ubuntu3.1_arm64.deb",
+      "size": 10806898,
+      "sha256": "48f93acf50dcf237a8d58ce366730a28438ce52d3f06d7a2a88b51261dd791f7"
+    },
+    {
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/libx/libxml2/libxml2_2.9.14%2bdfsg-1.3ubuntu3.9_arm64.deb",
+      "filename": "libxml2_2.9.14+dfsg-1.3ubuntu3.9_arm64.deb",
+      "size": 737396,
+      "sha256": "dddfd368cf2e515d94b84a27ee3819a54ea6e208b0a34c7c2dc5948357e5cd83"
+    },
+    {
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/libd/libdrm/libdrm-common_2.4.125-1ubuntu0.1%7e24.04.2_all.deb",
+      "filename": "libdrm-common_2.4.125-1ubuntu0.1~24.04.2_all.deb",
+      "size": 9250,
+      "sha256": "0b60996bc18fa1545e60a47bb0fe1a7f360ec06fe62ba35fb8d8ba2a54e62166"
+    },
+    {
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/libd/libdrm/libdrm2_2.4.125-1ubuntu0.1%7e24.04.2_arm64.deb",
+      "filename": "libdrm2_2.4.125-1ubuntu0.1~24.04.2_arm64.deb",
+      "size": 42898,
+      "sha256": "6ed8a3f9da5fdc36a289503341a608c21fb33b77acf1604c83265c3f70ca9018"
+    },
+    {
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/libe/libedit/libedit2_3.1-20230828-1build1_arm64.deb",
+      "filename": "libedit2_3.1-20230828-1build1_arm64.deb",
+      "size": 97526,
+      "sha256": "cf642fec16d86517e0e715520c3a7cdaee650e7ae8a4993f82d0e1e7a5883efb"
+    },
+    {
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/l/lm-sensors/libsensors-config_3.6.0-9build1_all.deb",
+      "filename": "libsensors-config_1%3a3.6.0-9build1_all.deb",
+      "size": 5546,
+      "sha256": "148103a436fd273dabfe0fe41dc54873df46227b59b2c7ac7339d7e2ddfd033b"
+    },
+    {
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/l/lm-sensors/libsensors5_3.6.0-9build1_arm64.deb",
+      "filename": "libsensors5_1%3a3.6.0-9build1_arm64.deb",
+      "size": 26956,
+      "sha256": "62df0293b46a8bf8b9ae8e63bd0286176738673f55eee15e78c3e4d2d15505b6"
+    },
+    {
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/libx/libxau/libxau6_1.0.9-1build6_arm64.deb",
+      "filename": "libxau6_1%3a1.0.9-1build6_arm64.deb",
+      "size": 7264,
+      "sha256": "348d0732ff9571f95d6ff18373a93e827bfe00474d792ef5e9071e6dd618605c"
+    },
+    {
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/libx/libxdmcp/libxdmcp6_1.1.3-0ubuntu6_arm64.deb",
+      "filename": "libxdmcp6_1%3a1.1.3-0ubuntu6_arm64.deb",
+      "size": 10364,
+      "sha256": "6b96dbbae4e515ac8f32d6dacfcb6afd1266118400a85ae7cb3f887895017f53"
+    },
+    {
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/libx/libxcb/libxcb1_1.15-1ubuntu2_arm64.deb",
+      "filename": "libxcb1_1.15-1ubuntu2_arm64.deb",
+      "size": 49408,
+      "sha256": "5483e5d19bbfa28e961d951645944e7763e943262ac17e216b2870d83597f319"
+    },
+    {
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/libx/libx11/libx11-data_1.8.7-1build1_all.deb",
+      "filename": "libx11-data_2%3a1.8.7-1build1_all.deb",
+      "size": 115446,
+      "sha256": "9ae01f7747e7f479394c697c55acf11d3baf139e8e54b7c4adfb55ef9c50de08"
+    },
+    {
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/libx/libx11/libx11-6_1.8.7-1build1_arm64.deb",
+      "filename": "libx11-6_2%3a1.8.7-1build1_arm64.deb",
+      "size": 649412,
+      "sha256": "16d10ae5d27f1a0feb054001ff2b213b51acd29894f86ff088c31eebeba65fe3"
+    },
+    {
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/libx/libxext/libxext6_1.3.4-1build2_arm64.deb",
+      "filename": "libxext6_2%3a1.3.4-1build2_arm64.deb",
+      "size": 30434,
+      "sha256": "1140abacd8d23cb83cc63fb9aebb15a201e2dddbf5ca79fd999c0cbd181d0088"
+    },
+    {
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/libd/libdrm/libdrm-amdgpu1_2.4.125-1ubuntu0.1%7e24.04.2_arm64.deb",
+      "filename": "libdrm-amdgpu1_2.4.125-1ubuntu0.1~24.04.2_arm64.deb",
+      "size": 21870,
+      "sha256": "23bb606aca9a17029962779491dd3447795d27bfe823d926adb6885ca20840a7"
+    },
+    {
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/l/llvm-toolchain-20/libllvm20_20.1.2-0ubuntu1%7e24.04.3_arm64.deb",
+      "filename": "libllvm20_1%3a20.1.2-0ubuntu1~24.04.3_arm64.deb",
+      "size": 29261604,
+      "sha256": "ce47263e73c09528971c86cb14239fdf1dd38f1024a005fd634e38237fe0f054"
+    },
+    {
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/libx/libx11/libx11-xcb1_1.8.7-1build1_arm64.deb",
+      "filename": "libx11-xcb1_2%3a1.8.7-1build1_arm64.deb",
+      "size": 7870,
+      "sha256": "3e900fac4bb54a117dd80f2a01ac9a2ab9519b4af1ec3607e1b6258e4b23f9ea"
+    },
+    {
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/libx/libxcb/libxcb-dri3-0_1.15-1ubuntu2_arm64.deb",
+      "filename": "libxcb-dri3-0_1.15-1ubuntu2_arm64.deb",
+      "size": 7196,
+      "sha256": "5c356f1b46a4756fc829083b718c6028bade7caec5f55956e30ebb4321ef0968"
+    },
+    {
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/libx/libxcb/libxcb-present0_1.15-1ubuntu2_arm64.deb",
+      "filename": "libxcb-present0_1.15-1ubuntu2_arm64.deb",
+      "size": 5866,
+      "sha256": "e36f016e2407868fd9f416780d7783529e060d608e6043924cc99dde88b783de"
+    },
+    {
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/libx/libxcb/libxcb-randr0_1.15-1ubuntu2_arm64.deb",
+      "filename": "libxcb-randr0_1.15-1ubuntu2_arm64.deb",
+      "size": 18442,
+      "sha256": "d1dc1d06b42da9a332274e34121ff57c6f6c1c155e4fe726c652f80f392ed419"
+    },
+    {
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/libx/libxcb/libxcb-sync1_1.15-1ubuntu2_arm64.deb",
+      "filename": "libxcb-sync1_1.15-1ubuntu2_arm64.deb",
+      "size": 9682,
+      "sha256": "9886f3632d9242c0b5a0235e663455d8a25746b3006bd9f8b4d809f06d757515"
+    },
+    {
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/libx/libxcb/libxcb-xfixes0_1.15-1ubuntu2_arm64.deb",
+      "filename": "libxcb-xfixes0_1.15-1ubuntu2_arm64.deb",
+      "size": 10646,
+      "sha256": "c0842d78979b8c6b904f0fa2049647733a7da7985fbbc6825d0cc071804e4085"
+    },
+    {
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/libx/libxshmfence/libxshmfence1_1.3-1build5_arm64.deb",
+      "filename": "libxshmfence1_1.3-1build5_arm64.deb",
+      "size": 4938,
+      "sha256": "8764cf3566b060817cd4ad7dd367c45ca29d133d325c4145644cbcbd639830b2"
+    },
+    {
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/m/mesa/mesa-libgallium_25.2.8-0ubuntu0.24.04.2_arm64.deb",
+      "filename": "mesa-libgallium_25.2.8-0ubuntu0.24.04.2_arm64.deb",
+      "size": 12112230,
+      "sha256": "636a2a0be2fef1cac70416b8a97b17eaf697ffb0aed4271dcf8a86416778b65f"
+    },
+    {
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/m/mesa/libgbm1_25.2.8-0ubuntu0.24.04.2_arm64.deb",
+      "filename": "libgbm1_25.2.8-0ubuntu0.24.04.2_arm64.deb",
+      "size": 34972,
+      "sha256": "97885696d26f10ac7f51101d1c728537221fe199cf124d2988b77f05a7da3c0e"
+    },
+    {
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/w/wayland/libwayland-client0_1.22.0-2.1build1_arm64.deb",
+      "filename": "libwayland-client0_1.22.0-2.1build1_arm64.deb",
+      "size": 25904,
+      "sha256": "f1d258e71fd42820cbc7ddd0cae3ae0b928e27b46e0b63877caa6affbe653752"
+    },
+    {
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/libx/libxcb/libxcb-shm0_1.15-1ubuntu2_arm64.deb",
+      "filename": "libxcb-shm0_1.15-1ubuntu2_arm64.deb",
+      "size": 5876,
+      "sha256": "1d3f59159910a43ec798a0bf467ca2f78d1f9e1351ac04fb8d3db8469d4a516c"
+    },
+    {
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/m/mesa/libegl-mesa0_25.2.8-0ubuntu0.24.04.2_arm64.deb",
+      "filename": "libegl-mesa0_25.2.8-0ubuntu0.24.04.2_arm64.deb",
+      "size": 116568,
+      "sha256": "8b8b9685b372f0609bd05e44379c02deaa7b68d32fc215476f217207e51077e2"
+    },
+    {
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/v/vulkan-loader/libvulkan1_1.3.275.0-1build1_arm64.deb",
+      "filename": "libvulkan1_1.3.275.0-1build1_arm64.deb",
+      "size": 149690,
+      "sha256": "9459488a53ead304d00587c874f9b31d56d59c9aeae5c46b6f78801a89d53e63"
+    },
+    {
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/m/mesa/libgl1-mesa-dri_25.2.8-0ubuntu0.24.04.2_arm64.deb",
+      "filename": "libgl1-mesa-dri_25.2.8-0ubuntu0.24.04.2_arm64.deb",
+      "size": 36552,
+      "sha256": "3612d4a8fc5d489db1ef1f873379c839133f1d2c0037acf9714e90d0a4502059"
+    },
+    {
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/libx/libxcb/libxcb-glx0_1.15-1ubuntu2_arm64.deb",
+      "filename": "libxcb-glx0_1.15-1ubuntu2_arm64.deb",
+      "size": 25474,
+      "sha256": "d13b3f909e0cc478408e86eee1acc7e90b25f782feee8872e3a9c4f3e24e8e9e"
+    },
+    {
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/libx/libxxf86vm/libxxf86vm1_1.1.4-1build4_arm64.deb",
+      "filename": "libxxf86vm1_1%3a1.1.4-1build4_arm64.deb",
+      "size": 9130,
+      "sha256": "e3977d43433269eb5081cbc83a7fefb59f90cbc457902d8046a032a3e280e292"
+    },
+    {
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/m/mesa/libglx-mesa0_25.2.8-0ubuntu0.24.04.2_arm64.deb",
+      "filename": "libglx-mesa0_25.2.8-0ubuntu0.24.04.2_arm64.deb",
+      "size": 110778,
+      "sha256": "b7f7ed811fb028d990e90ef7bc285b33c1ae68a2e288f575924437075dfb4a24"
+    },
+    {
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/universe/libv/libva/libva2_2.20.0-2ubuntu0.2_arm64.deb",
+      "filename": "libva2_2.20.0-2ubuntu0.2_arm64.deb",
+      "size": 66658,
+      "sha256": "5b2d103a48eff750159de741c890ab6ebfe8eb59e8bc9ad5ee2331455ae7c76b"
+    },
+    {
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/universe/libv/libva/libva-drm2_2.20.0-2ubuntu0.2_arm64.deb",
+      "filename": "libva-drm2_2.20.0-2ubuntu0.2_arm64.deb",
+      "size": 7076,
+      "sha256": "b823bf0d4455c844bec97f6404b1248d0a2278682f227649eee4b9df09d1b276"
+    },
+    {
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/universe/libv/libva/libva-wayland2_2.20.0-2ubuntu0.2_arm64.deb",
+      "filename": "libva-wayland2_2.20.0-2ubuntu0.2_arm64.deb",
+      "size": 10830,
+      "sha256": "a94e52909ccc41dc486e293dd3f6e1fefc4ab9c190a1542cd257162a23a6fc8c"
+    },
+    {
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/libx/libxfixes/libxfixes3_6.0.0-2build1_arm64.deb",
+      "filename": "libxfixes3_1%3a6.0.0-2build1_arm64.deb",
+      "size": 11206,
+      "sha256": "884fc6560c5a8bc91fb6b7d067f557d8088ccee86ad1974b6a57085ac121e8de"
+    },
+    {
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/universe/libv/libva/libva-x11-2_2.20.0-2ubuntu0.2_arm64.deb",
+      "filename": "libva-x11-2_2.20.0-2ubuntu0.2_arm64.deb",
+      "size": 12092,
+      "sha256": "5a6b7110c408cf00ab8080f0a69796927776d336e9ccddaee0b61c03ee6b8a51"
+    },
+    {
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/libv/libvdpau/libvdpau1_1.5-2build1_arm64.deb",
+      "filename": "libvdpau1_1.5-2build1_arm64.deb",
+      "size": 26378,
+      "sha256": "cdf07628f0b9ad247e78bbbe65059d5148590548ab4808470dea9c8bdacc72de"
+    },
+    {
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/w/wayland/libwayland-cursor0_1.22.0-2.1build1_arm64.deb",
+      "filename": "libwayland-cursor0_1.22.0-2.1build1_arm64.deb",
+      "size": 10256,
+      "sha256": "ee69ed1d5ff3c430cb09173809b73dfb044a9c3595e21ee1a31f67f9d5c07451"
+    },
+    {
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/w/wayland/libwayland-egl1_1.22.0-2.1build1_arm64.deb",
+      "filename": "libwayland-egl1_1.22.0-2.1build1_arm64.deb",
+      "size": 5622,
+      "sha256": "50e4ac8e2714b9eb84a47b8fe84d51a806104ec998530c61de349ec5b659ff43"
+    },
+    {
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/w/wayland/libwayland-server0_1.22.0-2.1build1_arm64.deb",
+      "filename": "libwayland-server0_1.22.0-2.1build1_arm64.deb",
+      "size": 34640,
+      "sha256": "2b6dec0d40070685f4ce346d20b064fc5e118a3149f30be88465251985b496ed"
+    },
+    {
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/libg/libglvnd/libglvnd0_1.7.0-1build1_arm64.deb",
+      "filename": "libglvnd0_1.7.0-1build1_arm64.deb",
+      "size": 60588,
+      "sha256": "3d0c30187bb5f0993b42cc9af94abfc42098451503fbde23d51fd152c4b7ff7e"
+    },
+    {
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/libg/libglvnd/libegl1_1.7.0-1build1_arm64.deb",
+      "filename": "libegl1_1.7.0-1build1_arm64.deb",
+      "size": 29522,
+      "sha256": "8813f4435c06abab54272e929cf8682b5b01a763abe29cb26b328922e4b081f9"
+    },
+    {
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/libg/libglvnd/libglx0_1.7.0-1build1_arm64.deb",
+      "filename": "libglx0_1.7.0-1build1_arm64.deb",
+      "size": 33236,
+      "sha256": "830625e5a00b176afcc47742cd2b123c74555afd58da91f6bc7e68f0781b684a"
+    },
+    {
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/libg/libglvnd/libgl1_1.7.0-1build1_arm64.deb",
+      "filename": "libgl1_1.7.0-1build1_arm64.deb",
+      "size": 106320,
+      "sha256": "8b2478bdeaf7a13d3c3b993f0238ac74640ab5a623b9d2645ebf6f1336c9881b"
+    },
+    {
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/libg/libglvnd/libgles2_1.7.0-1build1_arm64.deb",
+      "filename": "libgles2_1.7.0-1build1_arm64.deb",
+      "size": 17570,
+      "sha256": "b4be5859b727d181e6d4d8360f4864a4c4cadcfef3af794b837245800deff714"
+    },
+    {
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/libg/libglvnd/libopengl0_1.7.0-1build1_arm64.deb",
+      "filename": "libopengl0_1.7.0-1build1_arm64.deb",
+      "size": 35136,
+      "sha256": "85227472e62fe06c64dd9574a3fc1bc075dd7fc4bed157f9cc92d97bc5261cee"
+    },
+    {
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/m/mesa/libglapi-mesa_24.2.8-1ubuntu1%7e24.04.1_arm64.deb",
+      "filename": "libglapi-mesa_24.2.8-1ubuntu1~24.04.1_arm64.deb",
+      "size": 61116,
+      "sha256": "2ecda16a2f91dc141b29b73ab00564ff7aec985425f0d300e660140172722819"
+    },
+    {
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/libg/libglvnd/libgles1_1.7.0-1build1_arm64.deb",
+      "filename": "libgles1_1.7.0-1build1_arm64.deb",
+      "size": 11642,
+      "sha256": "a7c9cd011c8e05fb573445560cab86d61583cda0f79c248fd73680e2d0618b54"
+    },
+    {
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/libx/libxcb/libxcb-dri2-0_1.15-1ubuntu2_arm64.deb",
+      "filename": "libxcb-dri2-0_1.15-1ubuntu2_arm64.deb",
+      "size": 7418,
+      "sha256": "b677b745b14a5360aa7ed06818ed2e0467937b6d009693df5d6249dfa77881c6"
+    },
+    {
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/libx/libxdamage/libxdamage1_1.1.6-1build1_arm64.deb",
+      "filename": "libxdamage1_1%3a1.1.6-1build1_arm64.deb",
+      "size": 6236,
+      "sha256": "6f54865fd13492e6bd9045e18c48270cd6c422c447c5531a17358a26748e5d50"
+    }
+  ],
+  "roots": [
+    "libdrm-common",
+    "libdrm2",
+    "libegl1",
+    "libexpat1",
+    "libgcc-s1",
+    "libgl1",
+    "libglapi-mesa",
+    "libgles1",
+    "libgles2",
+    "libglvnd0",
+    "libglx0",
+    "libicu74",
+    "libopengl0",
+    "libsensors5",
+    "libstdc++6",
+    "libva-drm2",
+    "libva-wayland2",
+    "libva-x11-2",
+    "libva2",
+    "libvdpau1",
+    "libvulkan1",
+    "libwayland-client0",
+    "libwayland-cursor0",
+    "libwayland-egl1",
+    "libwayland-server0",
+    "libx11-6",
+    "libx11-data",
+    "libx11-xcb1",
+    "libxau6",
+    "libxcb-dri2-0",
+    "libxcb-dri3-0",
+    "libxcb-glx0",
+    "libxcb-present0",
+    "libxcb-randr0",
+    "libxcb-shm0",
+    "libxcb-sync1",
+    "libxcb-xfixes0",
+    "libxcb1",
+    "libxdamage1",
+    "libxdmcp6",
+    "libxext6",
+    "libxfixes3",
+    "libxml2",
+    "libxshmfence1",
+    "libxxf86vm1",
+    "libzstd1",
+    "zlib1g"
+  ]
+}

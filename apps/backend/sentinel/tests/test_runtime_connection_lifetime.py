@@ -119,7 +119,9 @@ async def test_runtime_handoffs_release_lookup_connection(database, monkeypatch,
             monkeypatch.setattr(control, "runtime_configured", runtime_probe)
             operation = control.require_runtime_session(str(sid), instance_name="test", db=db)
         elif route == "desktop_socket":
-            operation = control.bridge_runtime_desktop_rfb(websocket=socket, session_id=sid, db=db)
+            operation = control.bridge_runtime_desktop_stream(
+                websocket=socket, session_id=sid, db=db
+            )
         else:
             operation = sessions.proxy_runtime_forward_websocket(
                 websocket=socket,

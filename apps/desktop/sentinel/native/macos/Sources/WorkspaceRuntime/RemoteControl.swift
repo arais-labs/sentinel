@@ -81,10 +81,6 @@ final class RemoteControl: @unchecked Sendable {
     }
 
     init(path: String, answer: @escaping @Sendable (String) -> Bool = { _ in false }) throws {
-        // Health probes and dropped SSH clients can close before a reply is
-        // written. Keep EPIPE as a per-client write error, never a process-killing
-        // signal. SO_NOSIGPIPE alone does not protect the FileHandle write path.
-        signal(SIGPIPE, SIG_IGN)
         let pair = AsyncStream<String>.makeStream(bufferingPolicy: .bufferingOldest(256))
         requests = pair.stream
         continuation = pair.continuation
@@ -113,7 +109,10 @@ final class RemoteControl: @unchecked Sendable {
                 setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
                 let client = Client(fd: fd)
                 let ready = state.withLock { $0.clients[fd] = client; return $0.ready }
-                if ready { client.send(Data("{\"event\":\"ready\"}\n".utf8)) }
+                if ready, var bytes = try? JSONEncoder().encode(Response(event: "ready")) {
+                    bytes.append(10)
+                    client.send(bytes)
+                }
                 DispatchQueue.global().async { [self] in
                     var pending = Data()
                     do {
@@ -174,7 +173,6 @@ final class RemoteControl: @unchecked Sendable {
             if code == ENOENT || code == ECONNREFUSED { throw RemoteSocketUnavailable() }
             throw RuntimeError("Cannot connect to remote runtime socket: \(String(cString: strerror(code)))")
         }
-        signal(SIGPIPE, SIG_IGN)
         let socketFile = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
         // Transport connected is distinct from service initialization completing.
         try FileHandle.standardOutput.write(contentsOf: Data("{\"event\":\"connected\"}\n".utf8))

@@ -1,0 +1,15 @@
+[Unit]
+Description=Load policy for the dedicated Sentinel workspace VM
+DefaultDependencies=no
+After=local-fs.target systemd-remount-fs.service
+Before=apparmor.service sysinit.target
+RequiresMountsFor=/etc/apparmor.d /var/cache/apparmor /sys/kernel/security
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh /usr/local/libexec/sentinel-apparmor-load system
+ExecReload=/bin/sh /usr/local/libexec/sentinel-apparmor-load system
+RemainAfterExit=yes
+
+[Install]
+RequiredBy=sysinit.target

@@ -1,0 +1,305 @@
+--- a/src/gallium/drivers/virgl/virgl_resource.c
++++ b/src/gallium/drivers/virgl/virgl_resource.c
+@@ -28,6 +28,7 @@
+ #include "virgl_context.h"
+ #include "virgl_resource.h"
+ #include "virgl_screen.h"
++#include "virgl_mapped_buffer.h"
+ #include "virgl_staging_mgr.h"
+ #include "virgl_encode.h" // for declaration of virgl_encode_copy_transfer
+ 
+@@ -501,6 +502,18 @@
+    struct virgl_transfer *trans;
+    enum virgl_transfer_map_type map_type;
+    void *map_addr;
++
++   bool replicated = virgl_mapped_resource(resource);
++   if (replicated) {
++      if (usage & PIPE_MAP_PERSISTENT)
++         return virgl_mapped_map(ctx, resource, usage, box, transfer);
++      virgl_mapped_before_consumer(ctx);
++      usage &= ~PIPE_MAP_DIRECTLY;
++      if (usage & PIPE_MAP_DISCARD_WHOLE_RESOURCE) {
++         usage &= ~PIPE_MAP_DISCARD_WHOLE_RESOURCE;
++         usage |= PIPE_MAP_DISCARD_RANGE;
++      }
++   }
+ 
+    /* Multisampled resources require resolve before mapping. */
+    assert(resource->nr_samples <= 1);
+@@ -511,10 +524,10 @@
+     * then virgl_buffer_transfer_unmap() uses them to differentiate
+     * unmapping of a host blob resource from guest.
+     */
+-   if (resource->flags & PIPE_RESOURCE_FLAG_MAP_PERSISTENT)
++   if (!replicated && (resource->flags & PIPE_RESOURCE_FLAG_MAP_PERSISTENT))
+       usage |= PIPE_MAP_PERSISTENT;
+ 
+-   if (resource->flags & PIPE_RESOURCE_FLAG_MAP_COHERENT)
++   if (!replicated && (resource->flags & PIPE_RESOURCE_FLAG_MAP_COHERENT))
+       usage |= PIPE_MAP_COHERENT;
+ 
+    bool is_blob = usage & (PIPE_MAP_COHERENT | PIPE_MAP_PERSISTENT);
+@@ -740,6 +753,8 @@
+    vbind = pipe_to_virgl_bind(vs, templ->bind);
+    vflags = pipe_to_virgl_flags(vs, templ->flags);
+    virgl_resource_layout(&res->b, &res->metadata, 0, 0, 0, 0);
++   if (virgl_mapped_resource(&res->b))
++      vflags &= ~(VIRGL_RESOURCE_FLAG_MAP_PERSISTENT | VIRGL_RESOURCE_FLAG_MAP_COHERENT);
+    simple_mtx_init(&res->metadata.gbm.lock, mtx_plain);
+ 
+    if ((vs->caps.caps.v2.capability_bits & VIRGL_CAP_APP_TWEAK_SUPPORT) &&
+@@ -969,6 +984,12 @@
+    struct virgl_context *vctx = virgl_context(pipe);
+    struct virgl_resource *vbuf = virgl_resource(resource);
+ 
++   if (virgl_mapped_resource(resource)) {
++      virgl_mapped_before_consumer(pipe);
++      u_default_buffer_subdata(pipe, resource, usage, offset, size, data);
++      return;
++   }
++
+    /* We can try virgl_transfer_queue_extend_buffer when there is no
+     * flush/readback/wait required.  Based on virgl_resource_transfer_prepare,
+     * the simplest way to make sure that is the case is to check the valid
+@@ -1076,6 +1097,9 @@
+    struct virgl_screen *vs = virgl_screen(screen);
+    struct virgl_resource *res = virgl_resource(resource);
+ 
++   if (virgl_mapped_resource(resource))
++      virgl_mapped_resource_destroy(resource);
++
+    if (res->b.target == PIPE_BUFFER)
+       util_range_destroy(&res->valid_buffer_range);
+ 
+--- a/src/gallium/drivers/virgl/virgl_buffer.c
++++ b/src/gallium/drivers/virgl/virgl_buffer.c
+@@ -27,10 +27,15 @@
+ #include "virgl_encode.h"
+ #include "virgl_resource.h"
+ #include "virgl_screen.h"
++#include "virgl_mapped_buffer.h"
+ 
+ void virgl_buffer_transfer_unmap(struct pipe_context *ctx,
+                                  struct pipe_transfer *transfer)
+ {
++   if (virgl_mapped_resource(transfer->resource) && (transfer->usage & PIPE_MAP_PERSISTENT)) {
++      virgl_mapped_unmap(ctx, transfer);
++      return;
++   }
+    struct virgl_context *vctx = virgl_context(ctx);
+    struct virgl_transfer *trans = virgl_transfer(transfer);
+    bool persistent_coherent = trans->base.usage & (PIPE_MAP_PERSISTENT |
+@@ -65,6 +70,10 @@
+                                         struct pipe_transfer *transfer,
+                                         const struct pipe_box *box)
+ {
++   if (virgl_mapped_resource(transfer->resource) && (transfer->usage & PIPE_MAP_PERSISTENT)) {
++      virgl_mapped_flush_region(ctx, transfer, box);
++      return;
++   }
+    struct virgl_transfer *trans = virgl_transfer(transfer);
+ 
+    /*
+--- a/src/gallium/drivers/virgl/virgl_context.c
++++ b/src/gallium/drivers/virgl/virgl_context.c
+@@ -52,6 +52,7 @@
+ #include "virtio-gpu/virgl_protocol.h"
+ #include "virgl_resource.h"
+ #include "virgl_screen.h"
++#include "virgl_mapped_buffer.h"
+ #include "virgl_staging_mgr.h"
+ #include "virgl_video.h"
+ 
+@@ -1015,6 +1016,7 @@
+                            const struct pipe_draw_start_count_bias *draws,
+                            unsigned num_draws)
+ {
++   virgl_mapped_before_consumer(ctx);
+    if (num_draws > 1) {
+       util_draw_multi(ctx, dinfo, drawid_offset, indirect, draws, num_draws);
+       return;
+@@ -1093,16 +1095,21 @@
+        ctx->queue.num_dwords == 0 &&
+        !fence)
+       return;
++
++   virgl_mapped_submit_lock(ctx->base.screen);
+ 
+    if (ctx->num_draws)
+       u_upload_unmap(ctx->uploader);
+ 
++   virgl_mapped_prepare_flush(ctx);
++
+    /* send the buffer to the remote side for decoding */
+    ctx->num_draws = ctx->num_compute = 0;
+ 
+    virgl_transfer_queue_clear(&ctx->queue, ctx->cbuf);
+ 
+-   virgl_submit_cmd(rs->vws, ctx->cbuf, fence);
++   if (!virgl_mapped_flush(ctx, fence))
++      virgl_submit_cmd(rs->vws, ctx->cbuf, fence);
+ 
+    /* Reserve some space for transfers. */
+    if (ctx->encoded_transfers)
+@@ -1116,6 +1123,7 @@
+     * involving staging resources.
+     */
+    ctx->queued_staging_res_size = 0;
++   virgl_mapped_submit_unlock(ctx->base.screen);
+ }
+ 
+ static void virgl_flush_from_st(struct pipe_context *ctx,
+@@ -1317,6 +1325,7 @@
+                                       unsigned src_level,
+                                       const struct pipe_box *src_box)
+ {
++   virgl_mapped_before_consumer(ctx);
+    struct virgl_context *vctx = virgl_context(ctx);
+    struct virgl_resource *dres = virgl_resource(dst);
+    struct virgl_resource *sres = virgl_resource(src);
+@@ -1340,6 +1349,7 @@
+ static void virgl_blit(struct pipe_context *ctx,
+                       const struct pipe_blit_info *blit)
+ {
++   virgl_mapped_before_consumer(ctx);
+    struct virgl_context *vctx = virgl_context(ctx);
+    struct virgl_resource *dres = virgl_resource(blit->dst.resource);
+    struct virgl_resource *sres = virgl_resource(blit->src.resource);
+@@ -1486,6 +1496,8 @@
+    if (!(rs->caps.caps.v2.capability_bits & VIRGL_CAP_MEMORY_BARRIER))
+       return;
+    virgl_encode_memory_barrier(vctx, flags);
++   if (flags & PIPE_BARRIER_MAPPED_BUFFER)
++      virgl_mapped_barrier(vctx);
+ }
+ 
+ static void *virgl_create_compute_state(struct pipe_context *ctx,
+@@ -1548,6 +1560,7 @@
+ static void virgl_launch_grid(struct pipe_context *ctx,
+                               const struct pipe_grid_info *info)
+ {
++   virgl_mapped_before_consumer(ctx);
+    struct virgl_context *vctx = virgl_context(ctx);
+ 
+    if (!vctx->num_compute)
+@@ -1597,6 +1610,7 @@
+ static void
+ virgl_context_destroy( struct pipe_context *ctx )
+ {
++   virgl_mapped_context_destroy(virgl_context(ctx));
+    struct virgl_context *vctx = virgl_context(ctx);
+    struct virgl_screen *rs = virgl_screen(ctx->screen);
+    mesa_shader_stage shader_type;
+--- a/src/gallium/drivers/virgl/virgl_screen.c
++++ b/src/gallium/drivers/virgl/virgl_screen.c
+@@ -35,6 +35,7 @@
+ #include "vl/vl_video_buffer.h"
+ 
+ #include "virgl_screen.h"
++#include "virgl_mapped_buffer.h"
+ #include "virgl_resource.h"
+ #include "virgl_public.h"
+ #include "virgl_context.h"
+@@ -469,6 +470,12 @@
+    caps->texture_shadow_lod =
+       vscreen->caps.caps.v2.capability_bits_v2 & VIRGL_CAP_V2_TEXTURE_SHADOW_LOD;
+    caps->native_fence_fd = vscreen->vws->supports_fences;
++   if (virgl_mapped_supports_storage(&vscreen->base)) {
++      caps->buffer_map_persistent_coherent =
++         vscreen->caps.caps.v2.host_feature_check_version >= 4;
++      caps->allow_mapped_buffers_during_execution =
++         caps->buffer_map_persistent_coherent;
++   }
+    caps->dest_surface_srgb_control =
+       (vscreen->caps.caps.v2.capability_bits & VIRGL_CAP_SRGB_WRITE_CONTROL) ||
+       (vscreen->caps.caps.v2.host_feature_check_version < 1);
+@@ -810,7 +818,14 @@
+    if (vctx && timeout)
+       virgl_flush_eq(vctx, NULL, NULL);
+ 
+-   return vws->fence_wait(vws, fence, timeout);
++   uint64_t start = os_time_get_nano();
++   if (!vws->fence_wait(vws, fence, timeout))
++      return false;
++   if (timeout != UINT64_MAX) {
++      uint64_t elapsed = os_time_get_nano() - start;
++      timeout = elapsed < timeout ? timeout - elapsed : 0;
++   }
++   return virgl_mapped_publish_timeout(screen, timeout);
+ }
+ 
+ static int virgl_fence_get_fd(struct pipe_screen *screen,
+@@ -817,9 +831,6 @@
+             struct pipe_fence_handle *fence)
+ {
+-   struct virgl_screen *vscreen = virgl_screen(screen);
+-   struct virgl_winsys *vws = vscreen->vws;
+-
+-   return vws->fence_get_fd(vws, fence);
++   return virgl_mapped_fence_get_fd(screen, fence);
+ }
+ 
+ static void
+@@ -828,6 +843,8 @@
+    struct virgl_screen *vscreen = virgl_screen(screen);
+    struct virgl_winsys *vws = vscreen->vws;
+ 
++   virgl_mapped_screen_destroy(screen);
++
+    slab_destroy_parent(&vscreen->transfer_pool);
+ 
+    if (vws)
+@@ -995,6 +1012,11 @@
+    if (!screen)
+       return NULL;
+ 
++   if (!virgl_mapped_screen_init(&screen->base)) {
++      FREE(screen);
++      return NULL;
++   }
++
+    virgl_debug = debug_get_option_virgl_debug();
+ 
+    if (config && config->options) {
+--- a/src/gallium/drivers/virgl/virgl_screen.h
++++ b/src/gallium/drivers/virgl/virgl_screen.h
+@@ -71,6 +71,7 @@
+    nir_shader_compiler_options compiler_options;
+ 
+    struct disk_cache *disk_cache;
++   struct virgl_mapped_screen_state *mapped_buffer;
+ };
+ 
+ 
+--- a/src/gallium/drivers/virgl/virgl_query.c
++++ b/src/gallium/drivers/virgl/virgl_query.c
+@@ -24,6 +24,7 @@
+ #include "util/u_memory.h"
+ #include "util/u_inlines.h"
+ #include "virgl_context.h"
++#include "virgl_mapped_buffer.h"
+ #include "virgl_encode.h"
+ #include "virtio-gpu/virgl_protocol.h"
+ #include "virgl_resource.h"
+@@ -313,6 +314,7 @@
+                                 struct pipe_resource *resource,
+                                 unsigned offset)
+ {
++   virgl_mapped_before_consumer(ctx);
+    struct virgl_context *vctx = virgl_context(ctx);
+    struct virgl_query *query = virgl_query(q);
+    struct virgl_resource *qbo = (struct virgl_resource *)resource;
+--- a/src/gallium/drivers/virgl/meson.build
++++ b/src/gallium/drivers/virgl/meson.build
+@@ -2,6 +2,10 @@
+ # SPDX-License-Identifier: MIT
+ 
+ files_libvirgl = files(
++  'virgl_mapped_buffer.c',
++  'virgl_inline_write.c',
++  'dirty_tracker.c',
++  'mc_merge.c',
+   'virgl_buffer.c',
+   'virgl_context.c',
+   'virgl_encode.c',

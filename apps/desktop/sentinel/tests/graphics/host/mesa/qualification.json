@@ -1,0 +1,45 @@
+{
+  "date": "2026-09-21",
+  "device": "Apple M3 Pro",
+  "source": "canonical packaged build/macos-arm64/runtime/workspace-runtime/graphics",
+  "opengl": "4.6 (Core Profile) Mesa 26.3.0-devel",
+  "renderer": "zink Vulkan 1.4(Apple M3 Pro (MESA_KOSMICKRISP))",
+  "version_or_extension_overrides": false,
+  "experimental_feature_options": false,
+  "runs": [
+    {"metal_api_validation": true, "metal_gpu_validation": true, "result": "pass"}
+  ],
+  "checks_per_run": {
+    "stage_capability_limits": 12,
+    "mip_view_combinations": 6,
+    "vertex_tessellation_storage_atomic_stages": 3,
+    "geometry_storage_atomic_xfb_raster_cases": 24,
+    "pure_geometry_scalar_position_xfb_component_interface_cases": 4,
+    "buffer_range_randomized_reference_checks": 34042000,
+    "buffer_range_sanitizers": ["address", "undefined"],
+    "buffer_range_boundary_cases": ["empty", "adjacent", "bridging", "reverse insertion", "unsigned 2 GiB", "maximum UINT32_MAX width"],
+    "sparse_copy_sizes_with_overlapping_writes_and_guard_checks": 6,
+    "buffer_storage_fresh_processes": 3
+  },
+  "limits": {
+    "vertex_tessellation_geometry_ssbo": 16,
+    "vertex_tessellation_geometry_images": 32,
+    "fragment_compute_ssbo": 16,
+    "fragment_compute_images": 32
+  },
+  "patch_sha256": {
+    "mesa-0001-kosmickrisp-metal.patch": "badcef50957b43646c83c581196db8e86563f7e9fac7e55210eca99c9e60058d",
+    "mesa-0002-zink-metal-interop.patch": "c406f84f9970e1c96fe589b905e0690da926d2daa288f792fab9ba7395d23ba7",
+    "mesa-0003-zink-buffer-ranges.patch": "1f7013fdce38fe635408aecdfee71d258ffa9f437ac9ef08af67deccc609a95f",
+    "virgl-metal.patch": "f3d086dd8d4fa1ddff74283b66598ba7836b15237bb9b635adfd32d2450945b0",
+    "epoxy-bundled-libraries.patch": "cf181b494f2bfa8263273d3250488f3beddfc14cf8d67440a007a0bc6b4fac13"
+  },
+  "library_sha256": {
+    "libEGL.dylib": "217d12a9e51fb3131720735fc0832145260a5b2237b3ef23939dc78f377ef4d2",
+    "libgallium-26.3.0-devel.dylib": "a86a3b4714c1c1050bae197ad77e084ec527ea20a8f0f29944fbf585f7b8d9e9",
+    "libvulkan_kosmickrisp.dylib": "2d3b7caae7e7827f575daf91e842cb7e9922a8d5c0d76935034f80c201150d64",
+    "libepoxy.0.dylib": "cab0ffe5931ff4772081fa82717465eca390c1aadab7190589dd72aef148c2de"
+  },
+  "evidence_log": "/tmp/sentinel-zink-ranges.FqMJ1q/canonical-suite.log",
+  "scope": "Bounded host graphics regression, not full OpenGL conformance or Blender qualification."
+}

@@ -60,7 +60,7 @@ export class LocalTransport {
 
   connect(url: string): WebSocket | DesktopStream {
     const route = backendPath(url);
-    if (/^\/api\/v1\/instances\/[^/?]+\/runtime\/live-view\/[0-9a-f-]{36}\/rfb$/.test(route)) {
+    if (/^\/api\/v1\/instances\/[^/?]+\/runtime\/live-view\/[0-9a-f-]{36}\/stream$/.test(route)) {
       return new DesktopStream(async signal => {
         const response = await this.request(new Request(`sentinel://app${route}`, { method: 'POST', signal }));
         if (!response.ok) throw new Error('Desktop unavailable');

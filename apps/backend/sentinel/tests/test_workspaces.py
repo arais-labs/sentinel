@@ -24,6 +24,28 @@ from app.services.runtime.workspace import (
 from app.services.sessions.agent_run_registry import AgentRunRegistry
 
 
+@pytest.mark.asyncio
+async def test_workspace_browser_is_saved_and_alpine_rejects_chrome(workspace_app):
+    client, _, machine, *_ = workspace_app
+    payload = {
+        "name": "Browser test",
+        "machine_id": str(machine.id),
+        "directory": "/project",
+        "browser": "firefox",
+    }
+    response = await client.post("workspaces", json=payload)
+    assert response.status_code == 201
+    assert response.json()["browser"] == "firefox"
+    workspace_id = response.json()["id"]
+    response = await client.patch(f"workspaces/{workspace_id}", json={"browser": "chromium"})
+    assert response.status_code == 200
+    assert response.json()["browser"] == "chromium"
+    response = await client.patch(f"workspaces/{workspace_id}", json={"browser": "chrome"})
+    assert response.status_code == 422
+    response = await client.post("workspaces", json={**payload, "browser": "chrome"})
+    assert response.status_code == 422
+
+
 @pytest_asyncio.fixture
 async def workspace_app(tmp_path, monkeypatch):
     from unittest.mock import AsyncMock
@@ -255,6 +277,52 @@ async def test_sessions_start_unattached_and_share_workspace(workspace_app, tmp_
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("detach", [False, True])
+async def test_switch_from_incompatible_runtime_preserves_remote_programs(
+    workspace_app, monkeypatch, detach
+):
+    from unittest.mock import AsyncMock
+    from app.models import Workspace
+    from app.routers import workspaces as routes
+    from app.services.runtime.compatibility import RuntimeCompatibilityError
+
+    client, factory, machine, first, *_ = workspace_app
+    async with factory() as db:
+        old = Workspace(name="Old", machine_id=machine.id, directory="/old")
+        new = Workspace(name="New", machine_id=machine.id, directory="/new")
+        db.add_all([old, new])
+        await db.flush()
+        session = await db.get(Session, first.id)
+        session.workspace_id = old.id
+        await db.commit()
+    monkeypatch.setattr(
+        routes,
+        "runtime_configured",
+        AsyncMock(
+            side_effect=RuntimeCompatibilityError(
+                "runtime_update_required", "Update the worker", machine_id=machine.id
+            )
+        ),
+    )
+    terminal = AsyncMock()
+    monkeypatch.setattr(routes, "get_runtime_terminal_manager", terminal)
+    pool = AsyncMock()
+    monkeypatch.setattr(routes, "get_browser_pool", lambda: pool)
+    invalidate = AsyncMock()
+    monkeypatch.setattr(routes, "invalidate_runtime_for_session", invalidate)
+    target = None if detach else str(new.id)
+    response = await client.put(f"sessions/{first.id}/workspace", json={"workspace_id": target})
+    assert response.status_code == 200, response.text
+    terminal.assert_not_awaited()
+    pool.remove.assert_awaited_once_with(str(first.id), instance_name="main", stop_remote=False)
+    invalidate.assert_awaited_once_with("main", first.id, stop_remote=False)
+    async with factory() as db:
+        assert str((await db.get(Session, first.id)).workspace_id) == str(
+            None if detach else new.id
+        )
+
+
+@pytest.mark.asyncio
 async def test_workspace_validation_and_isolation(workspace_app, tmp_path):
     client, factory, machine, first, second, registry = workspace_app
     assert (
@@ -294,6 +362,9 @@ def test_project_and_private_state_paths_are_separate():
     _, args = build_prepare_workspace_script(paths.session_id, root=location)
     assert args[0] == paths.workspace
     assert paths.workspace not in args[4:]
+    # Native login owns /run/user; root-agent setup must not create its parent
+    # with the private state directory's restrictive umask.
+    assert not any(path == "/run/user" or path.startswith("/run/user/") for path in args[4:])
     _, args = build_delete_session_script(paths.session_id, root=location)
     assert args == [paths.control_root, paths.session_root]
     assert "/projects/shared" not in args
@@ -534,26 +605,27 @@ async def test_install_desktop_without_renaming_workspace(workspace_app):
     # Same partial payload used by the Desktop tab's Install button.
     result = await client.patch(
         f"workspaces/{identifier}",
-        json={"development_tools": ["git", "node", "desktop"]},
+        json={"desktop": "xfce"},
     )
     assert result.status_code == 200, result.text
+    assert result.json()["desktop"] == "xfce"
     assert result.json()["name"] == "My project"
     assert result.json()["directory"] == "/projects/desktop"
-    assert result.json()["development_tools"] == ["desktop", "git", "node"]
+    assert result.json()["development_tools"] == ["git", "node"]
     assert result.json()["container_state"] == "preparing"
     from uuid import UUID
 
     containers.start.assert_awaited_once_with(
         UUID(identifier),
         "/projects/desktop",
-        ["desktop", "git", "node"],
+        ["git", "node"],
         notification_context={"instanceName": "main", "name": "My project"},
     )
     # Retrying the same selection neither renames nor restarts the workspace.
     containers.start.reset_mock()
     retry = await client.patch(
         f"workspaces/{identifier}",
-        json={"development_tools": ["desktop", "git", "node"]},
+        json={"development_tools": ["git", "node"]},
     )
     assert retry.status_code == 200
     containers.start.assert_not_awaited()
@@ -593,6 +665,30 @@ async def test_provisioning_passes_validated_resources_to_runtime(workspace_app)
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("desktop", ["none", "xfce", "weston", "lxqt", "gnome", "plasma"])
+async def test_desktop_choice_round_trip_without_renaming(workspace_app, desktop):
+    client, _, machine, *_ = workspace_app
+    response = await client.post(
+        "workspaces",
+        json={
+            "name": desktop,
+            "machine_id": str(machine.id),
+            "directory": "/project",
+            "distribution": "alpine",
+            "desktop": desktop,
+        },
+    )
+    assert response.status_code == 201, response.text
+    workspace = response.json()
+    assert workspace["desktop"] == desktop
+    updated = await client.patch(f"workspaces/{workspace['id']}", json={"name": "Renamed"})
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["desktop"] == desktop
+    listing = (await client.get("workspaces?include_runtime=false")).json()
+    assert next(row for row in listing if row["id"] == workspace["id"])["desktop"] == desktop
+
+
+@pytest.mark.asyncio
 async def test_distribution_persisted_immutable_and_compatible(workspace_app):
     from app.services.runtime import workspace_containers as containers
 
@@ -620,7 +716,7 @@ async def test_distribution_persisted_immutable_and_compatible(workspace_app):
         assert (
             await client.patch(
                 f"workspaces/{row['id']}",
-                json={"development_tools": ["git", "python", "desktop"]},
+                json={"desktop": "weston"},
             )
         ).status_code == 200
     for distro, tools in [

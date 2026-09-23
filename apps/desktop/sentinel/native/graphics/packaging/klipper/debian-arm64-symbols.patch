@@ -1,0 +1,12 @@
+diff --git a/debian/libklipper6.symbols b/debian/libklipper6.symbols
+--- a/debian/libklipper6.symbols
++++ b/debian/libklipper6.symbols
+@@ -169 +169 @@
+- (arch=amd64)_ZTISt23_Sp_counted_ptr_inplaceI11HistoryItemSaIvELN9__gnu_cxx12_Lock_policyE2EE@Base 4:6.2.90
++ (arch=amd64 arm64)_ZTISt23_Sp_counted_ptr_inplaceI11HistoryItemSaIvELN9__gnu_cxx12_Lock_policyE2EE@Base 4:6.2.90
+@@ -188 +188 @@
+- (arch=amd64)_ZTSSt23_Sp_counted_ptr_inplaceI11HistoryItemSaIvELN9__gnu_cxx12_Lock_policyE2EE@Base 4:6.2.90
++ (arch=amd64 arm64)_ZTSSt23_Sp_counted_ptr_inplaceI11HistoryItemSaIvELN9__gnu_cxx12_Lock_policyE2EE@Base 4:6.2.90
+@@ -200 +200 @@
+- (arch=amd64)_ZTVSt23_Sp_counted_ptr_inplaceI11HistoryItemSaIvELN9__gnu_cxx12_Lock_policyE2EE@Base 4:6.2.90
++ (arch=amd64 arm64)_ZTVSt23_Sp_counted_ptr_inplaceI11HistoryItemSaIvELN9__gnu_cxx12_Lock_policyE2EE@Base 4:6.2.90

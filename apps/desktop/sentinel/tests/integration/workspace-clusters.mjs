@@ -13,7 +13,7 @@ const cache = path.join(desktop, 'build/graphics-sources/guest');
 const root = await mkdtemp(path.join(cache, 'clusters-'));
 const project = await mkdtemp('/tmp/sentinel-cluster-test-');
 const workspace = randomUUID();
-const runtime = new WorkspaceRuntime({command:path.join(resources,'sentinel-workspace-runtime'), args:[root,path.join(cache,config.kernelFileSha256),config.initImage,config.workspaceImage],onProgress:console.log,onFailure:console.error,log:()=>{}});
+const runtime = new WorkspaceRuntime({command:path.join(resources,'sentinel-workspace-runtime'), args:[root,path.join(cache,config.kernelFileSha256),config.initImage],onProgress:console.log,onFailure:console.error,log:()=>{}});
 async function exec(arguments_, timeout=300) {
  const result = await runtime.request('exec',{workspace,arguments:arguments_,timeout},(timeout+30)*1000);
  assert.equal(result.exitCode,0,result.stderr+'\n'+result.stdout);

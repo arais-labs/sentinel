@@ -14,7 +14,7 @@ find_binary() {
 root="$1"
 remote_os=linux
 required="bash tmux python3 git gh rg jq"
-optional="chromium Xvnc xfce4-session dbus-run-session xdpyinfo"
+optional="chromium Xorg weston xfce4-session dbus-run-session xdpyinfo"
 
 emit ssh_command "pass" "Remote command" "$(id -un 2>/dev/null)@$(hostname 2>/dev/null)"
 if [ "$remote_os" = "linux" ] || [ "$remote_os" = "darwin" ]; then
@@ -54,8 +54,8 @@ for item in $optional; do
   fi
 done
 
-if [ -n "$(find_binary Xvnc)" ] && [ -n "$(find_binary xfce4-session)" ] && [ -n "$(find_binary dbus-run-session)" ] && [ -n "$(find_binary xdpyinfo)" ]; then
-  emit desktop_stack "pass" "Desktop package" "Installed; starts on demand"
+if [ -f /opt/sentinel/desktop/desktop-session.py ] && [ -f /etc/sentinel/desktop.json ]; then
+  emit desktop_stack "pass" "Desktop" "Installed; starts on demand"
 else
-  emit desktop_stack "skip" "Desktop package" "Not installed" "Add Desktop in workspace settings to use graphical applications."
+  emit desktop_stack "skip" "Desktop" "Not installed" "Choose a desktop in workspace settings to use graphical applications."
 fi

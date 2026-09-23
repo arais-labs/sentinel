@@ -10,7 +10,7 @@ const root = await mkdtemp('/tmp/sentinel-recovery-integration-');
 const project = await mkdtemp('/tmp/sentinel-recovery-project-');
 const workspace = randomUUID();
 const runtime = new WorkspaceRuntime({ command: process.env.SENTINEL_RECOVERY_HELPER || path.join(resources, 'sentinel-workspace-runtime'),
-  args: [root, path.resolve('build/graphics-sources/guest', config.kernelFileSha256), config.initImage, config.workspaceImage],
+  args: [root, path.resolve('build/graphics-sources/guest', config.kernelFileSha256), config.initImage],
   onProgress: console.log, onFailure: console.error, log: console.error });
 const start = () => runtime.request('start', { workspace, project, cpus: 1, memory_gib: 1, disk_gib: 2 });
 try {

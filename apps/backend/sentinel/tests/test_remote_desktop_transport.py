@@ -176,7 +176,7 @@ async def test_direct_desktop_socket_reuses_tunnel_and_preserves_native_endpoint
         )
         endpoint = desktop.socket_path
         listener = manager._handles[session].listener
-        assert desktop.vnc_update_mode == ("native" if is_remote else "paced")
+        assert desktop.target_port == 5901
         try:
             assert await transport.desktop_socket(5901, listener) == (
                 endpoint,

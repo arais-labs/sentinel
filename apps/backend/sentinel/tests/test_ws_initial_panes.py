@@ -7,6 +7,30 @@ from app.services.runtime.panes import TmuxPanes
 
 
 @pytest.mark.asyncio
+async def test_cleanup_transport_never_starts_and_preserves_live_errors(monkeypatch):
+    from uuid import uuid4
+    from app.services.runtime.container_transport import ContainerTransport
+    from app.services.runtime import workspace_containers as containers
+
+    transport = ContainerTransport(uuid4(), "/project", [])
+    readiness = AsyncMock(side_effect=AssertionError("Cleanup must not ensure readiness"))
+    monkeypatch.setattr(transport, "wait_ready", readiness)
+    status = AsyncMock(return_value={"state": "stopped"})
+    monkeypatch.setattr(transport, "workspace_status", status)
+    execute = AsyncMock(side_effect=containers.WorkspaceContainerError("exec failed"))
+    monkeypatch.setattr(containers, "request", execute)
+    assert await transport.run_if_running("true") is None
+    execute.assert_not_awaited()
+    status.side_effect = [{"state": "running"}, {"state": "stopping"}]
+    assert await transport.run_if_running("true") is None
+    status.side_effect = None
+    status.return_value = {"state": "running"}
+    with pytest.raises(containers.WorkspaceContainerError, match="exec failed"):
+        await transport.run_if_running("true")
+    readiness.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_unattached_chat_has_no_panes_and_does_not_start_runtime(monkeypatch):
     monkeypatch.setattr(ws, "runtime_configured", AsyncMock(return_value=False))
     manager = AsyncMock()

@@ -4,6 +4,8 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket
 from sqlalchemy.ext.asyncio import AsyncSession
+from pydantic import BaseModel, Field
+from typing import Literal
 
 import app.services.runtime.control as control_module
 import app.services.runtime.ssh_runtime as ssh_runtime_module
@@ -15,19 +17,60 @@ from app.schemas.runtime import (
     RuntimeStatusResponse,
 )
 from app.services.runtime.desktop import RuntimeDesktopError
+from app.services.runtime.desktop_modes import DESKTOP_RESOLUTIONS
 from app.services.runtime.status import runtime_status_payload
 
 router = APIRouter()
 
-DESKTOP_RESOLUTION_PRESETS = {
-    "1280x800",
-    "1440x900",
-    "1680x1050",
-    "1920x1200",
-    "2560x1600",
-    "2880x1800",
-    "3840x2400",
-}
+
+class DesktopClipboardRequest(BaseModel):
+    action: Literal["read", "write"]
+    text: str | None = Field(default=None, max_length=262144)
+
+
+class DesktopWallpaperRequest(BaseModel):
+    design: Literal["satin", "horizon", "geometry", "spectrum", "paper", "monochrome"]
+
+
+@router.post("/desktop/wallpaper")
+async def desktop_wallpaper(
+    payload: DesktopWallpaperRequest,
+    request: Request,
+    session_id: str = Query(...),
+    db: AsyncSession = Depends(get_db),
+):
+    await control_module.require_runtime_session(
+        session_id, instance_name=_request_instance_name(request), db=db
+    )
+    manager = await ssh_runtime_module.get_runtime_desktop_manager(
+        session_id=session_id, instance_name=_request_instance_name(request)
+    )
+    try:
+        return await manager.wallpaper(payload.design)
+    except RuntimeDesktopError as error:
+        raise HTTPException(409, str(error)) from error
+
+
+@router.post("/desktop/clipboard")
+async def desktop_clipboard(
+    payload: DesktopClipboardRequest,
+    request: Request,
+    session_id: str = Query(...),
+    db: AsyncSession = Depends(get_db),
+):
+    await control_module.require_runtime_session(
+        session_id, instance_name=_request_instance_name(request), db=db
+    )
+    manager = await ssh_runtime_module.get_runtime_desktop_manager(
+        session_id=session_id, instance_name=_request_instance_name(request)
+    )
+    try:
+        return await manager.clipboard(payload.model_dump())
+    except RuntimeDesktopError as error:
+        raise HTTPException(409, str(error)) from error
+
+
+DESKTOP_RESOLUTION_PRESETS = frozenset(DESKTOP_RESOLUTIONS)
 
 
 @router.get("/status", response_model=RuntimeStatusResponse)
@@ -60,18 +103,18 @@ async def get_live_view(
     )
 
 
-@router.websocket("/live-view/{session_id}/rfb")
-async def runtime_live_view_rfb(
+@router.websocket("/live-view/{session_id}/stream")
+async def runtime_live_view_stream(
     websocket: WebSocket,
     session_id: UUID,
     db: AsyncSession = Depends(get_db),
 ) -> None:
-    await control_module.bridge_runtime_desktop_rfb(
+    await control_module.bridge_runtime_desktop_stream(
         websocket=websocket, session_id=session_id, db=db
     )
 
 
-@router.post("/live-view/{session_id}/rfb")
+@router.post("/live-view/{session_id}/stream")
 async def runtime_desktop_connection(
     request: Request,
     session_id: UUID,

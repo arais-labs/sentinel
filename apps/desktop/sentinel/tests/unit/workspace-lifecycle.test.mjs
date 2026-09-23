@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { WorkspaceLifecycle } from '../../.test-dist/main/workspace/workspaceLifecycle.js';
+import { RuntimeCompatibilityError } from '../../.test-dist/main/workspace/runtimeCompatibility.js';
 
 function fake() {
   const gate = Promise.withResolvers();
@@ -13,6 +14,7 @@ function fake() {
   const calls = [];
   const runtime = {
     events: new EventEmitter(), isReady: false, preparationMessage: 'Downloading workspace image…',
+    assertCompatible: () => {},
     start: async () => { calls.push('boot'); await gate.promise; runtime.isReady = true; },
     request: async (action, value) => { calls.push([action, value]); return { exitCode: 0, distributions: ['alpine', 'ubuntu', 'debian'] }; },
     stop: async () => { gate.reject(new Error('stopped')); runtime.isReady = false; },
@@ -34,6 +36,99 @@ async function fixture(t) {
   await lifecycle.load();
   return { ...f, root, lifecycle, id: randomUUID() };
 }
+
+test('explicit reinstall deletes only owned VM before rebuilding and preserves settings', async t => {
+  const { lifecycle, calls, gate, id } = await fixture(t);
+  const resources = {cpus:4, memory_gib:8, disk_gib:64};
+  await lifecycle.prepare(id, '/kept-project', ['git'], false, resources);
+  gate.resolve();
+  await until(() => lifecycle.status().states[id].state === 'running');
+  calls.length = 0;
+  await lifecycle.prepare(id, '/kept-project', ['git'], true);
+  await until(() => lifecycle.status().states[id].state === 'running');
+  const operations = calls.filter(Array.isArray);
+  assert.equal(operations[0][0], 'delete');
+  assert.deepEqual(operations[0][1], {workspace:id});
+  assert.equal(operations[1][0], 'start');
+  assert.equal(operations[1][1].project, '/kept-project');
+  assert.equal(operations[1][1].cpus, 4);
+  assert.equal(operations[1][1].grow_disk, false);
+  assert.deepEqual(lifecycle.status().states[id].resources, resources);
+});
+
+test('failed reinstall never starts after delete failure or repeats deletion on Retry', async t => {
+  const { lifecycle, runtime, calls, gate, id } = await fixture(t);
+  await lifecycle.prepare(id, '/project', []);
+  gate.resolve();
+  await until(() => lifecycle.status().states[id].state === 'running');
+  const request = runtime.request;
+  runtime.request = async (action, values) => {
+    if (action === 'delete') { calls.push([action, values]); throw new Error('Cannot stop VM'); }
+    return request(action, values);
+  };
+  calls.length = 0;
+  await lifecycle.prepare(id, '/project', [], true);
+  await until(() => lifecycle.status().states[id].state === 'failed');
+  assert.equal(calls.filter(value => Array.isArray(value) && value[0] === 'start').length, 0);
+  await lifecycle.prepare(id, '/project', []);
+  await until(() => lifecycle.status().states[id].state === 'running');
+  assert.equal(calls.filter(value => Array.isArray(value) && value[0] === 'delete').length, 1);
+});
+
+test('interrupted reinstall is never automatically resumed or erased on startup', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'workspace-reinstall-interrupted-'));
+  const id = randomUUID(), f = fake();
+  await writeFile(path.join(root, 'workspaces.json'), JSON.stringify({[id]: {project:'/project', tools:[], state:'preparing', reinstall:true}}));
+  const lifecycle = new WorkspaceLifecycle(f.runtime, root);
+  t.after(async () => { await lifecycle.close(); await rm(root, {recursive:true,force:true}); });
+  await lifecycle.load();
+  assert.deepEqual(f.calls, []);
+  assert.equal(lifecycle.status().states[id].state, 'failed');
+  assert.match(lifecycle.status().states[id].error, /reinstall was interrupted/);
+});
+
+test('stopping an in-flight reinstall clears its intent across reload without repeating deletion', async t => {
+  const { lifecycle, runtime, calls, gate, id, root } = await fixture(t);
+  await lifecycle.prepare(id, '/project', []);
+  gate.resolve();
+  await until(() => lifecycle.status().states[id].state === 'running');
+  const deletion = Promise.withResolvers();
+  const request = runtime.request;
+  runtime.request = async (action, values) => {
+    if (action === 'delete') {
+      calls.push([action, values]);
+      await deletion.promise;
+      return {};
+    }
+    // Match the native request loop: stop cannot complete before delete.
+    if (action === 'stop') await deletion.promise;
+    return request(action, values);
+  };
+  calls.length = 0;
+  await lifecycle.prepare(id, '/project', [], true);
+  await until(() => calls.some(value => Array.isArray(value) && value[0] === 'delete'));
+  const stopped = lifecycle.stop(id);
+  deletion.resolve();
+  await stopped;
+  await lifecycle.close();
+  assert.equal(calls.filter(value => Array.isArray(value) && value[0] === 'delete').length, 1);
+  assert.equal(calls.filter(value => Array.isArray(value) && value[0] === 'start').length, 0);
+  const saved = JSON.parse(await readFile(path.join(root, 'workspaces.json'), 'utf8'))[id];
+  assert.equal(saved.reinstall, undefined);
+
+  const fresh = fake();
+  const reloaded = new WorkspaceLifecycle(fresh.runtime, root);
+  t.after(() => reloaded.close());
+  await reloaded.load();
+  assert.equal(reloaded.status().states[id].state, 'stopped');
+  assert.equal(reloaded.status().states[id].error, undefined);
+  assert.deepEqual(fresh.calls, []);
+  await reloaded.prepare(id, '/project', []);
+  fresh.gate.resolve();
+  await until(() => reloaded.status().states[id].state === 'running');
+  assert.equal(fresh.calls.some(value => Array.isArray(value) && value[0] === 'delete'), false);
+  await reloaded.close();
+});
 
 test('opening services and polling status do not boot or download; creation returns while preparing', async t => {
   const { lifecycle, calls, gate, id } = await fixture(t);
@@ -57,6 +152,27 @@ test('cancel during image download never creates a late container', async t => {
   await new Promise(resolve => setTimeout(resolve, 20));
   assert.equal(lifecycle.status().states[id].state, 'stopped');
   assert.equal(calls.filter(value => value[0] === 'start').length, 0);
+});
+
+test('a bundled helper mismatch is a connection error, not a durable workspace failure', async t => {
+  const { lifecycle, runtime, calls, gate, id, root } = await fixture(t);
+  runtime.assertCompatible = () => { throw new RuntimeCompatibilityError(1); };
+  await lifecycle.prepare(id, '/project', []);
+  const stopped = new Promise(resolve => lifecycle.events.on('changed', () => {
+    if (lifecycle.status().states[id]?.state === 'stopped') resolve();
+  }));
+  gate.resolve();
+  await stopped;
+  await assert.rejects(lifecycle.overview(), { code: 'app_update_required' });
+  await assert.rejects(lifecycle.prepare(id, '/project', []), { code: 'app_update_required' });
+  assert.equal(calls.some(value => value[0] === 'start'), false);
+  const saved = JSON.parse(await readFile(path.join(root, 'workspaces.json'), 'utf8'))[id];
+  assert.equal(saved.state, 'stopped');
+  assert.equal(saved.error, undefined);
+  runtime.assertCompatible = () => {};
+  assert.equal((await lifecycle.overview()).states[id].error, undefined);
+  await lifecycle.prepare(id, '/project', []);
+  await until(() => lifecycle.status().states[id].state === 'running');
 });
 
 test('retry after cancellation ignores the superseded setup job', async t => {
@@ -162,7 +278,7 @@ test('Desktop provisioning waits for Metal graphics and never marks a failed ren
   t.after(async () => { await lifecycle.close(); await rm(root, { recursive: true, force: true }); });
   await lifecycle.load();
   const id = randomUUID();
-  await lifecycle.prepare(id, '/project', ['desktop']); f.gate.resolve();
+  await lifecycle.prepare(id, '/project', [], false, undefined, undefined, 'alpine', 'xfce'); f.gate.resolve();
   await until(() => lifecycle.status().states[id].message === 'Preparing Metal desktop graphics…');
   assert.equal(lifecycle.status().states[id].state, 'preparing');
   graphicsGate.reject(new Error('graphics install failed'));
@@ -170,7 +286,7 @@ test('Desktop provisioning waits for Metal graphics and never marks a failed ren
   assert.match(lifecycle.status().states[id].error, /graphics install failed/);
 });
 
-test('reinstall reapplies definitions to a running workspace without deleting its disk', async t => {
+test('reinstall rebuilds a running workspace and applies normal fresh-install definitions', async t => {
   const { lifecycle, calls, gate, id, root } = await fixture(t);
   gate.resolve();
   await lifecycle.prepare(id, '/project', ['node']);
@@ -181,25 +297,27 @@ test('reinstall reapplies definitions to a running workspace without deleting it
   await lifecycle.prepare(id, '/project', ['node'], true);
   await until(() => lifecycle.status().states[id].state === 'running');
   const updates = calls.slice(count).filter(value => value[0] === 'exec');
-  assert.match(updates[0][1].arguments[2], /apk add --no-cache --upgrade/);
+  assert.match(updates[0][1].arguments[2], /apk add --no-cache/);
+  assert.doesNotMatch(updates[0][1].arguments[2], /--upgrade/);
   assert.equal(updates[0][1].workspace, id);
-  assert.ok(!calls.some(value => ['delete', 'stop'].includes(value[0])));
+  assert.equal(calls.filter(value => value[0] === 'delete').length, 1);
   const saved = JSON.parse(await readFile(path.join(root, 'workspaces.json'), 'utf8'))[id];
   assert.equal(saved.project, '/project');
   assert.deepEqual(saved.tools, ['node']);
 });
 
-test('an interrupted reinstall retains its upgrade intent when setup resumes', async t => {
+test('interrupted reinstall requires a new explicit request before any disk deletion', async t => {
   const { lifecycle, calls, gate, id, root } = await fixture(t);
   await writeFile(path.join(root, 'workspaces.json'), JSON.stringify({
     [id]: { project: '/project', tools: ['node'], state: 'preparing', reinstall: true },
   }));
   await lifecycle.load();
-  await assert.rejects(lifecycle.prepare(id, '/project', ['node'], true), /Wait for workspace setup/);
+  assert.equal(lifecycle.status().states[id].state, 'failed');
+  assert.deepEqual(calls, []);
+  await lifecycle.prepare(id, '/project', ['node'], true);
   gate.resolve();
   await until(() => lifecycle.status().states[id].state === 'running');
-  const installs = calls.filter(value => value[0] === 'exec');
-  assert.match(installs[0][1].arguments[2], /--upgrade/);
+  assert.equal(calls.filter(value => value[0] === 'delete').length, 1);
 });
 
 test('provisioned resources persist and are used again after stop/start', async t => {
@@ -328,7 +446,7 @@ test('an older runtime cannot silently create Alpine for a requested Ubuntu work
   await lifecycle.prepare(id, '/project', ['git'], false, undefined, undefined, 'ubuntu');
   gate.resolve();
   await until(() => lifecycle.status().states[id].state === 'failed');
-  assert.match(lifecycle.status().states[id].error, /Update Sentinel Runtime/);
+  assert.match(lifecycle.status().states[id].error, /Update Sentinel\./);
   assert.ok(!calls.some(call => Array.isArray(call) && call[0] === 'start'));
 });
 
@@ -380,11 +498,12 @@ test('recovery waits for native success, blocks competing actions, and restarts 
   assert.equal(lifecycle.status().states[id].recovery_available, false);
 });
 
-test('failed disk repair keeps recovery available and never starts the VM', async t => {
+test('failed disk repair stays stopped but permits explicitly confirmed reinstall', async t => {
   const { lifecycle, runtime, calls, gate, id } = await fixture(t);
   gate.resolve();
   await lifecycle.prepare(id, '/project', []);
   await until(() => lifecycle.status().states[id].state === 'running');
+  const request = runtime.request;
   runtime.request = async action => {
     if (action === 'status') return { states: { [id]: 'failed' }, errors: { [id]: 'hung' }, capabilities: ['workspace-recovery-v1'] };
     throw new Error('Repair failed; backup preserved');
@@ -396,6 +515,32 @@ test('failed disk repair keeps recovery available and never starts the VM', asyn
   assert.match(lifecycle.status().states[id].error, /backup preserved/);
   assert.equal(lifecycle.status().states[id].recovery_available, true);
   assert.equal(calls.filter(call => call[0] === 'start').length, starts);
+  await assert.rejects(lifecycle.prepare(id, '/project', []), /Recover this workspace/);
+  await Promise.allSettled([...lifecycle.pendingJobs]);
+  runtime.request = request;
+  await lifecycle.prepare(id, '/project', [], true);
+  await until(() => lifecycle.status().states[id].state === 'running');
+  assert.equal(lifecycle.status().states[id].recovery_available, false);
+  assert.equal(lifecycle.status().states[id].recovery_backup, undefined);
+  assert.ok(calls.some(call => call[0] === 'delete'));
+});
+
+test('offline removal deletes only this workspace disk, backups and recovery marker', async t => {
+  const { lifecycle, root, id, calls } = await fixture(t);
+  const other = randomUUID();
+  for (const workspace of [id, other]) {
+    for (const folder of [`store/containers/${workspace}`, `recovery/${workspace}`, 'recovery-required']) {
+      await mkdir(path.join(root, folder), { recursive: true });
+    }
+    await writeFile(path.join(root, 'recovery', workspace, 'backup'), 'backup');
+    await writeFile(path.join(root, 'recovery-required', workspace), 'failed');
+  }
+  await lifecycle.stop(id, true);
+  for (const folder of ['store/containers', 'recovery', 'recovery-required']) {
+    await assert.rejects(access(path.join(root, folder, id)), { code: 'ENOENT' });
+    await access(path.join(root, folder, other));
+  }
+  assert.equal(calls.length, 0);
 });
 
 test('reconnecting during native recovery follows completion without replaying workspace startup', async t => {

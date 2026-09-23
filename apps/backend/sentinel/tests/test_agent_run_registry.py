@@ -17,6 +17,35 @@ def _system_item(text: str) -> ConversationItem:
 
 
 @pytest.mark.asyncio
+async def test_attachment_guard_blocks_only_its_session_and_never_status_reads():
+    registry = AgentRunRegistry()
+    release = asyncio.Event()
+    async with registry.idle_guard("a") as idle:
+        assert idle
+        pending = asyncio.create_task(registry.start("a", release.wait()))
+        other = await asyncio.wait_for(registry.start("b", release.wait()), 1)
+        assert await asyncio.wait_for(registry.is_running("b"), 1)
+        assert await asyncio.wait_for(registry.get_phase("b"), 1) == "thinking"
+        assert not pending.done()
+        async with registry.idle_guard("c") as other_idle:
+            assert other_idle
+    first = await asyncio.wait_for(pending, 1)
+    release.set()
+    await asyncio.gather(first, other)
+
+
+@pytest.mark.asyncio
+async def test_workspace_guard_keeps_start_exclusion_without_blocking_polling():
+    registry = AgentRunRegistry()
+    async with registry.workspace_change_guard():
+        pending = asyncio.create_task(registry.start("a", asyncio.sleep(0)))
+        assert not await asyncio.wait_for(registry.is_running("a"), 1)
+        assert not pending.done()
+    task = await asyncio.wait_for(pending, 1)
+    await task
+
+
+@pytest.mark.asyncio
 async def test_agent_run_registry_drains_interjections_per_session() -> None:
     registry = AgentRunRegistry()
 
