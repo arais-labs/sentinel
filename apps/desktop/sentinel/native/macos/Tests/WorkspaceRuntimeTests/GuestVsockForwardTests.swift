@@ -125,7 +125,16 @@ struct GuestVsockForwardTests {
         return bytes
     }
 
-    @Test func asymmetricThirtyTwoMiBChannelsProgressIndependently() throws {
+    @Test func asymmetricThirtyTwoMiBChannelsProgressIndependently() async throws {
+        try await withCheckedThrowingContinuation { (completion: CheckedContinuation<Void, Error>) in
+            DispatchQueue.global().async {
+                do { try self.run_asymmetricThirtyTwoMiBChannelsProgressIndependently(); completion.resume() }
+                catch { completion.resume(throwing: error) }
+            }
+        }
+    }
+
+    private func run_asymmetricThirtyTwoMiBChannelsProgressIndependently() throws {
         let root = try directory(), path = root.appendingPathComponent("gpu.sock").path
         defer { try? FileManager.default.removeItem(at: root) }
         let (dialA, peerA) = try pair(), (dialB, peerB) = try pair()
@@ -176,7 +185,16 @@ struct GuestVsockForwardTests {
         #expect(failures.withLock { $0.isEmpty })
     }
 
-    @Test func stopReleasesBlockedReaderAndBackpressuredWriter() throws {
+    @Test func stopReleasesBlockedReaderAndBackpressuredWriter() async throws {
+        try await withCheckedThrowingContinuation { (completion: CheckedContinuation<Void, Error>) in
+            DispatchQueue.global().async {
+                do { try self.run_stopReleasesBlockedReaderAndBackpressuredWriter(); completion.resume() }
+                catch { completion.resume(throwing: error) }
+            }
+        }
+    }
+
+    private func run_stopReleasesBlockedReaderAndBackpressuredWriter() throws {
         let root = try directory(), path = root.appendingPathComponent("gpu.sock").path
         defer { try? FileManager.default.removeItem(at: root) }
         let (dial, peer) = try pair()
@@ -219,7 +237,16 @@ struct GuestVsockForwardTests {
         #expect(writerFailed.withLock { $0 })
     }
 
-    @Test func lateDialAfterStopClosesBothOwnedEndpoints() throws {
+    @Test func lateDialAfterStopClosesBothOwnedEndpoints() async throws {
+        try await withCheckedThrowingContinuation { (completion: CheckedContinuation<Void, Error>) in
+            DispatchQueue.global().async {
+                do { try self.run_lateDialAfterStopClosesBothOwnedEndpoints(); completion.resume() }
+                catch { completion.resume(throwing: error) }
+            }
+        }
+    }
+
+    private func run_lateDialAfterStopClosesBothOwnedEndpoints() throws {
         let root = try directory(), path = root.appendingPathComponent("gpu.sock").path
         defer { try? FileManager.default.removeItem(at: root) }
         let entered = DispatchSemaphore(value: 0)
@@ -254,7 +281,16 @@ struct GuestVsockForwardTests {
         #expect(try eof(peer.fileDescriptor))
     }
 
-    @Test func duplicateStopCannotUnlinkReplacementListener() throws {
+    @Test func duplicateStopCannotUnlinkReplacementListener() async throws {
+        try await withCheckedThrowingContinuation { (completion: CheckedContinuation<Void, Error>) in
+            DispatchQueue.global().async {
+                do { try self.run_duplicateStopCannotUnlinkReplacementListener(); completion.resume() }
+                catch { completion.resume(throwing: error) }
+            }
+        }
+    }
+
+    private func run_duplicateStopCannotUnlinkReplacementListener() throws {
         let root = try directory(), path = root.appendingPathComponent("gpu.sock").path
         defer { try? FileManager.default.removeItem(at: root) }
         let old = try GuestVsockForward(path: path) { throw CancellationError() }

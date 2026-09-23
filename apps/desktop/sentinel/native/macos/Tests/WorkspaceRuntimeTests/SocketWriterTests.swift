@@ -45,9 +45,13 @@ struct SocketWriterTests {
         let input = BinaryInput()
         let failures = Mutex(0)
         let writer = GuestPortForward.SocketWriter(.init(sender)) { failures.withLock { $0 += 1 } }
-        let expected = Data((0..<(32 * 1024 * 1024)).map {
-            UInt8(truncatingIfNeeded: $0 ^ ($0 >> 16))
-        })
+        let expected = await withCheckedContinuation { continuation in
+            DispatchQueue.global().async {
+                continuation.resume(returning: Data((0..<(32 * 1024 * 1024)).map {
+                    UInt8(truncatingIfNeeded: $0 ^ ($0 >> 16))
+                }))
+            }
+        }
         let sourceDone = DispatchSemaphore(value: 0)
         let sourceFailed = Mutex(false)
         DispatchQueue.global().async {
@@ -63,7 +67,14 @@ struct SocketWriterTests {
         let forwarding = Task { () -> Bool in
             defer { writer.close() }
             do {
-                for await data in input.stream() { try writer.write(data) }
+                for await data in input.stream() {
+                    try await withCheckedThrowingContinuation { (completion: CheckedContinuation<Void, Error>) in
+                        DispatchQueue.global().async {
+                            do { try writer.write(data); completion.resume() }
+                            catch { completion.resume(throwing: error) }
+                        }
+                    }
+                }
                 return true
             } catch { input.cancel(); return false }
         }
@@ -101,7 +112,16 @@ struct SocketWriterTests {
         #expect(received.0 == expected)
     }
 
-    @Test func partialSocketWritesPreserveLargePayloadAndEOF() throws {
+    @Test func partialSocketWritesPreserveLargePayloadAndEOF() async throws {
+        try await withCheckedThrowingContinuation { (completion: CheckedContinuation<Void, Error>) in
+            DispatchQueue.global().async {
+                do { try self.run_partialSocketWritesPreserveLargePayloadAndEOF(); completion.resume() }
+                catch { completion.resume(throwing: error) }
+            }
+        }
+    }
+
+    private func run_partialSocketWritesPreserveLargePayloadAndEOF() throws {
         let (sender, receiver) = try pair()
         defer { try? sender.close(); try? receiver.close() }
         let failures = Mutex(0)
@@ -131,7 +151,16 @@ struct SocketWriterTests {
         #expect(actual == expected)
     }
 
-    @Test func peerCancellationClosesSocketAndReleasesRemoteBlockedWrite() throws {
+    @Test func peerCancellationClosesSocketAndReleasesRemoteBlockedWrite() async throws {
+        try await withCheckedThrowingContinuation { (completion: CheckedContinuation<Void, Error>) in
+            DispatchQueue.global().async {
+                do { try self.run_peerCancellationClosesSocketAndReleasesRemoteBlockedWrite(); completion.resume() }
+                catch { completion.resume(throwing: error) }
+            }
+        }
+    }
+
+    private func run_peerCancellationClosesSocketAndReleasesRemoteBlockedWrite() throws {
         let (sender, receiver) = try pair()
         defer { try? sender.close(); try? receiver.close() }
         let failures = Mutex(0)
@@ -157,7 +186,16 @@ struct SocketWriterTests {
         #expect(throws: (any Error).self) { try peer.withDescriptor { _ in } }
     }
 
-    @Test func localCancellationReleasesSimultaneousReadAndWriteLeases() throws {
+    @Test func localCancellationReleasesSimultaneousReadAndWriteLeases() async throws {
+        try await withCheckedThrowingContinuation { (completion: CheckedContinuation<Void, Error>) in
+            DispatchQueue.global().async {
+                do { try self.run_localCancellationReleasesSimultaneousReadAndWriteLeases(); completion.resume() }
+                catch { completion.resume(throwing: error) }
+            }
+        }
+    }
+
+    private func run_localCancellationReleasesSimultaneousReadAndWriteLeases() throws {
         let (sender, receiver) = try pair()
         defer { try? sender.close(); try? receiver.close() }
         let connection = GuestPortForward.Connection(sender)
