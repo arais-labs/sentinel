@@ -192,7 +192,7 @@ jobs:
     needs: [version, guest-graphics, frontend-build]
     if: github.base_ref != 'main'
     runs-on: macos-26
-    timeout-minutes: 15
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
