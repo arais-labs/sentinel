@@ -76,6 +76,14 @@ jobs:
         working-directory: apps/desktop/sentinel
         run: npm run test:graphics-build
 
+      - name: Test native workspace image packaging
+        working-directory: apps/desktop/sentinel
+        run: python3 -m unittest discover -s tests/unit -p 'test_workspace_image*.py'
+
+      - name: Test GPU credit transport
+        working-directory: apps/desktop/sentinel
+        run: python3 -m unittest discover -s tests/graphics/transport -p 'test_*.py'
+
   frontend-build:
     name: Frontend Build
     runs-on: ubuntu-24.04
@@ -104,7 +112,7 @@ jobs:
           retention-days: 7
 
   guest-graphics:
-    name: Build Linux ARM guest graphics
+    name: Build Linux ARM guest graphics and workspace images
     if: github.base_ref != 'main'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 60
@@ -116,18 +124,63 @@ jobs:
           path: |
             apps/desktop/sentinel/build/graphics-sources/guest/*.tar.xz
             apps/desktop/sentinel/build/graphics-sources/guest/*.json
-          key: guest-graphics-${{ runner.os }}-${{ runner.arch }}-v1-${{ hashFiles('apps/desktop/sentinel/runtime.lock.json', 'apps/desktop/sentinel/scripts/packaging/graphics/build-guest.*', 'apps/desktop/sentinel/native/macos/Sources/WorkspaceRuntime/WorkspaceDistribution.swift') }}
+            apps/desktop/sentinel/build/graphics-sources/guest/*.snap
+            apps/desktop/sentinel/build/graphics-sources/guest/klipper-*/
+          key: >-
+            guest-graphics-${{ runner.os }}-${{ runner.arch }}-v4-${{ hashFiles(
+              'apps/desktop/sentinel/runtime.lock.json',
+              'apps/desktop/sentinel/scripts/packaging/graphics/*.py',
+              'apps/desktop/sentinel/scripts/packaging/graphics/*.sh',
+              'apps/desktop/sentinel/scripts/packaging/graphics/kernel.config',
+              'apps/desktop/sentinel/native/graphics/sources.lock.json',
+              'apps/desktop/sentinel/native/graphics/display/**',
+              'apps/desktop/sentinel/native/graphics/patches/kernel-*.patch',
+              'apps/desktop/sentinel/native/graphics/patches/remote-proxy-fences.patch',
+              'apps/desktop/sentinel/native/graphics/patches/guest/**',
+              'apps/desktop/sentinel/native/graphics/patches/labwc/**',
+              'apps/desktop/sentinel/native/graphics/patches/localsearch/**',
+              'apps/desktop/sentinel/native/graphics/guest/driver/**',
+              'apps/desktop/sentinel/native/graphics/guest/gpu-bridge.c',
+              'apps/desktop/sentinel/native/graphics/transport/**',
+              'apps/desktop/sentinel/native/graphics/packaging/gpu-2404/**',
+              'apps/desktop/sentinel/native/graphics/packaging/klipper/**',
+              'apps/desktop/sentinel/native/graphics/patches/klipper/**',
+              'apps/desktop/sentinel/native/workspace-images/bases.json') }}
+          restore-keys: |
+            guest-graphics-${{ runner.os }}-${{ runner.arch }}-v4-
+            guest-graphics-${{ runner.os }}-${{ runner.arch }}-v3-
 
       # Run even on a cache hit: build-guest validates the archive checksum and inputs.
-      - name: Build both guest distributions
+      - name: Build kernel and guest graphics
         working-directory: apps/desktop/sentinel
         run: |
+          python3 scripts/packaging/graphics/build-guest.py build/guest-graphics kernel
           python3 scripts/packaging/graphics/build-guest.py build/guest-graphics musl
           python3 scripts/packaging/graphics/build-guest.py build/guest-graphics glibc
+          python3 scripts/packaging/graphics/build-guest.py build/guest-graphics gpu-2404
+          python3 scripts/packaging/graphics/build-guest.py build/guest-graphics klipper-alpine
+          python3 scripts/packaging/graphics/build-guest.py build/guest-graphics klipper-debian
+          python3 scripts/packaging/graphics/build-guest.py build/guest-graphics klipper-ubuntu
       - uses: actions/upload-artifact@v7
         with:
           name: guest-graphics-arm64
           path: apps/desktop/sentinel/build/guest-graphics/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Build native-init workspace OCI images
+        working-directory: apps/desktop/sentinel
+        run: |
+          test "$(uname -m)" = aarch64
+          workspace_buildkit_image="$(python3 -c 'import json; print(json.load(open("native/workspace-images/bases.json"))["buildkit_image"])')"
+          docker buildx create --name sentinel-workspace-images --driver docker-container --driver-opt "image=$workspace_buildkit_image"
+          trap 'docker buildx rm sentinel-workspace-images' EXIT
+          docker buildx inspect --bootstrap sentinel-workspace-images
+          python3 scripts/packaging/workspace-images/build.py build/workspace-images-ci --builder sentinel-workspace-images
+      - uses: actions/upload-artifact@v7
+        with:
+          name: workspace-images-arm64
+          path: apps/desktop/sentinel/build/workspace-images-ci/
           if-no-files-found: error
           retention-days: 7
 
@@ -144,6 +197,7 @@ jobs:
     env:
       SENTINEL_BUILD_CHANNEL: beta
       SENTINEL_GUEST_GRAPHICS_DIR: ${{ github.workspace }}/apps/desktop/sentinel/build/guest-graphics
+      SENTINEL_WORKSPACE_IMAGES_DIR: ${{ github.workspace }}/apps/desktop/sentinel/build/workspace-images-ci
       SENTINEL_FRONTEND_DIST: ${{ github.workspace }}/apps/frontend/sentinel/dist
       SENTINEL_INTERNAL_BUILD: '1'
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
@@ -177,7 +231,7 @@ jobs:
           path: |
             apps/desktop/sentinel/build/macos-arm64/runtime
             apps/desktop/sentinel/build/macos-arm64/stamps
-          key: native-runtime-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.image }}-xcode26.3-v2-${{ hashFiles('apps/desktop/sentinel/runtime.lock.json', 'apps/desktop/sentinel/native/**', 'apps/desktop/sentinel/packaging/**', 'apps/desktop/sentinel/scripts/packaging/platforms/**', 'apps/desktop/sentinel/scripts/packaging/graphics/**') }}
+          key: native-runtime-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.image }}-xcode26.3-v2-${{ hashFiles('apps/desktop/sentinel/runtime.lock.json', 'apps/desktop/sentinel/native/**', 'apps/desktop/sentinel/packaging/**', 'apps/desktop/sentinel/scripts/packaging/platforms/**', 'apps/desktop/sentinel/scripts/packaging/graphics/**', 'apps/desktop/sentinel/scripts/packaging/workspace-images/**') }}
           restore-keys: |
             native-runtime-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.image }}-xcode26.3-v2-
             native-runtime-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.image }}-xcode26.3-v1-
@@ -200,15 +254,27 @@ jobs:
           name: guest-graphics-arm64
           path: apps/desktop/sentinel/build/guest-graphics
 
+      - uses: actions/download-artifact@v8
+        with:
+          name: workspace-images-arm64
+          path: apps/desktop/sentinel/build/workspace-images-ci
 
       - uses: actions/download-artifact@v8
         with:
           name: frontend-dist
           path: apps/frontend/sentinel/dist
       - name: Prepare runtime
+        run: npm run desktop:prepare
+      - name: Test native desktop transport
+        if: matrix.artifact == 'installer'
         run: |
-          brew install ninja pkg-config
-          npm run desktop:prepare
+          swift test --package-path native/macos --scratch-path build/macos-arm64/swift --force-resolved-versions --jobs 4
+          python3 scripts/packaging/graphics/host.py build/graphics-tests/libraries
+          python3 -m unittest discover -s tests/native -p 'test_*.py'
+          python3 -m unittest discover -s tests/graphics/host -p 'test_*.py'
+          python3 -m unittest discover -s tests/graphics/host/mesa -p 'test_*.py'
+          SENTINEL_TRANSPORT_SANITIZERS=1 python3 -m unittest discover -s tests/graphics/transport -p 'test_*.py'
+          PATH="$PWD/build/graphics-sources/venv/bin:$PATH" sh tests/graphics/guest/run.sh
       - name: Build and verify installer
         if: matrix.artifact == 'installer'
         run: |
