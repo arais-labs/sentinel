@@ -37,6 +37,22 @@ async function fixture(t) {
   return { ...f, root, lifecycle, id: randomUUID() };
 }
 
+test('explicit Alpine reinstall replaces the previous distribution and persists it', async t => {
+  const { lifecycle, calls, gate, id, root } = await fixture(t);
+  await lifecycle.prepare(id, '/project', ['git'], false, undefined, undefined, 'ubuntu');
+  gate.resolve();
+  await until(() => lifecycle.status().states[id].state === 'running');
+  calls.length = 0;
+  await lifecycle.prepare(id, '/project', ['git'], true, undefined, undefined, 'alpine');
+  await until(() => lifecycle.status().states[id].state === 'running');
+  const operations = calls.filter(Array.isArray);
+  assert.equal(operations[0][0], 'delete');
+  assert.equal(operations[1][0], 'start');
+  assert.equal(operations[1][1].distribution ?? 'alpine', 'alpine');
+  await lifecycle.close();
+  assert.equal(JSON.parse(await readFile(path.join(root, 'workspaces.json'), 'utf8'))[id].distribution, 'alpine');
+});
+
 test('explicit reinstall deletes only owned VM before rebuilding and preserves settings', async t => {
   const { lifecycle, calls, gate, id } = await fixture(t);
   const resources = {cpus:4, memory_gib:8, disk_gib:64};
@@ -70,8 +86,9 @@ test('failed reinstall never starts after delete failure or repeats deletion on 
   await lifecycle.prepare(id, '/project', [], true);
   await until(() => lifecycle.status().states[id].state === 'failed');
   assert.equal(calls.filter(value => Array.isArray(value) && value[0] === 'start').length, 0);
-  await lifecycle.prepare(id, '/project', []);
-  await until(() => lifecycle.status().states[id].state === 'running');
+  await assert.rejects(lifecycle.prepare(id, '/project', []), /Confirm Reinstall/);
+  assert.equal(lifecycle.status().states[id].state, 'failed');
+  assert.equal(calls.filter(value => Array.isArray(value) && value[0] === 'start').length, 0);
   assert.equal(calls.filter(value => Array.isArray(value) && value[0] === 'delete').length, 1);
 });
 
@@ -432,7 +449,7 @@ test('distribution survives restarts and cannot reinterpret an existing disk', a
   assert.equal(calls.find(call => Array.isArray(call) && call[0] === 'start')[1].distribution, 'ubuntu');
   await lifecycle.stop(id);
   assert.equal(JSON.parse(await readFile(path.join(root, 'workspaces.json'), 'utf8'))[id].distribution, 'ubuntu');
-  await assert.rejects(lifecycle.prepare(id, '/project', ['git'], false, undefined, undefined, 'debian'), /new workspace/);
+  await assert.rejects(lifecycle.prepare(id, '/project', ['git'], false, undefined, undefined, 'debian'), /Reinstall this workspace to change its distribution/);
   await assert.rejects(lifecycle.prepare(id, '/project', ['git', 'unknown']), /Unknown workspace tools/);
   await lifecycle.prepare(id, '/project', ['git']);
   await until(() => lifecycle.status().states[id].state === 'running');

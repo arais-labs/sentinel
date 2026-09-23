@@ -205,8 +205,7 @@ async def reinstall(
                 "distribution": distribution
                 or _workspace_distributions.get(str(workspace_id), "alpine")
             }
-            if (distribution or _workspace_distributions.get(str(workspace_id), "alpine"))
-            != "alpine"
+            if distribution is not None or str(workspace_id) in _workspace_distributions
             else {}
         ),
         workspace=str(workspace_id),

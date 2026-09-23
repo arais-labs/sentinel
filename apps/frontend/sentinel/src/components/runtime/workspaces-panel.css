@@ -178,6 +178,9 @@
 
 
 .workspace-library-specs { display: flex; flex-wrap: wrap; gap: 6px 18px; padding: 0 20px 16px; color: var(--text-secondary); font-size: 11px; }
+.workspace-library-environment { display: flex; flex-wrap: wrap; gap: 8px; padding: 0 20px 16px; }
+.workspace-library-environment > span { display: inline-flex; align-items: center; gap: 8px; padding: 6px 10px; border: 1px solid var(--border-subtle); border-radius: 999px; color: var(--text-secondary); font-size: 12px; line-height: 18px; }
+.workspace-library-environment img { width: 18px; height: 18px; object-fit: contain; flex-shrink: 0; }
 
 .workspace-container-message { margin: 0 24px 16px; color: var(--text-secondary); font-size: 11px; line-height: 1.5; }
 

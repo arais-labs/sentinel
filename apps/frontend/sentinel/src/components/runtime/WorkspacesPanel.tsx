@@ -5,9 +5,11 @@ import { RuntimeUpdateNotice } from './RuntimeUpdateNotice';
 import { WorkspaceRemovalDialog } from './WorkspaceRemovalDialog';
 import { WorkspaceReinstallDialog } from './WorkspaceReinstallDialog';
 import { toolNames, toolLogos } from './workspaceTools';
+import { distributionLogos, distributionNames } from './workspaceDistributions';
+import { workspaceDesktops } from './workspaceDesktops';
 import { useEffect, useState } from 'react';
 import { useWorkspaceLibrary } from './useWorkspaceLibrary';
-import { Code2, FolderOpen, Server, Plus, Pencil, Trash2, Loader2, Play, Square, RefreshCw, Wrench, Search, ChevronDown } from 'lucide-react';
+import { Code2, FolderOpen, Server, Plus, Pencil, Trash2, Loader2, Play, Square, RefreshCw, Wrench, Search, ChevronDown, Monitor, Terminal } from 'lucide-react';
 import { notificationPublisher } from '../../lib/notifications';
 import { MachinesPanel } from './MachinesPanel';
 import { WorkspaceEditor, type WorkspaceDraft } from './WorkspaceEditor';
@@ -106,6 +108,13 @@ export function WorkspacesPanel({ onboarding = false, onAddMachine, page = false
             <div className="workspace-library-icon"><FolderOpen size={22} strokeWidth={1.6} /></div>
             <div className="workspace-library-identity"><h2 title={space.name}>{space.name}</h2><span className="workspace-library-machine"><Server size={12} />{machines.find(m => m.id === space.machine_id)?.name ?? (machinesLoading ? 'Loading machine…' : 'Machine unavailable')}</span></div>
             <div className="workspace-container-status" data-state={space.container_state || 'stopped'} role="status">{['checking', 'preparing', 'recovering'].includes(space.container_state || '') ? <Loader2 size={13} className="animate-spin shrink-0" /> : <span className="workspace-container-dot" />}<span>{space.container_state === 'preparing' ? 'Preparing' : ({ checking: 'Checking connection…', running: 'Running', stopped: 'Stopped', stopping: 'Stopping', recovering: 'Recovering', failed: 'Needs attention', unavailable: 'Runtime unavailable' })[space.container_state || 'stopped']}</span></div>
+          </div>
+          <div className="workspace-library-environment" aria-label="Workspace environment">
+            <span><img src={distributionLogos[space.distribution ?? 'alpine']} alt="" />{distributionNames[space.distribution ?? 'alpine']}</span>
+            <span>{workspaceDesktops[space.desktop ?? 'none'].logo
+              ? <img src={workspaceDesktops[space.desktop ?? 'none'].logo} alt="" />
+              : space.desktop && space.desktop !== 'none' ? <Monitor size={16} aria-hidden="true" /> : <Terminal size={16} aria-hidden="true" />}
+              {space.desktop && space.desktop !== 'none' ? workspaceDesktops[space.desktop].name.split(' · ')[0] : 'No desktop'}</span>
           </div>
           {space.container_message && <p className="workspace-container-message">{space.container_message}</p>}
           {space.runtime_update ? <div className="workspace-container-error"><RuntimeUpdateNotice requirement={space.runtime_update} machineId={space.machine_id} onUpdated={reload} /></div>

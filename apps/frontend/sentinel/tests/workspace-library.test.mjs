@@ -28,13 +28,17 @@ test('a fresh client discovers worker workspaces and keeps them when disconnecte
         if (url.endsWith('/workspaces/discover/worker')) return window.workerDisconnected
           ? response({ detail: 'Worker disconnected' }, 503)
           : response([{ id: 'workspace', name: 'Discovered project', machine_id: 'worker', directory: '/remote/project',
-            distribution: 'ubuntu', development_tools: ['git'], revision: 7, container_state: 'running' }]);
+            distribution: 'ubuntu', desktop: 'gnome', development_tools: ['git'], revision: 7, container_state: 'running' }]);
         throw new Error(`Unexpected request: ${url}`);
       };
     });
     await page.goto(`${server.resolvedUrls.local[0]}tests/fixtures/workspace-library.html`);
     const card = page.locator('article').filter({ hasText: 'Discovered project' });
     await card.getByText('Running', { exact: true }).waitFor();
+    await card.getByText('Ubuntu', { exact: true }).waitFor();
+    await card.getByText('GNOME', { exact: true }).waitFor();
+    assert.equal(await card.locator('.workspace-library-environment img').count(), 2);
+    await card.locator('.workspace-library-environment img').evaluateAll(images => Promise.all(images.map(image => image.decode())));
     assert.equal(await card.getByText('/remote/project', { exact: true }).isVisible(), true);
     await page.getByRole('searchbox', { name: 'Search workspaces' }).fill('  REMOTE/PROJECT  ');
     await page.getByRole('combobox', { name: 'Filter by machine' }).selectOption('worker');

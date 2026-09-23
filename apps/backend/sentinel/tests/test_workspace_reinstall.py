@@ -10,6 +10,22 @@ from tests.test_workspace_removal import linked_workspace
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("previous", ["ubuntu", "debian", "alpine"])
+async def test_reinstall_forwards_explicit_alpine_instead_of_retaining_previous_os(
+    monkeypatch, previous
+):
+    from uuid import uuid4
+
+    workspace_id = uuid4()
+    monkeypatch.setitem(containers._workspace_distributions, str(workspace_id), previous)
+    request = AsyncMock(return_value={})
+    monkeypatch.setattr(containers, "request", request)
+    await containers.reinstall(workspace_id, "/project", ["git"], distribution="alpine")
+    assert request.await_args.kwargs["distribution"] == "alpine"
+    assert request.await_args.kwargs["confirmed"] is True
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("revision", [None, 6, 7])
 async def test_remote_reinstall_uses_reviewed_revision_and_worker_defaults(
     workspace_app, monkeypatch, revision

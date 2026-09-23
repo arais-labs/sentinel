@@ -8,13 +8,10 @@ import { MachineFolderPicker } from './MachineFolderPicker';
 import { DesktopPreview } from './DesktopPreview';
 import { workspaceDesktopChoices, workspaceDesktops } from './workspaceDesktops';
 import { toolLogos } from './workspaceTools';
-import alpineLogo from '../../assets/distro-logos/alpine.svg';
-import ubuntuLogo from '../../assets/distro-logos/ubuntu.svg';
-import debianLogo from '../../assets/distro-logos/debian.svg';
+import { distributionLogos } from './workspaceDistributions';
 import './workspace-editor.css';
 import { projectDirectoryError } from './workspaceValidation';
 
-const distributionLogos = { alpine: alpineLogo, ubuntu: ubuntuLogo, debian: debianLogo };
 
 type Tool = { id: string; name: string; detail: string; category: string };
 type Stack = { id: string; name: string; description: string; tools: string[] };
