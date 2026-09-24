@@ -14,7 +14,7 @@ const resources = path.resolve('apps/desktop/sentinel/build/macos-arm64/runtime/
 const manifest = JSON.parse(await readFile(path.join(resources, 'manifest.json'), 'utf8'));
 const kernel = path.join(homedir(), 'Library/Application Support/Sentinel Dev/state/workspace-runtime/kernels', manifest.kernelFileSha256, 'kernel');
 const runtime = new WorkspaceRuntime({ command: path.join(resources, 'sentinel-workspace-runtime'),
-  args: [root, kernel, manifest.initImage, manifest.workspaceImage], onProgress: console.log, onFailure: console.error, log: console.error });
+  args: [root, kernel, manifest.initImage], onProgress: console.log, onFailure: console.error, log: console.error });
 const socket = `/tmp/sentinel-pty-test-${randomUUID()}.sock`;
 async function exec(arguments_) {
   const result = await runtime.request('exec', { workspace, arguments: arguments_, timeout: 20 });

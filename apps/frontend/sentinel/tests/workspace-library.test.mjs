@@ -22,20 +22,34 @@ test('a fresh client discovers worker workspaces and keeps them when disconnecte
       const response = (data, status = 200) => new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json' } });
       window.fetch = async input => {
         const url = String(input);
-        if (url.endsWith('/machines')) return response([{ id: 'worker', name: 'Work Mac', provider: 'ssh' }]);
+        if (url.endsWith('/machines')) return response([{ id: 'worker', name: 'Work Mac', provider: 'ssh' }, { id: 'local', name: 'Local Mac', provider: 'local' }]);
         if (url.endsWith('/machines/capabilities')) return response({ providers: [] });
         if (url.endsWith('/workspaces?include_runtime=false')) return response([]);
         if (url.endsWith('/workspaces/discover/worker')) return window.workerDisconnected
           ? response({ detail: 'Worker disconnected' }, 503)
           : response([{ id: 'workspace', name: 'Discovered project', machine_id: 'worker', directory: '/remote/project',
-            distribution: 'ubuntu', development_tools: ['git'], revision: 7, container_state: 'running' }]);
+            distribution: 'ubuntu', desktop: 'gnome', development_tools: ['git'], revision: 7, container_state: 'running' }]);
         throw new Error(`Unexpected request: ${url}`);
       };
     });
     await page.goto(`${server.resolvedUrls.local[0]}tests/fixtures/workspace-library.html`);
     const card = page.locator('article').filter({ hasText: 'Discovered project' });
     await card.getByText('Running', { exact: true }).waitFor();
+    await card.getByText('Ubuntu', { exact: true }).waitFor();
+    await card.getByText('GNOME', { exact: true }).waitFor();
+    assert.equal(await card.locator('.workspace-library-environment img').count(), 2);
+    await card.locator('.workspace-library-environment img').evaluateAll(images => Promise.all(images.map(image => image.decode())));
     assert.equal(await card.getByText('/remote/project', { exact: true }).isVisible(), true);
+    await page.getByRole('searchbox', { name: 'Search workspaces' }).fill('  REMOTE/PROJECT  ');
+    await page.getByRole('combobox', { name: 'Filter by machine' }).selectOption('worker');
+    assert.equal(await page.locator('article').count(), 1);
+    await page.getByRole('combobox', { name: 'Filter by machine' }).selectOption('local');
+    await page.getByText('No matching workspaces', { exact: true }).waitFor();
+    assert.equal(await page.locator('article').count(), 0);
+    await page.getByRole('button', { name: 'Clear filters', exact: true }).click();
+    assert.equal(await page.getByRole('searchbox', { name: 'Search workspaces' }).inputValue(), '');
+    assert.equal(await page.getByRole('combobox', { name: 'Filter by machine' }).inputValue(), '');
+    assert.equal(await page.locator('article').count(), 1);
     await page.evaluate(() => { window.workerDisconnected = true; window.refreshLibrary(); });
     await card.getByText('Worker disconnected', { exact: true }).waitFor();
     assert.equal(await page.locator('article').count(), 1);

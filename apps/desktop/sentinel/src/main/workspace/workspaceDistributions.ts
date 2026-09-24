@@ -1,11 +1,11 @@
 /** Package names for the ARM64 apt-based workspace images. Alpine keeps its existing recipes. */
 export type WorkspaceDistribution = 'alpine' | 'ubuntu' | 'debian';
+// These selected stacks explicitly depend on Docker; an ordinary Linux
+// workspace or desktop does not. k3s currently uses the k3d implementation.
+export function requiresDocker(tools: string[]): boolean {
+  return tools.some(tool => ['docker-builder', 'kind', 'k3s', 'postgres', 'mysql', 'redis'].includes(tool));
+}
 export const aptToolPackages: Record<string, string[]> = {
-  desktop: ['tigervnc-standalone-server', 'xfce4', 'xfce4-terminal', 'xfce4-whiskermenu-plugin',
-    'greybird-gtk-theme', 'numix-gtk-theme', 'papirus-icon-theme', 'python3-xlib', 'python3-pil', 'xdotool',
-    'dbus', 'dbus-x11', 'x11-utils', 'x11-xserver-utils', 'fonts-dejavu', 'fonts-noto-core',
-    'mesa-utils', 'libegl1', 'libgl1-mesa-dri', 'libxshmfence1', 'libdrm2', 'libzstd1',
-    'libexpat1', 'libx11-6', 'libx11-xcb1', 'libxcb-keysyms1', 'libxext6', 'libxcb1', 'libxcb-dri3-0', 'libxcb-present0', 'libxcb-sync1', 'libxfixes3'],
   kind: [], k3s: [], kubectl: [], helm: [], 'docker-builder': [],
   bun: ['libstdc++6'], deno: ['libstdc++6'], uv: ['python3'], dotnet: ['libgcc-s1', 'libstdc++6', 'libgssapi-krb5-2', 'zlib1g', 'libssl3t64'],
   pnpm: ['libstdc++6'], yarn: ['libstdc++6'], typescript: ['libstdc++6'], chromium: ['libstdc++6'],
@@ -24,11 +24,15 @@ export function aptPackages(tools: string[], distribution: WorkspaceDistribution
   if (tools.some(tool => !Object.hasOwn(aptToolPackages, tool))) throw new Error(`Selected tools are not supported on ${distribution}`);
   return [...new Set([
     'tar', 'gzip', 'xz-utils', 'unzip', 'bash', 'tmux', 'git', 'curl', 'python3', 'ca-certificates', 'coreutils', 'findutils',
-    'util-linux', 'socat', 'gh', 'ripgrep', 'jq', 'docker.io', 'iptables', 'iproute2',
-    distribution === 'ubuntu' ? 'docker-compose-v2' : 'docker-compose',
-    ...(distribution === 'debian' ? ['docker-cli'] : []),
-    ...(tools.includes('dotnet') ? [distribution === 'ubuntu' ? 'libicu74' : 'libicu76'] : []),
-    ...tools.flatMap(tool => aptToolPackages[tool]),
+    'util-linux', 'socat', 'gh', 'ripgrep', 'jq',
+    ...(requiresDocker(tools) ? ['docker.io', 'iptables', 'iproute2',
+      distribution === 'ubuntu' ? 'docker-compose-v2' : 'docker-compose',
+      ...(distribution === 'debian' ? ['docker-cli'] : []),
+    ] : []),
+    ...(tools.includes('dotnet') ? [distribution === 'ubuntu' ? 'libicu78' : 'libicu76'] : []),
+    ...tools.flatMap(tool => tool === 'chromium'
+      ? distribution === 'debian' ? ['chromium'] : ['snapd', 'apparmor']
+      : aptToolPackages[tool]),
   ])].sort();
 }
 export const aptInstall = `
@@ -55,6 +59,4 @@ if [ "$missing" = 1 ] || [ "$reinstall" = 1 ]; then
     apt-get -o DPkg::Lock::Timeout=120 install -y --no-install-recommends "$@"
   fi
 fi
-# PID 1 starts Docker only once the package transaction has completed.
-touch /run/sentinel-docker-ready
 `;

@@ -9,6 +9,7 @@ from typing import Any
 
 from app.services.browser.manager import BrowserManager
 from app.services.runtime.desktop import RuntimeDesktopManager
+from app.services.runtime.container_transport import ContainerTransport
 from app.services.runtime.guest_commands import guest_python_command
 import app.services.runtime.ssh_runtime as ssh_runtime
 from app.services.runtime.terminal_manager import RuntimeTerminalManager
@@ -209,12 +210,21 @@ class BrowserPool:
         )
 
     async def _stop_remote(self, session_id: str, *, instance_name: str | None) -> None:
-        runtime = await self._runtime(session_id=session_id, instance_name=instance_name)
-        command = _build_browser_stop_command(session_id, root=runtime.workspace_location)
-        await runtime.terminal_manager.ssh.run(
-            command,
-            timeout=30,
+        terminal = self._terminal_manager or await ssh_runtime.get_runtime_terminal_manager(
+            session_id=session_id, instance_name=instance_name
         )
+        command = _build_browser_stop_command(
+            session_id, root=self._workspace_location or terminal.workspace_location
+        )
+        transport = terminal.ssh
+        run = (
+            transport.run_if_running if isinstance(transport, ContainerTransport) else transport.run
+        )
+        result = await run(command, timeout=30)
+        if result is not None and result.exit_status not in {0, None}:
+            raise BrowserPoolError(
+                (result.stderr or result.stdout or "Browser cleanup failed").strip()[:1200]
+            )
 
     async def _reset_remote(self, session_id: str, *, instance_name: str | None) -> None:
         runtime = await self._runtime(session_id=session_id, instance_name=instance_name)

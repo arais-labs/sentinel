@@ -1,9 +1,13 @@
 import Foundation
+import Darwin
 import Synchronization
 struct RuntimeError: Error { init(_ message: String) {} }
 struct Response: Encodable { var id: String?; var event: String? }
 @main struct Harness {
     static func main() async throws {
+        // Match Runtime.main: a disconnected socket is an IO error, not a
+        // process-terminating signal. This harness bypasses that entry point.
+        signal(SIGPIPE, SIG_IGN)
         if CommandLine.arguments.count == 3 && CommandLine.arguments[1] == "--ping" {
             try RemoteControl.ping(path: CommandLine.arguments[2])
             return

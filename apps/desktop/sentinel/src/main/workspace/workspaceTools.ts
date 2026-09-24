@@ -1,21 +1,15 @@
 import { binaryToolSteps } from './workspaceBinaryTools.js';
-import { aptPackages, aptInstall, validateDistribution, type WorkspaceDistribution } from './workspaceDistributions.js';
+import { browserSetupSteps, validateBrowser, type WorkspaceBrowser } from './workspaceBrowsers.js';
+import { aptPackages, aptInstall, requiresDocker, validateDistribution, type WorkspaceDistribution } from './workspaceDistributions.js';
 import { clusterSetupSteps } from './workspaceClusters.js';
 // Package names target the workspace image's Alpine stable repositories.
+// Chromium includes the separate renderer used by Alpine's default headless mode.
 export const toolPackages: Record<string, string[]> = {
   "kind": ["kubectl"],
   "k3s": ["kubectl"],
   "kubectl": ["kubectl"],
   "helm": ["helm"],
   "docker-builder": [],
-  "desktop": [
-    "tigervnc", "xfce4", "xfce4-terminal", "xfce4-whiskermenu-plugin",
-    "greybird-themes", "greybird-themes-gtk3", "numix-themes-xfwm4", "papirus-icon-theme",
-    "py3-xlib", "py3-pillow", "xdotool",
-    "dbus", "dbus-x11", "xdpyinfo", "xrandr", "font-dejavu", "font-noto", "chromium",
-    "mesa-utils", "mesa-egl", "mesa-dri-gallium", "libxshmfence", "libdrm", "zstd-libs",
-    "expat", "libx11", "libxext", "libxcb"
-  ],
   "git": [
     "git"
   ],
@@ -115,7 +109,8 @@ export const toolPackages: Record<string, string[]> = {
     "ninja-is-really-ninja"
   ],
   "chromium": [
-    "chromium"
+    "chromium",
+    "chromium-swiftshader"
   ],
   "postgres": [
     "postgresql18-client"
@@ -199,29 +194,44 @@ docker compose -p sentinel-services --env-file credentials.env -f compose.json u
 `;
 }
 
-export function workspaceSetupSteps(tools: string[], { reinstall = false, distribution = 'alpine' }: { reinstall?: boolean; distribution?: WorkspaceDistribution } = {}): SetupStep[] {
+export function workspaceSetupSteps(tools: string[], { reinstall = false, distribution = 'alpine', browser }: { reinstall?: boolean; distribution?: WorkspaceDistribution; browser?: WorkspaceBrowser } = {}): SetupStep[] {
   validateDistribution(distribution);
+  if (browser) {
+    validateBrowser(browser, distribution);
+  }
+  tools = [...new Set([...tools, 'chromium'])];
+  const docker = requiresDocker(tools);
+  const dockerService: SetupStep = {
+    message: 'Starting Docker for your selected stack…',
+    arguments: ['sh', '-ec', `${distribution === 'alpine'
+      ? 'rc-update add docker default\nrc-service docker start'
+      : 'systemctl enable --now docker.service'}
+for i in $(seq 1 30); do timeout 2 docker info >/dev/null 2>&1 && exit 0; sleep 1; done
+exec timeout 3 docker info`], timeout: 120,
+  };
   if (distribution !== 'alpine') {
     const steps: SetupStep[] = [{ message: reinstall ? 'Reinstalling workspace tools…' : 'Installing your selected tools…', arguments: ['sh', '-ec', aptInstall, 'sentinel', reinstall ? '1' : '0', ...aptPackages(tools, distribution)], timeout: 900 }];
-    steps.push({ message: 'Checking your workspace…', arguments: ['sh', '-ec', 'for i in $(seq 1 30); do timeout 2 docker info >/dev/null 2>&1 && exit 0; sleep 1; done; exec timeout 3 docker info'], timeout: 120 });
-    steps.push(...binaryToolSteps(tools));
+    if (docker) steps.push(dockerService);
+    steps.push(...binaryToolSteps(tools, distribution));
     if (tools.some(tool => Object.hasOwn(serviceDefinitions, tool))) steps.push({ message: 'Preparing your database services…', arguments: ['sh', '-ec', servicesScript(tools)], timeout: 900 });
     steps.push(...clusterSetupSteps(tools));
+    if (browser) steps.push(...browserSetupSteps(browser, distribution));
     return steps;
   }
   if (tools.some(tool => !Object.hasOwn(toolPackages, tool))) throw new Error('Unknown workspace tools');
-  const selected = [...new Set([...baselinePackages, ...tools.flatMap(tool => toolPackages[tool])])].sort();
+  const selected = [...new Set([...baselinePackages,
+    ...(docker ? ['docker', 'docker-openrc', 'docker-cli-compose', 'docker-cli-buildx', 'iptables', 'iproute2'] : []),
+    ...tools.flatMap(tool => toolPackages[tool])])].sort();
   const steps: SetupStep[] = [{ message: reinstall ? 'Reinstalling workspace tools…' : 'Installing your selected tools…', arguments: [
     'sh', '-ec', reinstall ? 'exec apk add --no-cache --upgrade "$@"' : 'apk info -e "$@" >/dev/null 2>&1 || exec apk add --no-cache "$@"', 'sentinel', ...selected,
   ], timeout: 600 }];
   if (tools.includes('clang')) steps.push({ message: 'Configuring Clang…', arguments: ['sh', '-ec', 'for name in clang clang++; do command -v "$name" >/dev/null || ln -s /usr/lib/llvm21/bin/"$name" /usr/local/bin/"$name"; done'], timeout: 10 });
   if (tools.includes('bun')) steps.push({ message: 'Installing Bun…', arguments: ['sh', '-ec', bunInstall], timeout: 360 });
-  steps.push({ message: 'Checking your workspace…', arguments: [
-    'sh', '-ec', 'for i in $(seq 1 20); do timeout 2 docker info >/dev/null 2>&1 && exit 0; sleep 1; done; exec timeout 3 docker info',
-  ], timeout: 90 });
+  if (docker) steps.push(dockerService);
   if (tools.some(tool => Object.hasOwn(serviceDefinitions, tool))) steps.push({
     message: 'Preparing your database services…', arguments: ['sh', '-ec', servicesScript(tools)], timeout: 900,
   });
   steps.push(...clusterSetupSteps(tools));
+  if (browser) steps.push(...browserSetupSteps(browser, distribution));
   return steps;
 }

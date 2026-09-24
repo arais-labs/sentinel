@@ -1,25 +1,17 @@
-"""Workspace-only X11 controller. Sent over the existing container transport.
+"""Workspace computer batches: validated, cancellable, never automatically replayed."""
 
-XGetImage reads the root framebuffer; XTEST injects pointer/buttons/key chords.
-xdotool handles Unicode typing through X keyboard mappings (never a shell).
-"""
-
-import base64
 import fcntl
-import io
 import json
 import os
 from pathlib import Path
 import re
 import signal
-import subprocess
 import sys
 import time
 from uuid import UUID
 
-from Xlib import X, XK, display
-from Xlib.ext import xtest
-from PIL import Image
+sys.path.insert(0, "/opt/sentinel/desktop")
+from sentinel_display import Desktop
 
 
 def integer(value, name, low, high):
@@ -81,137 +73,6 @@ def validate(request, width, height):
     return actions
 
 
-class Desktop:
-    def __init__(self):
-        self.X, self.XK, self.xtest, self.Image = X, XK, xtest, Image
-        self.display = display.Display(":1")
-        if not self.display.has_extension("XTEST"):
-            raise RuntimeError("Workspace display does not support XTEST")
-        self.root = self.display.screen().root
-        self.held = []
-
-    def geometry(self):
-        geometry = self.root.get_geometry()
-        return geometry.width, geometry.height
-
-    def move(self, point):
-        self.xtest.fake_input(self.display, self.X.MotionNotify, x=point["x"], y=point["y"])
-        self.display.sync()
-
-    def press(self, kind, code):
-        self.held.append((kind, code))
-        self.xtest.fake_input(self.display, kind, code)
-        self.display.sync()
-
-    def release(self):
-        while self.held:
-            kind, code = self.held.pop()
-            self.xtest.fake_input(
-                self.display,
-                self.X.KeyRelease if kind == self.X.KeyPress else self.X.ButtonRelease,
-                code,
-            )
-        self.display.sync()
-
-    def keycodes(self, keys):
-        codes = [self.display.keysym_to_keycode(self.XK.string_to_keysym(key)) for key in keys]
-        if not all(codes):
-            raise ValueError("Unknown or unmapped X11 key name")
-        return codes
-
-    def execute(self, action):
-        kind = action["type"]
-        button = {"left": 1, "middle": 2, "right": 3}.get(action.get("button", "left"))
-        try:
-            if kind in {"move", "click", "double_click", "scroll"}:
-                self.move(action)
-            if kind in {"click", "double_click"}:
-                for _ in range(2 if kind == "double_click" else 1):
-                    self.press(self.X.ButtonPress, button)
-                    self.release()
-                    time.sleep(0.06)
-            elif kind == "drag":
-                self.move(action["path"][0])
-                self.press(self.X.ButtonPress, button)
-                for point in action["path"][1:]:
-                    self.move(point)
-                    time.sleep(0.01)
-            elif kind == "scroll":
-                code = {"up": 4, "down": 5, "left": 6, "right": 7}[action["direction"]]
-                for _ in range(action["ticks"]):
-                    self.press(self.X.ButtonPress, code)
-                    self.release()
-            elif kind == "keypress":
-                for code in self.keycodes(action["keys"]):
-                    self.press(self.X.KeyPress, code)
-            elif kind == "type":
-                # A pipe avoids command-line text exposure and shell interpolation.
-                subprocess.run(
-                    ["xdotool", "type", "--clearmodifiers", "--delay", "1", "--file", "-"],
-                    input=action["text"],
-                    text=True,
-                    check=True,
-                    timeout=8,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    env={**os.environ, "DISPLAY": ":1", "LC_ALL": "C.UTF-8"},
-                )
-            elif kind == "wait":
-                time.sleep(action["milliseconds"] / 1000)
-        finally:
-            self.release()
-
-    def screenshot(self):
-        width, height = self.geometry()
-        if width * height > 16_000_000:
-            raise RuntimeError("Desktop exceeds screenshot pixel limit")
-        raw = self.root.get_image(0, 0, width, height, self.X.ZPixmap, 0xFFFFFFFF)
-        info = self.display.display.info
-        fmt = next(f for f in info.pixmap_formats if f.depth == raw.depth)
-        visual = next(
-            v
-            for depth in self.display.screen().allowed_depths
-            for v in depth.visuals
-            if v.visual_id == self.display.screen().root_visual
-        )
-        if (visual.red_mask, visual.green_mask, visual.blue_mask) != (0xFF0000, 0xFF00, 0xFF):
-            raise RuntimeError("Unsupported desktop pixel masks")
-        if fmt.bits_per_pixel not in (24, 32):
-            raise RuntimeError("Unsupported desktop pixel format")
-        little = info.image_byte_order == self.X.LSBFirst
-        mode = (
-            ("BGRX" if little else "XRGB")
-            if fmt.bits_per_pixel == 32
-            else ("BGR" if little else "RGB")
-        )
-        stride = ((width * fmt.bits_per_pixel + fmt.scanline_pad - 1) // fmt.scanline_pad) * (
-            fmt.scanline_pad // 8
-        )
-        image = self.Image.frombytes("RGB", (width, height), raw.data, "raw", mode, stride, 1)
-        buffer = io.BytesIO()
-        image.save(buffer, format="PNG")
-        mime = "image/png"
-        if buffer.tell() > 1_400_000:
-            # Preserve exact coordinates; compress instead of silently resizing.
-            for quality in (85, 65, 45):
-                buffer = io.BytesIO()
-                image.save(buffer, format="JPEG", quality=quality)
-                mime = "image/jpeg"
-                if buffer.tell() <= 1_400_000:
-                    break
-        if buffer.tell() > 1_400_000:
-            raise RuntimeError("Screenshot exceeds attachment limit; reduce desktop resolution")
-        pointer = self.root.query_pointer()
-        return {
-            "viewport": {"width": width, "height": height},
-            "cursor": {"x": pointer.root_x, "y": pointer.root_y},
-            "screenshot": "data:"
-            + mime
-            + ";base64,"
-            + base64.b64encode(buffer.getvalue()).decode("ascii"),
-        }
-
-
 def main(request):
     if sys.platform != "linux":
         raise RuntimeError("Computer control only runs inside the Linux workspace")
@@ -258,8 +119,7 @@ def main(request):
             return result
         finally:
             if desktop is not None:
-                desktop.release()
-                desktop.display.close()
+                desktop.close()
             active.unlink(missing_ok=True)
             if cancel:
                 cancel.unlink(missing_ok=True)

@@ -43,7 +43,7 @@ def test_upgrade_preserves_all_rows_session_bindings_and_indexes(tmp_path):
         indexes = db.execute(
             "SELECT name,sql FROM sqlite_master WHERE type='index' AND tbl_name='workspaces' AND sql IS NOT NULL"
         ).fetchall()
-        command.upgrade(config, "head")
+        command.upgrade(config, "0007_workspace_name_cache")
         assert snapshot(db) == before
         assert db.execute("PRAGMA foreign_key_check").fetchall() == []
         assert db.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
@@ -56,11 +56,11 @@ def test_upgrade_preserves_all_rows_session_bindings_and_indexes(tmp_path):
         # Re-run with the old revision marker, simulating a lost completion write.
         db.execute("UPDATE alembic_version SET version_num='0006_approval_session_cascade'")
         db.commit()
-        command.upgrade(config, "head")
+        command.upgrade(config, "0007_workspace_name_cache")
         assert snapshot(db) == before
         command.downgrade(config, "0006_approval_session_cascade")
         assert snapshot(db) == before
-        command.upgrade(config, "head")
+        command.upgrade(config, "0007_workspace_name_cache")
         db.execute(
             "INSERT INTO workspaces(id,name,machine_id,directory) VALUES(?,'Project',?,'/other')",
             (uuid4().hex, machine),

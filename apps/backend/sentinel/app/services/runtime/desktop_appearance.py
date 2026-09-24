@@ -93,7 +93,7 @@ def desktop_default_files() -> dict[str, str]:
         "xfce4-desktop": {
             "desktop-icons/style": 0,
             "backdrop/screen0/monitor__MONITOR__/workspace0/image-style": 5,
-            "backdrop/screen0/monitor__MONITOR__/workspace0/last-image": f"/root/{WALLPAPER}",
+            "backdrop/screen0/monitor__MONITOR__/workspace0/last-image": f"__HOME__/{WALLPAPER}",
             "backdrop/screen0/monitor__MONITOR__/workspace0/color-style": 0,
             "backdrop/screen0/monitor__MONITOR__/workspace0/rgba1": [
                 0.055,
@@ -108,6 +108,21 @@ def desktop_default_files() -> dict[str, str]:
         for name, values in channels.items()
     }
     files[WALLPAPER] = load_guest_command("linux/desktop/wallpaper.svg")
+    # A desktop-file ID resolves through XDG applications for the menu, whereas
+    # an XFCE panel launcher keeps its own desktop file in launcher-<plugin-id>.
+    # Only the panel needs a private entry. The application menu uses the
+    # authoritative system entry installed by workspace browser setup.
+    browser_launcher = """[Desktop Entry]
+Type=Application
+Name=Web Browser
+Comment=Open your preferred web browser
+Exec=sentinel-browser %U
+Icon=web-browser
+Terminal=false
+Categories=Network;WebBrowser;
+StartupNotify=true
+"""
+    files[".config/xfce4/panel/launcher-2/sentinel-browser.desktop"] = browser_launcher
     files[".config/gtk-3.0/settings.ini"] = """[Settings]
 gtk-theme-name=Greybird
 gtk-icon-theme-name=Papirus-Dark

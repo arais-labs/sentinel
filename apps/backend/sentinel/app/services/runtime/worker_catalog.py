@@ -22,12 +22,16 @@ async def cache_record(db, machine_id, workspace_id, record):
     row.name = spec["name"]
     row.directory = spec["project"]
     row.distribution = spec["distribution"]
+    row.desktop = spec["desktop"]
+    row.browser = spec.get("browser", "chromium")
     row.development_tools = spec["tools"]
-    workspace_containers.bind(row.id, machine_id, row.distribution)
+    workspace_containers.bind(row.id, machine_id, row.distribution, row.desktop, row.browser)
     return row
 
 
-async def configure(db, row, *, name, project, tools, resources, distribution, revision):
+async def configure(
+    db, row, *, name, project, tools, resources, distribution, desktop, revision, browser="chromium"
+):
     runtime = await remote_mac.get_runtime(row.machine_id)
     result = await runtime.operation(
         "configure",
@@ -37,6 +41,8 @@ async def configure(db, row, *, name, project, tools, resources, distribution, r
         tools=tools,
         resources=resources,
         distribution=distribution,
+        desktop=desktop,
+        browser=browser,
         revision=revision,
     )
     await cache_record(db, row.machine_id, row.id, result["workspaces"][str(row.id)])

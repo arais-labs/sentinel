@@ -1,6 +1,6 @@
 import type { SocketEvent } from '../../../../desktop/sentinel/src/shared/ipc';
 
-// WebSocket-shaped local channel for the session stream, xterm, and noVNC.
+// WebSocket-shaped local channel for sessions, terminals, and desktop video.
 export class DesktopSocket extends EventTarget implements WebSocket {
   readonly CONNECTING = 0;
   readonly OPEN = 1;
@@ -57,7 +57,7 @@ export class DesktopSocket extends EventTarget implements WebSocket {
   send(data: string | ArrayBufferLike | Blob | ArrayBufferView): void {
     if (this.readyState === this.CONNECTING) throw new DOMException('Socket is connecting', 'InvalidStateError');
     if (this.readyState !== this.OPEN) return;
-    // WebSocket.send captures bytes immediately. noVNC reuses its send buffer
+    // WebSocket.send captures bytes immediately. Binary producers may reuse buffers
     // after each call, so retaining a view until this queue runs corrupts frames.
     const snapshot = typeof data === 'string' || data instanceof Blob ? data
       : ArrayBuffer.isView(data)

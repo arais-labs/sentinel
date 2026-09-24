@@ -28,7 +28,7 @@ test('remote bridge discovers worker configuration and disconnect never changes 
   const workspaces = {};
   const remote = createServer(socket => {
     clients.add(socket); socket.on('close', () => clients.delete(socket));
-    socket.write('{"event":"ready"}\n');
+    socket.write('{"event":"ready","protocol_version":2}\n');
     createInterface({ input: socket }).on('line', line => {
       const value = JSON.parse(line); calls.push(value);
       if (value.action === 'workspace_configure') workspaces[value.workspace] = { spec: value.spec, revision: 1 };
@@ -49,8 +49,8 @@ test('remote bridge discovers worker configuration and disconnect never changes 
     assert.equal(calls.find(call => call.action === 'workspace_start').project, undefined);
     await post(registered.socket, { action: 'workspace_resume', approved_workspaces: [workspace] });
     assert.deepEqual(calls.find(call => call.action === 'workspace_resume').approved_workspaces, [workspace]);
-    await post(registered.socket, { action: 'graphics_start', workspace });
-    assert.equal(calls.filter(call => call.action === 'graphics_start').length, 1);
+    await post(registered.socket, { action: 'display_start', workspace });
+    assert.equal(calls.filter(call => call.action === 'display_start').length, 1);
     assert.equal(calls.some(call => call.action === 'process_start'), false, 'Viewer must not start a graphics relay back to itself');
     await post(registered.socket, { action: 'port_forward', workspace, port: 5901 });
     assert.equal(calls.find(call => call.action === 'port_forward').port, 5901);

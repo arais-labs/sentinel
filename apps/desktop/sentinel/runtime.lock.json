@@ -20,12 +20,6 @@
         "sourceUrl": "https://github.com/cli/cli/releases/download/v2.100.0/gh_2.100.0_macOS_arm64.zip",
         "sourceSha256": "45f9a62da2f6e641a7fad57e2ce39656dfd7ef331372d80a2a2aed65abb01642"
       },
-      "angle": {
-        "version": "electron-43.7.0",
-        "sourceUrl": "https://github.com/electron/electron/releases/download/v43.7.0/electron-v43.7.0-darwin-arm64.zip",
-        "sourceSha256": "a658b04dc0ad4e9f66abb1f297678a73cd639390c4c74ba1449bc4e85d0ecebf",
-        "archivePrefix": "Electron.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Libraries"
-      },
       "workspaceRuntime": {
         "containerizationVersion": "0.45.0",
         "kernelUrl": "https://github.com/kata-containers/kata-containers/releases/download/3.32.0/kata-static-3.32.0-arm64.tar.zst",
@@ -33,7 +27,8 @@
         "kernelFileSha256": "fb2cfb79eb1ae19447a85d75682d7fa5cfec97e24beb2609a492b806e8072c8d",
         "kernelArchivePath": "opt/kata/share/kata-containers/vmlinux-6.18.35-197-debug",
         "initImage": "ghcr.io/apple/containerization/vminit@sha256:aa6ab59d0938f7fadb54ac27e80959bdd2f1dafa8050011086d5f8ab1350fd6c",
-        "workspaceImage": "docker.io/library/docker@sha256:5efed980cba3fc126cf54e21a5a6ff8849d05b6e0623d6e7612f48e9cd6cd17e"
+        "buildImage": "docker.io/library/docker@sha256:5efed980cba3fc126cf54e21a5a6ff8849d05b6e0623d6e7612f48e9cd6cd17e",
+        "glibcBuildImage": "docker.io/library/ubuntu@sha256:224a1869083a311ef3f13648a154ba79832fbef6364d31493642ca03082da254"
       }
     }
   }

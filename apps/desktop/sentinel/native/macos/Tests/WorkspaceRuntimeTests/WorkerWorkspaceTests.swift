@@ -3,9 +3,87 @@ import Testing
 @testable import WorkspaceRuntime
 
 @MainActor struct WorkerWorkspaceTests {
+    @Test func workspaceQueueDoesNotBlockOtherWorkspacesAndKeepsFIFO() async {
+        let queue = RuntimeRequestQueue()
+        let started = AsyncStream<Void>.makeStream(), release = AsyncStream<Void>.makeStream()
+        let independent = AsyncStream<Void>.makeStream()
+        var events: [String] = []
+        queue.submit(workspace: "a", action: "start") {
+            events.append("a-start")
+            started.continuation.yield(())
+            for await _ in release.stream { break }
+            events.append("a-ready")
+        }
+        for await _ in started.stream { break }
+        queue.submit(workspace: "a", action: "stop") { events.append("a-stop") }
+        queue.submit(workspace: "b", action: "stop") {
+            events.append("b-stop")
+            independent.continuation.yield(())
+        }
+        for await _ in independent.stream { break }
+        #expect(events == ["a-start", "b-stop"])
+        release.continuation.yield(())
+        await queue.drain()
+        #expect(events == ["a-start", "b-stop", "a-ready", "a-stop"])
+    }
+
+    @Test func stopCancelsGraphicsBeforeStoppingTheWorkspace() async {
+        let queue = RuntimeRequestQueue(), started = AsyncStream<Void>.makeStream()
+        let blocked = AsyncStream<Void>.makeStream()
+        var events: [String] = []
+        queue.submit(workspace: "a", action: "graphics_install") {
+            started.continuation.yield(())
+            for await _ in blocked.stream { break }
+            #expect(Task.isCancelled)
+            events.append("cleanup")
+        }
+        for await _ in started.stream { break }
+        queue.submit(workspace: "a", action: "stop") { events.append("stop") }
+        await queue.drain()
+        #expect(events == ["cleanup", "stop"])
+    }
+
+    @Test func workspaceAndCompilerImagePinsAreIndependent() throws {
+        let compiler = "docker.io/library/ubuntu@sha256:224a1869083a311ef3f13648a154ba79832fbef6364d31493642ca03082da254"
+        try WorkspaceDistribution.validateImageReference(compiler)
+        #expect(WorkspaceDistribution.ubuntu.command == ["/sbin/init"])
+        #expect(WorkspaceDistribution.debian.command == ["/sbin/init"])
+        #expect(WorkspaceDistribution.alpine.command == ["/sbin/openrc-init"])
+        #expect(WorkspaceDistribution.ubuntu.buildCommand == ["/bin/sleep", "infinity"])
+        for invalid in ["ubuntu:24.04", "ubuntu@sha256:123", "ubuntu @sha256:" + String(repeating: "a", count: 64)] {
+            #expect(throws: RuntimeError.self) {
+                try WorkspaceDistribution.validateImageReference(invalid)
+            }
+        }
+    }
+
+    @Test func desktopChoicesRoundTripWithoutRenamingSavedSelections() throws {
+        for value in ["none", "xfce", "weston", "lxqt", "gnome", "plasma"] {
+            let desktop = try JSONDecoder().decode(WorkspaceDesktop.self, from: Data("\"\(value)\"".utf8))
+            #expect(desktop.rawValue == value)
+            #expect(try JSONDecoder().decode(String.self, from: JSONEncoder().encode(desktop)) == value)
+        }
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder().decode(WorkspaceDesktop.self, from: Data("\"unknown\"".utf8))
+        }
+    }
+
     func spec(_ name: String = "Example") -> WorkerWorkspaceSpec {
         WorkerWorkspaceSpec(name: name, project: "/tmp/project", distribution: "ubuntu", tools: ["git"],
             resources: WorkerResources(), steps: [WorkerSetupStep(message: "Prepare", arguments: ["true"], timeout: 10)])
+    }
+
+    @Test func browserSelectionRoundTripsAndRejectsUnsupportedPackages() throws {
+        var value = spec()
+        for browser in ["chromium", "firefox", "chrome"] {
+            value.browser = browser
+            try value.validate()
+            #expect(try JSONDecoder().decode(WorkerWorkspaceSpec.self, from: JSONEncoder().encode(value)).browser == browser)
+        }
+        value.distribution = "alpine"
+        #expect(throws: RuntimeError.self) { try value.validate() }
+        value.browser = "unknown"
+        #expect(throws: RuntimeError.self) { try value.validate() }
     }
 
     func directory() throws -> URL {
@@ -50,7 +128,7 @@ import Testing
                 started.continuation.yield(())
                 for await _ in release.stream { break }
             }
-            if request.action == "exec" { finished.continuation.yield(()) }
+            if request.action == "browser_graphics_install" { finished.continuation.yield(()) }
             return Response(id: request.id, exitCode: 0)
         }
         _ = try worker.start(Request(id: "2", action: "workspace_start", workspace: id))
@@ -62,7 +140,9 @@ import Testing
         // No client object or transport is retained by the operation.
         release.continuation.yield(())
         for await _ in finished.stream { break }
-        #expect(calls.map(\.action) == ["start", "exec"])
+        #expect(calls.map(\.action) == ["start", "exec", "browser_graphics_install"])
+        #expect(calls.last?.workspace == id)
+        #expect(calls.last?.distribution == "ubuntu")
     }
 
     @Test func interruptedOperationIsNotReplayed() throws {
@@ -76,6 +156,109 @@ import Testing
         #expect(worker.catalog.workspaces[id]?.operation == nil)
         #expect(worker.catalog.workspaces[id]?.error?.contains("interrupted") == true)
         #expect(worker.catalog.workspaces[id]?.revision == 4)
+    }
+
+    @Test func reinstallRejectsUnreviewedStaleAndDuplicateSettingsBeforeDiskOperations() throws {
+        let root = try directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let worker = try WorkerWorkspaces(root: root), id = UUID().uuidString.lowercased()
+        let other = UUID().uuidString.lowercased()
+        _ = try worker.configure(Request(id: "a", action: "workspace_configure", workspace: id, spec: spec(), revision: 0))
+        _ = try worker.configure(Request(id: "b", action: "workspace_configure", workspace: other, spec: spec("Taken"), revision: 0))
+        let before = try Data(contentsOf: root.appendingPathComponent("workspaces.json"))
+        var calls = 0
+        worker.attach { request in calls += 1; return Response(id: request.id) }
+        for revision: Int? in [nil, 0] {
+            #expect(throws: RuntimeError.self) {
+                try worker.start(Request(id: "edit", action: "workspace_reinstall", workspace: id, spec: spec("New"), revision: revision, confirmed: true))
+            }
+        }
+        #expect(throws: RuntimeError.self) {
+            try worker.start(Request(id: "duplicate", action: "workspace_reinstall", workspace: id, spec: spec("Taken"), revision: 1, confirmed: true))
+        }
+        #expect(calls == 0)
+        #expect(try Data(contentsOf: root.appendingPathComponent("workspaces.json")) == before)
+    }
+
+    @Test func reinstallReservesNameUntilFailureAndReleasesItAfterwards() async throws {
+        let root = try directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let worker = try WorkerWorkspaces(root: root), id = UUID().uuidString.lowercased()
+        let other = UUID().uuidString.lowercased()
+        _ = try worker.configure(Request(id: "a", action: "workspace_configure", workspace: id, spec: spec(), revision: 0))
+        _ = try worker.configure(Request(id: "b", action: "workspace_configure", workspace: other, spec: spec("Other"), revision: 0))
+        let started = AsyncStream<Void>.makeStream(), release = AsyncStream<Void>.makeStream()
+        worker.attach { _ in
+            started.continuation.yield(())
+            for await _ in release.stream { break }
+            throw RuntimeError("Deletion refused")
+        }
+        _ = try worker.start(Request(id: "rename", action: "workspace_reinstall", workspace: id, spec: spec("Reserved"), revision: 1, confirmed: true))
+        for await _ in started.stream { break }
+        #expect(throws: RuntimeError.self) {
+            try worker.configure(Request(id: "edit", action: "workspace_configure", workspace: other, spec: spec("Reserved"), revision: 1))
+        }
+        #expect(throws: RuntimeError.self) {
+            try worker.start(Request(id: "reinstall", action: "workspace_reinstall", workspace: other, spec: spec("Reserved"), revision: 1, confirmed: true))
+        }
+        release.continuation.finish()
+        await worker.finishJobs()
+        _ = try worker.configure(Request(id: "retry", action: "workspace_configure", workspace: other, spec: spec("Reserved"), revision: 1))
+        #expect(worker.catalog.workspaces[other]?.spec.name == "Reserved")
+    }
+
+    @Test func reinstallRequiresConfirmationAndRebuildsOnlySelectedDisk() async throws {
+        let root = try directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let worker = try WorkerWorkspaces(root: root), id = UUID().uuidString.lowercased()
+        _ = try worker.configure(Request(id: "1", action: "workspace_configure", workspace: id, spec: spec(), revision: 0))
+        let original = worker.catalog.workspaces[id]!.spec
+        var calls: [Request] = []
+        let finished = AsyncStream<Void>.makeStream()
+        worker.attach { request in
+            calls.append(request)
+            if request.action == "browser_graphics_install" { finished.continuation.yield(()) }
+            return Response(id: request.id, exitCode: 0)
+        }
+        #expect(throws: RuntimeError.self) {
+            try worker.start(Request(id: "no", action: "workspace_reinstall", workspace: id))
+        }
+        #expect(calls.isEmpty)
+        _ = try worker.start(Request(id: "2", action: "workspace_reinstall", workspace: id, revision: 1, confirmed: true))
+        for await _ in finished.stream { break }
+        #expect(calls.map(\.action) == ["delete", "start", "exec", "browser_graphics_install"])
+        #expect(calls.allSatisfy { $0.workspace == id })
+        #expect(calls[0].project == nil)
+        #expect(calls[1].project == original.project)
+        #expect(calls[1].distribution == original.distribution)
+        #expect(calls[1].grow_disk == false)
+        #expect(worker.catalog.workspaces[id]?.spec == original)
+        #expect(worker.catalog.workspaces[id]?.revision == 1)
+    }
+
+    @Test func reinstallDeletionFailureCannotStartOrReplayDeletionOnRetry() async throws {
+        let root = try directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let worker = try WorkerWorkspaces(root: root), id = UUID().uuidString.lowercased()
+        _ = try worker.configure(Request(id: "1", action: "workspace_configure", workspace: id, spec: spec(), revision: 0))
+        let deleted = AsyncStream<Void>.makeStream(), finished = AsyncStream<Void>.makeStream()
+        var calls: [String] = []
+        worker.attach { request in
+            calls.append(request.action)
+            if request.action == "delete" {
+                deleted.continuation.yield(())
+                throw RuntimeError("Disk deletion refused")
+            }
+            if request.action == "browser_graphics_install" { finished.continuation.yield(()) }
+            return Response(id: request.id, exitCode: 0)
+        }
+        _ = try worker.start(Request(id: "2", action: "workspace_reinstall", workspace: id, confirmed: true))
+        for await _ in deleted.stream { break }
+        #expect(calls == ["delete"])
+        #expect(worker.catalog.workspaces[id]?.error == "Disk deletion refused")
+        _ = try worker.start(Request(id: "3", action: "workspace_start", workspace: id))
+        for await _ in finished.stream { break }
+        #expect(calls == ["delete", "start", "exec", "browser_graphics_install"])
     }
 
     @Test func updateResumesSeveralWorkspacesSeriallyWithoutAClient() async throws {
@@ -94,7 +277,7 @@ import Testing
                 started.continuation.yield(())
                 for await _ in release.stream { break }
             }
-            if request.action == "exec" && request.workspace == ids[1] { finished.continuation.yield(()) }
+            if request.action == "browser_graphics_install" && request.workspace == ids[1] { finished.continuation.yield(()) }
             return Response(id: request.id, exitCode: 0)
         }
         _ = try worker.resume(Request(id: "resume", action: "workspace_resume", approved_workspaces: ids))
@@ -103,7 +286,8 @@ import Testing
         #expect(calls == ["start:\(ids[0])"])
         release.continuation.yield(())
         for await _ in finished.stream { break }
-        #expect(calls == ["start:\(ids[0])", "exec:\(ids[0])", "start:\(ids[1])", "exec:\(ids[1])"])
+        #expect(calls == ["start:\(ids[0])", "exec:\(ids[0])", "browser_graphics_install:\(ids[0])",
+                          "start:\(ids[1])", "exec:\(ids[1])", "browser_graphics_install:\(ids[1])"])
         #expect(worker.catalog.workspaces.values.allSatisfy { $0.operation == nil && $0.error == nil })
     }
 
@@ -170,13 +354,70 @@ import Testing
         let finished = AsyncStream<Void>.makeStream()
         worker.attach { request in
             calls.append(request.action)
-            if request.action == "exec" { finished.continuation.yield(()) }
+            if request.action == "browser_graphics_install" { finished.continuation.yield(()) }
             return Response(id: request.id, exitCode: 0, backup: request.action == "recover" ? "/backup" : nil)
         }
         _ = try worker.recover(Request(id: "2", action: "workspace_recover", workspace: id))
         for await _ in finished.stream { break }
-        #expect(calls == ["recover", "start", "exec"])
+        #expect(calls == ["recover", "start", "exec", "browser_graphics_install"])
         #expect(worker.catalog.workspaces[id]?.recovery_backup == "/backup")
         #expect(worker.catalog.workspaces[id]?.operation == nil)
+    }
+
+    @Test(arguments: ["ubuntu", "debian", "alpine"], [WorkspaceDesktop.none, .xfce])
+    func browserGraphicsProviderIsUbuntuSpecificAndIndependentOfDesktop(distribution: String, desktop: WorkspaceDesktop) async throws {
+        let root = try directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let worker = try WorkerWorkspaces(root: root), id = UUID().uuidString.lowercased()
+        var selection = spec()
+        selection.distribution = distribution
+        selection.desktop = desktop
+        selection.browser = "firefox" // Chromium's provider is still required on Ubuntu.
+        _ = try worker.configure(Request(id: "configure", action: "workspace_configure", workspace: id, spec: selection, revision: 0))
+        var expected = ["start", "exec"]
+        if distribution == "ubuntu" { expected.append("browser_graphics_install") }
+        if desktop != .none { expected.append("graphics_install") }
+        let finalAction = expected.last!, finished = AsyncStream<Void>.makeStream()
+        var calls: [Request] = []
+        worker.attach { request in
+            calls.append(request)
+            if request.action == finalAction { finished.continuation.yield(()) }
+            return Response(id: request.id, exitCode: 0)
+        }
+        _ = try worker.start(Request(id: "start", action: "workspace_start", workspace: id))
+        for await _ in finished.stream { break }
+        #expect(calls.map(\.action) == expected)
+        #expect(calls.allSatisfy { $0.workspace == id })
+        for request in calls where request.action.hasSuffix("graphics_install") {
+            #expect(request.distribution == distribution)
+        }
+        if desktop != .none { #expect(calls.last?.desktop == desktop) }
+        #expect(worker.catalog.workspaces[id]?.operation == nil)
+        #expect(worker.catalog.workspaces[id]?.error == nil)
+    }
+
+    @Test func browserGraphicsFailurePreventsDesktopInstallationAndIsRecorded() async throws {
+        let root = try directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let worker = try WorkerWorkspaces(root: root), id = UUID().uuidString.lowercased()
+        var selection = spec()
+        selection.desktop = .xfce
+        _ = try worker.configure(Request(id: "configure", action: "workspace_configure", workspace: id, spec: selection, revision: 0))
+        let failed = AsyncStream<Void>.makeStream()
+        var calls: [String] = []
+        worker.attach { request in
+            calls.append(request.action)
+            if request.action == "browser_graphics_install" {
+                failed.continuation.yield(())
+                throw RuntimeError("Browser graphics provider unavailable")
+            }
+            return Response(id: request.id, exitCode: 0)
+        }
+        _ = try worker.start(Request(id: "start", action: "workspace_start", workspace: id))
+        for await _ in failed.stream { break }
+        #expect(calls == ["start", "exec", "browser_graphics_install"])
+        #expect(worker.catalog.workspaces[id]?.operation == nil)
+        #expect(worker.catalog.workspaces[id]?.error == "Browser graphics provider unavailable")
+        try worker.requireIdle()
     }
 }

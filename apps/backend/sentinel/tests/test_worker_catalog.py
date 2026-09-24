@@ -20,7 +20,8 @@ async def test_new_clients_discover_identical_worker_ids_and_refresh_cache(tmp_p
             "name": "Worker project",
             "project": "/remote/project",
             "distribution": "ubuntu",
-            "tools": ["git", "desktop"],
+            "tools": ["git"],
+            "desktop": "xfce",
             "resources": {"cpus": 4, "memory_gib": 8, "disk_gib": 64},
         },
     }

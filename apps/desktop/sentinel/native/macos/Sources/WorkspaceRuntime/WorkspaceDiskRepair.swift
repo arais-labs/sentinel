@@ -7,16 +7,22 @@ import Darwin
 // from repairing the disk concurrently.
 @MainActor private var unfinishedCheckers: [String: LinuxContainer] = [:]
 
+@MainActor
+func stopWorkspaceDiskChecker(_ id: String) async throws {
+    guard let previous = unfinishedCheckers[id] else { return }
+    guard let machine = try await previous.withVirtualMachineInstance({ $0 as? VZVirtualMachineInstance }) else {
+        throw RuntimeError("Cannot confirm the disk checker is powered off. Restart Sentinel before retrying.")
+    }
+    try await powerOffWorkspace(machine)
+    unfinishedCheckers.removeValue(forKey: id)
+}
+
 /// Called only after macOS confirms the workspace VM has powered off.
 /// Repair is conservative (-p), keeps a pre-repair backup, and never touches the
 /// project directory. The existing serialized lifecycle owns the manager.
 @MainActor
 func repairWorkspaceDisk(_ id: String, root: URL, image: String, manager: inout ContainerManager) async throws -> String {
-    if let previous = unfinishedCheckers[id] {
-        guard let machine = try await previous.withVirtualMachineInstance({ $0 as? VZVirtualMachineInstance }) else { throw RuntimeError("Cannot confirm the previous disk checker is powered off. Restart this machine before retrying recovery.") }
-        try await powerOffWorkspace(machine)
-        unfinishedCheckers.removeValue(forKey: id)
-    }
+    try await stopWorkspaceDiskChecker(id)
     let disk = root.appendingPathComponent("store/containers/\(id)/rootfs.ext4")
     let values = try disk.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
     guard values.isRegularFile == true, values.isSymbolicLink != true else { throw RuntimeError("Workspace disk is missing or unsafe") }

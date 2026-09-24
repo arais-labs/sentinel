@@ -1,0 +1,10 @@
+.desktop-preview { margin: 0; width: min(440px, calc(100vw - 96px)); overflow: hidden; border: 1px solid var(--border-subtle); border-radius: 12px; color: var(--text-primary); background: var(--surface-1); box-shadow: 0 12px 40px #0005; }
+.desktop-preview-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 14px; font-size: 12px; }
+.desktop-preview-heading strong { font-weight: 500; }
+.desktop-preview-screen { display: block; width: 100%; height: auto; }
+.desktop-preview figcaption { padding: 10px 14px; font-size: 11px; line-height: 1.5; color: var(--text-secondary); }
+.workspace-desktop-options .workspace-stack-card { cursor: pointer; padding: 14px; gap: 4px; }
+.workspace-desktop-options .workspace-stack-top { margin-bottom: 4px; gap: 8px; }
+.workspace-desktop-options .workspace-stack-top strong { font-size: 12px; }
+.workspace-desktop-options .workspace-stack-check { flex-shrink: 0; }
+.workspace-desktop-options .workspace-stack-card:has(input:focus-visible) { outline: 2px solid var(--sentinel-blue); outline-offset: 3px; }

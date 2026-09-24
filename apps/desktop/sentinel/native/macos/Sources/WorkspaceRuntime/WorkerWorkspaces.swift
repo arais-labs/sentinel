@@ -8,6 +8,7 @@ import Foundation
     private let file: URL
     private(set) var catalog: Catalog
     private var jobs: [String: Task<Void, Never>] = [:]
+    private var reinstallNames: [String: String] = [:]
     private var perform: Perform?
 
     init(root: URL) throws {
@@ -49,10 +50,15 @@ import Foundation
         Response(id: id, worker_id: catalog.worker_id, workspaces: catalog.workspaces)
     }
 
-    func requireIdle() throws {
-        // ContainerManager mutations include async, inout disk recovery. Keep
-        // lifecycle changes serial; guest processes and desktop streams remain independent.
-        guard jobs.isEmpty else { throw RuntimeError("Wait for the current worker operation to finish") }
+    func requireIdle(_ workspace: String? = nil) throws {
+        let busy = workspace.map { jobs[$0] != nil || jobs["resume"] != nil } ?? !jobs.isEmpty
+        guard !busy else { throw RuntimeError("Wait for the current workspace operation to finish") }
+    }
+
+    func finishJobs() async {
+        let active = Array(jobs.values)
+        for job in active { job.cancel() }
+        for job in active { await job.value }
     }
 
     private func record(_ id: String) throws -> WorkerWorkspaceRecord {
@@ -60,19 +66,24 @@ import Foundation
         return value
     }
 
+    private func requireUniqueName(_ name: String, workspace: String) throws {
+        guard !catalog.workspaces.contains(where: { $0.key != workspace && $0.value.spec.name == name }),
+              !reinstallNames.contains(where: { $0.key != workspace && $0.value == name }) else {
+            throw RuntimeError("A workspace with this name already exists on this worker")
+        }
+    }
+
     func configure(_ request: Request) throws -> Response {
         guard let id = request.workspace, UUID(uuidString: id) != nil, let spec = request.spec else {
             throw RuntimeError("Workspace ID and configuration are required")
         }
-        try requireIdle()
+        try requireIdle(id)
         try spec.validate()
         let previous = catalog.workspaces[id]
         guard request.revision == (previous?.revision ?? 0) else {
             throw RuntimeError("Workspace settings changed. Refresh before editing again.")
         }
-        guard !catalog.workspaces.contains(where: { $0.key != id && $0.value.spec.name == spec.name }) else {
-            throw RuntimeError("A workspace with this name already exists on this worker")
-        }
+        try requireUniqueName(spec.name, workspace: id)
         if let previous {
             guard previous.spec.distribution == spec.distribution else { throw RuntimeError("Existing workspace disks cannot change distribution") }
             guard spec.resources.disk_gib >= previous.spec.resources.disk_gib else { throw RuntimeError("Workspace disks can only be increased") }
@@ -82,7 +93,7 @@ import Foundation
         next.workspaces[id] = WorkerWorkspaceRecord(spec: spec, revision: (previous?.revision ?? 0) + 1,
             error: previous?.error,
             recovery_backup: previous?.recovery_backup,
-            reconfigure: previous?.reconfigure == true || (previous != nil && (previous!.spec.project != spec.project || previous!.spec.resources != spec.resources)),
+            reconfigure: previous?.reconfigure == true || (previous != nil && (previous!.spec.project != spec.project || previous!.spec.resources != spec.resources || previous!.spec.desktop != spec.desktop)),
             grow_disk: previous?.grow_disk == true || (previous != nil && previous!.spec.resources.disk_gib < spec.resources.disk_gib))
         try save(next)
         return inventory(request.id)
@@ -90,39 +101,71 @@ import Foundation
 
     func start(_ request: Request) throws -> Response {
         guard let id = request.workspace else { throw RuntimeError("Workspace ID is required") }
-        try requireIdle()
+        let reinstall = request.action == "workspace_reinstall"
+        if reinstall && request.confirmed != true {
+            throw RuntimeError("Confirm erasing the workspace Linux disk before reinstalling")
+        }
+        try requireIdle(id)
         let entry = try record(id)
+        if reinstall && request.spec != nil && request.revision == nil {
+            throw RuntimeError("Refresh workspace settings before reinstalling")
+        }
         if let revision = request.revision, revision != entry.revision {
             throw RuntimeError("Workspace settings changed. Refresh before retrying.")
         }
-        var plan = entry.spec
-        if let steps = request.steps { plan.steps = steps; try plan.validate() }
+        var plan = request.spec ?? entry.spec
+        if let steps = request.steps { plan.steps = steps }
+        try plan.validate()
+        if reinstall { try requireUniqueName(plan.name, workspace: id) }
+        if !reinstall && plan != entry.spec { throw RuntimeError("Changing workspace settings requires configuration") }
         guard let perform else { throw RuntimeError("Worker is not ready") }
         var next = catalog
         next.workspaces[id]?.operation = "preparing"
         next.workspaces[id]?.error = nil
         try save(next)
-        jobs[id] = Task { await self.prepare(id, steps: plan.steps, perform: perform) }
+        if reinstall { reinstallNames[id] = plan.name }
+        jobs[id] = Task { await self.prepare(id, steps: plan.steps, reinstall: reinstall, replacement: request.spec, perform: perform) }
         return Response(id: request.id, event: "preparing")
     }
 
-    private func prepare(_ id: String, steps: [WorkerSetupStep], perform: Perform) async {
+    private func prepare(_ id: String, steps: [WorkerSetupStep], reinstall: Bool = false, replacement: WorkerWorkspaceSpec? = nil, perform: Perform) async {
+        defer { if reinstall { reinstallNames.removeValue(forKey: id) } }
         do {
             try Task.checkCancellation()
-            let entry = try record(id), spec = entry.spec
-            if entry.reconfigure { _ = try await perform(Request(id: UUID().uuidString, action: "stop", workspace: id)) }
+            let entry = try record(id), spec = replacement ?? entry.spec
+            // Delete only the selected ContainerManager-owned VM storage; the
+            // catalog and mounted host project are not part of this operation.
+            // Destructive intent lives in this approved job, never in Retry.
+            if reinstall {
+                _ = try await perform(Request(id: UUID().uuidString, action: "delete", workspace: id))
+                var cleared = catalog
+                cleared.workspaces[id]?.recovery_backup = nil
+                if replacement != nil {
+                    cleared.workspaces[id]?.spec = spec
+                    cleared.workspaces[id]?.revision = entry.revision + 1
+                }
+                try save(cleared)
+                try Task.checkCancellation()
+            } else if entry.reconfigure { _ = try await perform(Request(id: UUID().uuidString, action: "stop", workspace: id)) }
             _ = try await perform(Request(id: UUID().uuidString, action: "start", workspace: id,
                 project: spec.project, distribution: spec.distribution, cpus: spec.resources.cpus,
-                memory_gib: spec.resources.memory_gib, disk_gib: spec.resources.disk_gib, grow_disk: entry.grow_disk))
+                memory_gib: spec.resources.memory_gib, disk_gib: spec.resources.disk_gib, grow_disk: reinstall ? false : entry.grow_disk))
             for step in steps {
                 try Task.checkCancellation()
                 let result = try await perform(Request(id: UUID().uuidString, action: "exec", workspace: id,
                     arguments: step.arguments, timeout: step.timeout))
                 guard result.exitCode == 0 else { throw RuntimeError("Workspace setup failed at \(step.message): \(result.stderr ?? result.stdout ?? "")") }
             }
-            if spec.tools.contains("desktop") {
+            // Chromium is installed for every workspace, even when a different
+            // browser is selected. Its Snap content provider is independent of
+            // desktop selection; headless automation needs the same libraries.
+            if spec.distribution == "ubuntu" {
                 try Task.checkCancellation()
-                _ = try await perform(Request(id: UUID().uuidString, action: "graphics_install", workspace: id, distribution: spec.distribution))
+                _ = try await perform(Request(id: UUID().uuidString, action: "browser_graphics_install", workspace: id, distribution: spec.distribution))
+            }
+            if spec.desktop != .none {
+                try Task.checkCancellation()
+                _ = try await perform(Request(id: UUID().uuidString, action: "graphics_install", workspace: id, distribution: spec.distribution, desktop: spec.desktop))
             }
             var next = catalog
             try Task.checkCancellation()
@@ -173,7 +216,7 @@ import Foundation
             job.cancel()
             await job.value
         }
-        try requireIdle()
+        try requireIdle(id)
         _ = try record(id)
         var next = catalog
         next.workspaces[id]?.operation = "stopping"
@@ -197,7 +240,7 @@ import Foundation
 
     func recover(_ request: Request) throws -> Response {
         guard let id = request.workspace, let perform else { throw RuntimeError("Workspace ID is required") }
-        try requireIdle()
+        try requireIdle(id)
         _ = try record(id)
         var next = catalog
         next.workspaces[id]?.operation = "recovering"

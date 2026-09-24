@@ -330,7 +330,6 @@ async def test_only_update_owner_can_attach_during_transaction(monkeypatch, upda
                     "executable": "/new/helper",
                     "kernel": "/kernel",
                     "initImage": "init",
-                    "workspaceImage": "workspace",
                 }
             )
             yield SimpleNamespace(read=AsyncMock(return_value=json.dumps(value)))

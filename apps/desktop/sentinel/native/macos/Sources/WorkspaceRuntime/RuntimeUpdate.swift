@@ -50,7 +50,6 @@ enum RuntimeUpdate {
     }
 
     static func serve(_ root: String, leaseSeconds: Double = 60) throws {
-        signal(SIGPIPE, SIG_IGN)
         signal(SIGHUP, SIG_IGN)
         let lease = try lock(root + "/update.lock", LOCK_EX)
         defer { close(lease) }
@@ -95,7 +94,6 @@ enum RuntimeUpdate {
                           let exe = manifest["executable"] as? String,
                           let kernel = manifest["kernel"] as? String,
                           let initial = manifest["initImage"] as? String,
-                          let workspace = manifest["workspaceImage"] as? String,
                           exe.hasPrefix(root + "/releases/"), kernel.hasPrefix(root + "/releases/")
                     else { throw RuntimeError("Unsupported runtime update manifest") }
                     // Keep ownership continuously from manifest activation into
@@ -104,7 +102,7 @@ enum RuntimeUpdate {
                     defer { close(owner) }
                     try RuntimeMigrations.checkActivation(root: URL(fileURLWithPath: root), manifest: manifest)
                     try write(manifest, to: root + "/manifest.json")
-                    let pid = try launch([exe, "--owned-service", root, kernel, initial, workspace], owner: owner, root: root)
+                    let pid = try launch([exe, "--owned-service", root, kernel, initial], owner: owner, root: root)
                     try reply(["ok": true, "pid": pid])
                 default: throw RuntimeError("Unknown runtime update action")
                 }

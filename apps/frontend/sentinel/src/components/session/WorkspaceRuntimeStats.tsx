@@ -1,24 +1,74 @@
-import { createContext, useCallback, useContext, useId, useSyncExternalStore, type ReactNode } from 'react';
-import { ArrowDown, ArrowUp, Cpu, HardDrive, MemoryStick, Network } from 'lucide-react';
-import { useSessionWorkspace } from '../../hooks/useSessionWorkspace';
+import { createContext, useCallback, useContext, useId, useSyncExternalStore, useEffect, useRef, useState, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
+import { ArrowDown, ArrowUp, Cpu, HardDrive, MemoryStick, Network, Monitor, ChevronDown } from 'lucide-react';
+import { ReasoningFluid } from './ReasoningFluid';
 import { HISTORY_MS, metricsSnapshot, subscribeMetrics, type MetricSample, type MetricsSnapshot, type WorkspaceMetrics } from '../../lib/workspace-metrics';
 import type { Workspace } from '../../types/api';
 import './workspace-runtime-stats.css';
+import './run-settings.css';
 
 const MetricsContext = createContext<{ workspace: Workspace | null; sample: MetricsSnapshot } | null>(null);
 const EMPTY: MetricsSnapshot = { history: [], unavailable: false };
 
-/** Stays mounted with the chat header, so opening the popover only renders cached data. */
-export function WorkspaceMetricsProvider({ sessionId, instanceName, children }: {
-  sessionId: string | null; instanceName: string | null; children: ReactNode;
+/** Both headers share the cached sampler; opening the panel never starts another request. */
+export function WorkspacePerformanceChip({ workspace, instanceName, onChangeWorkspace, onOpen, onClose, workspaceMenu, disabled = false, compact = false, className }: {
+  workspace: Workspace | null; instanceName: string | null; onChangeWorkspace?: () => void; onOpen?: () => void; onClose?: () => void; workspaceMenu?: ReactNode; disabled?: boolean; compact?: boolean; className?: string;
 }) {
-  const { workspace } = useSessionWorkspace(sessionId, instanceName);
   const id = workspace?.id;
   const subscribe = useCallback((notify: () => void) => id && instanceName
     ? subscribeMetrics(instanceName, id, notify) : () => {}, [id, instanceName]);
   const snapshot = useCallback(() => id && instanceName ? metricsSnapshot(instanceName, id) : EMPTY, [id, instanceName]);
   const sample = useSyncExternalStore(subscribe, snapshot);
-  return <MetricsContext.Provider value={{ workspace, sample }}>{children}</MetricsContext.Provider>;
+  const [rect, setRect] = useState<DOMRect | null>(null);
+  const button = useRef<HTMLButtonElement>(null);
+  const panel = useRef<HTMLDivElement>(null);
+  const closeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const panelId = useId();
+  const close = () => { clearTimeout(closeTimer.current); setRect(null); onClose?.(); };
+  const show = () => { if (disabled) return; clearTimeout(closeTimer.current); setRect(button.current?.getBoundingClientRect() ?? null); onOpen?.(); };
+  const hide = () => { clearTimeout(closeTimer.current); closeTimer.current = setTimeout(() => setRect(null), 150); };
+  useEffect(() => {
+    if (!rect) return;
+    const outside = (event: PointerEvent) => {
+      if (!button.current?.contains(event.target as Node) && !panel.current?.contains(event.target as Node)) close();
+    };
+    const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') close(); };
+    window.addEventListener('pointerdown', outside);
+    window.addEventListener('keydown', escape);
+    window.addEventListener('resize', close);
+    return () => { window.removeEventListener('pointerdown', outside); window.removeEventListener('keydown', escape); window.removeEventListener('resize', close); };
+  }, [rect]);
+  useEffect(() => () => clearTimeout(closeTimer.current), []);
+  const data = sample.data;
+  const cpu = data?.cpu_percent ?? 0;
+  const memory = data?.memory_total_bytes ? (data.memory_used_bytes ?? 0) / data.memory_total_bytes * 100 : 0;
+  const metric = memory > cpu ? 'RAM' : 'CPU';
+  const usage = Math.max(0, Math.min(100, Math.max(cpu, memory)));
+  const active = data?.state === 'running' && !sample.unavailable && (data.cpu_percent != null || data.memory_total_bytes != null);
+  const color = metric === 'RAM' ? '#ad91ed' : '#63b8ef';
+  return <MetricsContext.Provider value={{ workspace, sample }}>
+    <button ref={button} type="button" disabled={disabled} data-tour="workspace-attachment" data-attached={workspace ? 'true' : undefined}
+      className={`chat-header-pill workspace-performance-chip ${className ?? ''}`}
+      aria-label={workspace ? `${workspace.name}${active ? ` · ${metric} ${Math.round(usage)}%` : ''}, workspace performance` : 'Attach a workspace'}
+      aria-expanded={!!rect} aria-haspopup="dialog" aria-controls={rect ? panelId : undefined}
+      onMouseEnter={show} onMouseLeave={hide} onFocus={show}
+      onBlur={event => { if (!panel.current?.contains(event.relatedTarget)) hide(); }} onClick={show}>
+      {active && <span className="workspace-performance-fill" aria-hidden="true" style={{ width: `${usage}%`, color }}><ReasoningFluid amount={.96} color={color} waveWidth={9} /></span>}
+      <Monitor size={14} /><span className={compact ? 'sr-only' : 'workspace-performance-name'}>{workspace?.name ?? 'Attach'}</span>
+    </button>
+    {rect && createPortal(<div ref={panel} id={panelId} role="dialog" aria-label={workspace ? `${workspace.name} performance` : 'Attach a workspace'} data-pane-menu
+      className="session-telemetry-panel workspace-performance-panel" onMouseEnter={show} onMouseLeave={workspaceMenu ? undefined : hide}
+      onFocus={() => clearTimeout(closeTimer.current)} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) hide(); }}
+      style={{ position: 'fixed', top: Math.min(rect.bottom + 8, Math.max(8, window.innerHeight - 540)), left: Math.max(8, Math.min(rect.left, window.innerWidth - 328)), zIndex: 10000 }}>
+      {onChangeWorkspace && <section className="workspace-performance-selector">
+        <button type="button" className="run-settings-section-toggle" aria-expanded={!!workspaceMenu} onClick={onChangeWorkspace}>
+          <Monitor size={14} /><span className="run-settings-section-label">{workspace ? 'Change workspace' : 'Attach a workspace'}</span><span className="run-settings-section-value">{workspace?.name}</span><ChevronDown size={14} style={{ transform: workspaceMenu ? 'rotate(180deg)' : undefined }} />
+        </button>
+        {workspaceMenu}
+      </section>}
+      <WorkspaceRuntimeStats />
+    </div>, document.body)}
+  </MetricsContext.Provider>;
 }
 
 function bytes(value: number | null | undefined, rate = false) {

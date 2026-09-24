@@ -7,15 +7,20 @@ import {
   Play,
   RefreshCw,
   Square,
-  Server,
+  Image,
 } from 'lucide-react';
 import { api } from '../../../lib/api';
+import { desktopResolutions, defaultDesktopGeometry } from '../../../lib/desktop-modes';
+import { runtimeUpdateRequirement, type RuntimeUpdateRequirement } from '../../../lib/runtime-compatibility';
+import { RuntimeUpdateNotice } from '../../runtime/RuntimeUpdateNotice';
 import { useSessionWorkspace } from '../../../hooks/useSessionWorkspace';
 import { useActiveSessionId } from '../../../store/active-session-store';
 import { useInstanceName, usePaneId } from '../../../lib/workspace-context';
 import { clearPaneActions, setPaneActions } from '../../../store/pane-actions-store';
 import type { RuntimeLiveView, Workspace } from '../../../types/api';
 import { DesktopView } from '../DesktopView';
+import { WallpaperChooser } from '../WallpaperChooser';
+import { WorkspaceAttachment } from '../../session/WorkspaceAttachment';
 import { PaneActions } from '../PaneActions';
 import './desktop.css';
 
@@ -59,9 +64,11 @@ function WorkspaceDesktop({
   const query = `session_id=${encodeURIComponent(session)}`;
   const [desktop, setDesktop] = useState<RuntimeLiveView | null>(null);
   const [error, setError] = useState('');
+  const [runtimeUpdate, setRuntimeUpdate] = useState<RuntimeUpdateRequirement>();
   const [busy, setBusy] = useState('');
-  const [geometry, setGeometry] = useState('1920x1200');
+  const [geometry, setGeometry] = useState<string>(defaultDesktopGeometry);
   const [confirmStop, setConfirmStop] = useState(false);
+  const [showWallpapers, setShowWallpapers] = useState(false);
   const clipboardKey = `sentinel:desktop-clipboard:${instance}:${workspace.id}`;
   const [clipboardEnabled, setClipboardEnabled] = useState(() => {
     try { return localStorage.getItem(clipboardKey) !== 'off'; }
@@ -83,11 +90,13 @@ function WorkspaceDesktop({
       );
       if (mounted.current) {
         setDesktop(result);
+        setRuntimeUpdate(undefined);
         setError('');
         if (result.geometry) setGeometry(result.geometry);
       }
       return result.state;
     } catch (reason) {
+      if (mounted.current) setRuntimeUpdate(runtimeUpdateRequirement(reason));
       if (mounted.current)
         setError(
           reason instanceof Error
@@ -145,6 +154,7 @@ function WorkspaceDesktop({
         );
       await refresh();
     } catch (reason) {
+      if (mounted.current) setRuntimeUpdate(runtimeUpdateRequirement(reason));
       if (mounted.current)
         setError(
           reason instanceof Error
@@ -166,9 +176,8 @@ function WorkspaceDesktop({
       const updated = await api.patch<Workspace>(
         `${prefix}/workspaces/${workspace.id}`,
         {
-          development_tools: [
-            ...new Set([...(current.development_tools ?? []), 'desktop']),
-          ],
+          desktop: 'xfce',
+          revision: current.revision,
         },
       );
       if (updated.container_state === 'failed')
@@ -197,7 +206,7 @@ function WorkspaceDesktop({
       api.post(`${prefix}/runtime/desktop/stop?${query}`, {}),
     );
   };
-  const running = desktop?.state === 'running' && desktop.available;
+  const running = !runtimeUpdate && desktop?.state === 'running' && desktop.available;
   const state = desktop?.state;
   const preparing = state === 'preparing' || state === 'stopping';
   const status =
@@ -229,7 +238,7 @@ function WorkspaceDesktop({
   const emptyDescription = busy
     ? null
     : state === 'not_installed'
-      ? 'Install a graphical desktop with Chromium and a terminal. It uses this workspace’s files and private disk, and starts only when needed.'
+      ? 'Install an XFCE desktop and terminal, or choose Weston in workspace settings. The desktop starts only when needed.'
       : state === 'stopped'
         ? 'Open graphical applications alongside your terminal and files. Sessions attached to this workspace share the same desktop.'
         : desktop?.reason ||
@@ -243,12 +252,13 @@ function WorkspaceDesktop({
             : <span className="workspace-desktop-status-dot" data-running={running} data-error={!!error} />}
           <span>{status}</span>
         </div>
-        <div className="workspace-desktop-header-identity chat-header-pill" title={`Workspace: ${workspace.name}`}>
-          <Server size={13} />
-          <span>{workspace.name}</span>
-        </div>
+        <WorkspaceAttachment sessionId={session} instanceName={instance} busy={!!busy} />
         {running && (
           <>
+            <button className={actionClass} onClick={() => setShowWallpapers(value => !value)}
+              aria-expanded={showWallpapers} title="Choose desktop wallpaper">
+              <Image size={13} /><span>Wallpaper</span>
+            </button>
             <button
               className={actionClass}
               onClick={toggleClipboard}
@@ -281,7 +291,10 @@ function WorkspaceDesktop({
           <span>Refresh</span>
         </button>
       </DesktopPaneControls>
-      {error && (
+      {running && showWallpapers && <WallpaperChooser
+        endpoint={`${prefix}/runtime/desktop/wallpaper?${query}`}
+        onClose={() => setShowWallpapers(false)} />}
+      {error && running && (
         <div className="workspace-desktop-notice" role="alert">
           {error}
         </div>
@@ -301,7 +314,7 @@ function WorkspaceDesktop({
           <DesktopView
             key={desktop.geometry}
             wsUrl={desktop.ws_url}
-            updateMode={desktop.vnc_update_mode}
+            clipboardUrl={`${prefix}/runtime/desktop/clipboard?${query}`}
             clipboardEnabled={clipboardEnabled}
             onClipboardError={setClipboardError}
             onDisconnect={() => void refresh()}
@@ -313,11 +326,14 @@ function WorkspaceDesktop({
             ) : (
               <Monitor size={28} />
             )}
-            <h3>{emptyTitle}</h3>
-            {emptyDescription && emptyDescription !== emptyTitle && (
-              <p>{emptyDescription}</p>
-            )}
+            <h3>{runtimeUpdate ? 'Workspace unavailable' : emptyTitle}</h3>
+            {runtimeUpdate ? (
+              <RuntimeUpdateNotice requirement={runtimeUpdate} machineId={workspace.machine_id} onUpdated={refresh} />
+            ) : error ? (
+              <p role="alert">{error}</p>
+            ) : emptyDescription && emptyDescription !== emptyTitle && <p>{emptyDescription}</p>}
             {!busy &&
+              !runtimeUpdate &&
               !preparing &&
               (state === 'not_installed' ? (
                 <button
@@ -346,15 +362,7 @@ function WorkspaceDesktop({
                       value={geometry}
                       onChange={(event) => setGeometry(event.target.value)}
                     >
-                      {[
-                        '1280x800',
-                        '1440x900',
-                        '1680x1050',
-                        '1920x1200',
-                        '2560x1600',
-                        '2880x1800',
-                        '3840x2400',
-                      ].map((value) => (
+                      {desktopResolutions.map((value) => (
                         <option key={value} value={value}>
                           {value.replace('x', ' × ')}
                         </option>

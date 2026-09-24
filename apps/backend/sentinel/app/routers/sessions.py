@@ -346,6 +346,9 @@ async def list_sessions(
     approvals = await pending_approval_sessions(db, [item.id for item in page.items])
     completed = await service.completion_details(db, page.items)
     completions = {session_id: str(value[0]) for session_id, value in completed.items()}
+    # Remaining work reads detached records and in-memory run state, not SQL.
+    # Polling must not retain a pool connection while waiting on coordination.
+    await db.close()
     unread_flags = await service.compute_unread_flags(
         db,
         page.items,

@@ -24,6 +24,7 @@ async def prepare(session, machine_id):
                     "name": row.name,
                     "project": row.directory,
                     "distribution": row.distribution,
+                    "desktop": row.desktop,
                     "tools": sorted(row.development_tools),
                 }
                 for row in rows

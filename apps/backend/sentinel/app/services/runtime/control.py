@@ -16,6 +16,7 @@ from app.schemas.runtime import (
 )
 from app.services.modules.runtime_services import get_browser_pool
 from app.services.runtime.desktop import RuntimeDesktopError
+from app.services.runtime.compatibility import RuntimeCompatibilityError
 from app.services.runtime.ssh_runtime import (
     get_runtime_desktop_manager,
     get_runtime_port_forward_manager,
@@ -28,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 def runtime_desktop_ws_url(request: Request, session_id: str) -> str:
     runtime_prefix = request.url.path.rsplit("/runtime", 1)[0] + "/runtime"
-    return f"{runtime_prefix}/live-view/{session_id}/rfb"
+    return f"{runtime_prefix}/live-view/{session_id}/stream"
 
 
 def validated_desktop_resolution(value: str | None, presets: set[str]) -> str | None:
@@ -107,7 +108,7 @@ async def live_view_response(
         return RuntimeLiveViewResponse(
             enabled=True,
             available=False,
-            mode="vnc-rfb",
+            mode="h264",
             reason=f"Unsupported desktop resolution: {geometry}",
             provider=provider,
         )
@@ -146,7 +147,7 @@ async def live_view_response(
             return RuntimeLiveViewResponse(
                 enabled=desktop_manager.enabled,
                 available=False,
-                mode="vnc-rfb",
+                mode="h264",
                 state=desktop_state["state"],
                 reason=desktop_state.get("reason"),
                 provider=provider,
@@ -156,10 +157,12 @@ async def live_view_response(
         return RuntimeLiveViewResponse(
             enabled=True,
             available=False,
-            mode="vnc-rfb",
+            mode="h264",
             reason=str(exc),
             provider=provider,
         )
+    except RuntimeCompatibilityError:
+        raise
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "failed to prepare runtime desktop for session %s",
@@ -169,7 +172,7 @@ async def live_view_response(
         return RuntimeLiveViewResponse(
             enabled=True,
             available=False,
-            mode="vnc-rfb",
+            mode="h264",
             reason=f"Machine desktop unavailable: {exc}",
             provider=provider,
         )
@@ -177,10 +180,9 @@ async def live_view_response(
         enabled=True,
         available=True,
         state="running",
-        mode="vnc-rfb",
+        mode="h264",
         url=None,
         ws_url=runtime_desktop_ws_url(request, str(sid)),
-        vnc_update_mode=desktop.vnc_update_mode,
         display=desktop.display,
         geometry=desktop.geometry,
         reason=None,
@@ -222,7 +224,7 @@ async def set_live_view_resolution_response(
         return RuntimeLiveViewResponse(
             enabled=True,
             available=False,
-            mode="vnc-rfb",
+            mode="h264",
             reason=f"Unsupported desktop resolution: {geometry}",
             provider=provider,
         )
@@ -239,11 +241,13 @@ async def set_live_view_resolution_response(
             session_id=session_id, instance_name=instance_name
         )
         desktop = await desktop_manager.ensure_session_desktop(str(sid), geometry=desktop_geometry)
+    except RuntimeCompatibilityError:
+        raise
     except RuntimeDesktopError as exc:
         return RuntimeLiveViewResponse(
             enabled=True,
             available=False,
-            mode="vnc-rfb",
+            mode="h264",
             reason=str(exc),
             provider=provider,
         )
@@ -256,7 +260,7 @@ async def set_live_view_resolution_response(
         return RuntimeLiveViewResponse(
             enabled=True,
             available=False,
-            mode="vnc-rfb",
+            mode="h264",
             reason=f"Machine desktop unavailable: {exc}",
             provider=provider,
         )
@@ -264,10 +268,9 @@ async def set_live_view_resolution_response(
         enabled=True,
         available=True,
         state="running",
-        mode="vnc-rfb",
+        mode="h264",
         url=None,
         ws_url=runtime_desktop_ws_url(request, str(sid)),
-        vnc_update_mode=desktop.vnc_update_mode,
         display=desktop.display,
         geometry=desktop.geometry,
         reason=None,
@@ -275,7 +278,7 @@ async def set_live_view_resolution_response(
     )
 
 
-async def bridge_runtime_desktop_rfb(
+async def bridge_runtime_desktop_stream(
     *,
     websocket: WebSocket,
     session_id: UUID,
@@ -310,7 +313,7 @@ async def bridge_runtime_desktop_rfb(
     try:
         reader, writer = await asyncio.open_unix_connection(desktop.socket_path)
 
-        async def client_to_vnc() -> None:
+        async def client_to_display() -> None:
             assert writer is not None
             while True:
                 message = await websocket.receive()
@@ -323,7 +326,7 @@ async def bridge_runtime_desktop_rfb(
                     writer.write(message["text"].encode("utf-8"))
                     await writer.drain()
 
-        async def vnc_to_client() -> None:
+        async def display_to_client() -> None:
             while True:
                 data = await reader.read(65536)
                 if not data:
@@ -332,8 +335,8 @@ async def bridge_runtime_desktop_rfb(
 
         done, pending = await asyncio.wait(
             {
-                asyncio.create_task(client_to_vnc()),
-                asyncio.create_task(vnc_to_client()),
+                asyncio.create_task(client_to_display()),
+                asyncio.create_task(display_to_client()),
             },
             return_when=asyncio.FIRST_COMPLETED,
         )

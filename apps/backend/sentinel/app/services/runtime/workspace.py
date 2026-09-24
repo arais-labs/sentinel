@@ -25,6 +25,7 @@ class WorkspaceLocation:
     host_directory: str = ""
     tools: tuple[str, ...] = ()
     distribution: str = "alpine"
+    desktop: str = "none"
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,7 +35,6 @@ class RemoteWorkspacePaths:
     session_root: str
     workspace: str
     cache: str
-    scratch_runtime: str
     home: str
     runtime: str
     tmux: str
@@ -100,7 +100,6 @@ def workspace_paths(session_id: str, *, root: WorkspaceLocation) -> RemoteWorksp
         workspace=project,
         home="/root",
         cache="/root/.cache",
-        scratch_runtime="/run/user/0",
         tmp="/tmp",
         runtime=str(session_root / "runtime"),
         tmux=str(session_root / "tmux"),
@@ -119,7 +118,6 @@ def build_prepare_workspace_script(
         paths.session_root,
         paths.workspace,
         paths.cache,
-        paths.scratch_runtime,
         paths.home,
         paths.runtime,
         paths.tmux,

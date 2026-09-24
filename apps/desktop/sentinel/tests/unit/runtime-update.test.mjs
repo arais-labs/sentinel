@@ -21,7 +21,7 @@ test('native update lease survives staging, excludes competitors, and hands off 
   };
   try {
     await mkdir(root + '/releases/new', { recursive: true });
-    execFileSync('swiftc', ['native/macos/Sources/WorkspaceRuntime/RemoteControl.swift', 'native/macos/Sources/WorkspaceRuntime/RuntimeUpdate.swift', 'native/macos/Sources/WorkspaceRuntime/WorkerWorkspaceModels.swift', 'native/macos/Sources/WorkspaceRuntime/Migrations/RuntimeMigrations.swift', 'native/macos/Sources/WorkspaceRuntime/Migrations/M001WorkerOwnership.swift', 'tests/fixtures/RuntimeUpdateHarness.swift', '-o', root + '/releases/new/helper']);
+    execFileSync('swiftc', ['native/macos/Sources/WorkspaceRuntime/RemoteControl.swift', 'native/macos/Sources/WorkspaceRuntime/RuntimeUpdate.swift', 'native/macos/Sources/WorkspaceRuntime/WorkerWorkspaceModels.swift', 'native/macos/Sources/WorkspaceRuntime/Migrations/RuntimeMigrations.swift', 'native/macos/Sources/WorkspaceRuntime/Migrations/M001WorkerOwnership.swift', 'native/macos/Sources/WorkspaceRuntime/Migrations/M002VirtualDesktop.swift', 'tests/fixtures/RuntimeUpdateHarness.swift', '-o', root + '/releases/new/helper']);
     await writeFile(root + '/workspace-data', 'preserve me');
     const workspace = randomUUID();
     await mkdir(`${root}/store/containers/${workspace}`, { recursive: true });
@@ -45,12 +45,12 @@ test('native update lease survives staging, excludes competitors, and hands off 
     await once(legacy.stdout, 'data');
     assert.equal((await lease.send({ action: 'inspect' })).owner_free, false);
     const migrations = await lease.send({ action: 'migration_status' });
-    assert.deepEqual(migrations.target, ['001_worker_ownership']);
+    assert.deepEqual(migrations.target, ['001_worker_ownership', '002_virtual_desktop']);
     assert.deepEqual(migrations.inputs, ['001_worker_ownership']);
     assert.match((await lease.send({ action: 'migration_plan', inputs: {} })).error, /registrations/);
     assert.equal((await lease.send({ action: 'migration_plan', inputs })).ok, true);
     assert.match((await lease.send({ action: 'migrate', inputs })).error, /busy/);
-    const manifest = { version: 'new', updateProtocol: 1, storeVersion: 1, executable: root + '/releases/new/helper', kernel: root + '/releases/new/kernel', initImage: 'init', workspaceImage: 'workspace' };
+    const manifest = { version: 'new', updateProtocol: 1, storeVersion: 1, executable: root + '/releases/new/helper', kernel: root + '/releases/new/kernel', initImage: 'init' };
     assert.match((await lease.send({ action: 'activate', manifest })).error, /busy/);
     await assert.rejects(readFile(root + '/manifest.json'), { code: 'ENOENT' });
     const legacyExit = once(legacy, 'exit'); legacy.stdin.end(); await legacyExit;

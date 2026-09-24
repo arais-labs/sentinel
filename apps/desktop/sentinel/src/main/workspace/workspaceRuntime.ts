@@ -2,11 +2,14 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
+import { requireRuntimeProtocol } from './runtimeCompatibility.js';
+import type { WorkspaceDesktop } from './workspaceDesktop.js';
 
 export interface RuntimeReply {
+  protocol_version?: number;
   worker_id?: string;
   workspaces?: Record<string, {
-    spec: { name: string; project: string; distribution: string; tools: string[]; resources: { cpus: number; memory_gib: number; disk_gib: number } };
+    spec: { name: string; project: string; distribution: string; desktop: WorkspaceDesktop; browser?: 'chromium' | 'firefox' | 'chrome'; tools: string[]; resources: { cpus: number; memory_gib: number; disk_gib: number } };
     revision: number; operation?: string; error?: string; recovery_backup?: string;
   }>;
   process?: string;
@@ -27,6 +30,7 @@ export interface RuntimeReply {
 }
 
 interface RuntimeLaunch {
+  remote?: boolean;
   prepare?: () => Promise<void>;
   cancelPreparation?: () => Promise<void>;
   command: string;
@@ -44,6 +48,7 @@ export class WorkspaceRuntime {
   private child?: ChildProcessWithoutNullStreams;
   private starting?: Promise<void>;
   private ready = false;
+  private protocolVersion = 1;
   private stopping = false;
   preparationMessage?: string;
   private pending = new Map<string, {
@@ -56,9 +61,13 @@ export class WorkspaceRuntime {
 
   get isReady(): boolean { return this.ready; }
 
+  assertCompatible(): void {
+    requireRuntimeProtocol(this.protocolVersion, this.launch.remote);
+  }
+
   async deployment(prepare = true) {
     if (prepare) await this.launch.prepare?.();
-    return { root: this.launch.args[0], executable: this.launch.command, kernel: this.launch.args[1], initImage: this.launch.args[2], workspaceImage: this.launch.args[3] };
+    return { root: this.launch.args[0], executable: this.launch.command, kernel: this.launch.args[1], initImage: this.launch.args[2] };
   }
 
   start(): Promise<void> {
@@ -109,6 +118,7 @@ export class WorkspaceRuntime {
         } else if (reply.event === 'ready' && !reply.id) {
           clearTimeout(timer);
           started = true;
+          this.protocolVersion = reply.protocol_version ?? 1;
           this.ready = true;
           this.preparationMessage = undefined;
           this.launch.onProgress('Workspace runtime ready');
@@ -128,9 +138,17 @@ export class WorkspaceRuntime {
         }
         if (reply.event === 'shutdown_error') this.launch.log(reply.error || 'Workspace shutdown failed');
       });
-      child.once('close', (code, signal) => {
+      let finished = false;
+      const finish = (code: number | null, signal: NodeJS.Signals | null) => {
+        if (finished) return;
+        finished = true;
         clearTimeout(timer);
         lines.close();
+        // Descendants can inherit the helper's pipes. Its exit, rather than
+        // EOF from every descendant, ends ownership of this connection.
+        child.stdin.destroy();
+        child.stdout.destroy();
+        child.stderr.destroy();
         if (this.child === child) { this.child = undefined; this.ready = false; }
         const error = new Error(`Workspace runtime exited (${signal || code})`);
         for (const pending of this.pending.values()) {
@@ -144,12 +162,18 @@ export class WorkspaceRuntime {
           this.launch.onFailure(error.message);
           // Recovery is requested by workspace Retry/Start; never replay commands.
         }
-      });
+      };
+      child.once('exit', finish);
+      // Spawn failures emit close without exit.
+      child.once('close', finish);
     });
   }
 
   async request(action: string, values: Record<string, unknown> = {}, timeoutMs = 10 * 60_000): Promise<RuntimeReply> {
     if (!this.ready || this.stopping) throw new Error('Workspace runtime is not ready');
+    // Status remains readable for diagnostics/upgrades. Never send an operation
+    // using a contract the worker cannot interpret, including catalog reads.
+    if (action !== 'status') this.assertCompatible();
     const id = randomUUID();
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -173,9 +197,17 @@ export class WorkspaceRuntime {
     const child = this.child;
     if (!child) { await this.starting?.catch(() => {}); return; }
     await new Promise<void>(resolve => {
+      const done = () => {
+        clearTimeout(terminate);
+        clearTimeout(force);
+        child.removeListener('exit', done);
+        child.removeListener('close', done);
+        resolve();
+      };
       const terminate = setTimeout(() => child.kill('SIGTERM'), this.launch.shutdownTimeoutMs ?? 15_000);
       const force = setTimeout(() => child.kill('SIGKILL'), (this.launch.shutdownTimeoutMs ?? 15_000) + 5000);
-      child.once('close', () => { clearTimeout(terminate); clearTimeout(force); resolve(); });
+      child.once('exit', done);
+      child.once('close', done);
       child.stdin.end();
     });
   }

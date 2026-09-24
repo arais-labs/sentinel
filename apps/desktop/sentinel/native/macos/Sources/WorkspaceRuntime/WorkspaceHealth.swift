@@ -6,6 +6,7 @@ import Synchronization
 /// Status never waits on guest RPCs. Process startup timeouts fail the request;
 /// lifecycle/guest health failures retain the existing recovery safeguards.
 final class WorkspaceHealth: Sendable {
+    static let processStartupTimeout: Double = 60
     struct Snapshot {
         var states: [String: String] = [:]
         var errors: [String: String] = [:]
@@ -18,7 +19,7 @@ final class WorkspaceHealth: Sendable {
     private let snapshot = Mutex(Snapshot())
     func status(_ id: String) -> Response {
         snapshot.withLock { Response(id: id, event: "ready", states: $0.states,
-            distributions: ["alpine", "ubuntu", "debian"], capabilities: ["workspace-recovery-v1"], errors: $0.errors) }
+            distributions: ["alpine", "ubuntu", "debian"], capabilities: ["workspace-recovery-v1", "workspace-reinstall-v1", "workspace-browser-v1"], errors: $0.errors) }
     }
     // A failed/interrupted repair must survive a runtime restart. Successful
     // recovery alone clears this marker; ordinary stopped VMs never get one.
@@ -52,9 +53,21 @@ final class WorkspaceHealth: Sendable {
         }
     }
     func set(_ id: String, _ state: String) { snapshot.withLock { $0.states[id] = state; if state != "failed" { $0.errors.removeValue(forKey: id) } } }
-    func remove(_ id: String) { snapshot.withLock { $0.states.removeValue(forKey: id); $0.errors.removeValue(forKey: id) } }
+    func remove(_ id: String) throws {
+        try snapshot.withLock {
+            if let directory = $0.directory {
+                let marker = directory.appendingPathComponent(id)
+                if FileManager.default.fileExists(atPath: marker.path) { try FileManager.default.removeItem(at: marker) }
+            }
+            // Late callbacks from the discarded VM must not poison its replacement.
+            $0.generations[id, default: 0] += 1
+            $0.states.removeValue(forKey: id)
+            $0.errors.removeValue(forKey: id)
+        }
+    }
     func failed(_ id: String) -> Bool { snapshot.withLock { $0.errors[id] != nil } }
-    func check(_ id: String) throws {
+    func check(_ id: String, action: String = "exec") throws {
+        if ["recover", "workspace_recover", "delete", "workspace_delete", "workspace_reinstall"].contains(action) { return }
         if let error = snapshot.withLock({ $0.errors[id] }) { throw RuntimeError(error) }
     }
     func fault(_ id: String, _ message: String) { snapshot.withLock { $0.states[id] = "failed"; $0.errors[id] = message }; persistFault(id, message) }
@@ -65,7 +78,7 @@ final class WorkspaceHealth: Sendable {
             $0.states[id] = "recovering"
         }
     }
-    @MainActor func processStartup<T: Sendable>(_ id: String, seconds: Double = 60,
+    @MainActor func processStartup<T: Sendable>(_ id: String, seconds: Double = WorkspaceHealth.processStartupTimeout,
         operation: @escaping @MainActor () async throws -> T) async throws -> T {
         let generation = Self.requestGeneration ?? generation(id)
         guard generation == self.generation(id) else { throw CancellationError() }

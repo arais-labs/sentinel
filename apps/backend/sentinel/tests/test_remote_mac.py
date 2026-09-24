@@ -340,6 +340,15 @@ async def test_runtime_upgrade_lifecycle(
                 }
             if action == "activate":
                 assert self.free
+                if values["manifest"]["version"] != "old":
+                    from pathlib import PurePosixPath
+                    from tests.workspace_image_assets import image_names
+
+                    target = values["manifest"]
+                    assert target["workspaceImageFiles"] == image_names()
+                    release = PurePosixPath(target["executable"]).parent
+                    for name in image_names():
+                        assert str(release / name) in files
                 files[manifest_path] = json.dumps(values["manifest"])
                 self.free = False
                 events.append("activate:" + values["manifest"]["version"])
@@ -362,10 +371,13 @@ async def test_runtime_upgrade_lifecycle(
         "executable": str(tmp_path / "helper"),
         "kernel": str(tmp_path / "kernel"),
         "initImage": "init@digest",
-        "workspaceImage": "workspace@digest",
     }
+    from tests.workspace_image_assets import write_images
+
+    write_images(tmp_path)
     (tmp_path / "graphics").mkdir()
     for path, name in remote.runtime_assets(assets)[2:]:
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(name)
     args = (machine(), "key", assets, [workspace] if approved else [])
     if stage_error:

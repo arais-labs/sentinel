@@ -20,7 +20,9 @@ struct Response: Encodable { var id: String?; var event: String? }
                 _ = readLine()
                 return
             }
-            guard args[1] == "--owned-service" else { throw RuntimeError("Unexpected launch") }
+            guard args.count == 5, args[1] == "--owned-service", args[4] == "init" else {
+                throw RuntimeError("Expected native boot arguments without a workspace image")
+            }
             let owner = RuntimeUpdate.inheritedOwner
             guard flock(owner, LOCK_EX | LOCK_NB) == 0 else { throw RuntimeError("Missing inherited owner") }
             defer { close(owner) }
