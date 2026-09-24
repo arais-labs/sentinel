@@ -85,7 +85,7 @@ jobs:
 
       - name: Test GPU credit transport
         working-directory: apps/desktop/sentinel
-        run: python3 -m unittest discover -s tests/graphics/transport -p 'test_*.py'
+        run: SENTINEL_TRANSPORT_SANITIZERS=1 python3 -m unittest discover -s tests/graphics/transport -p 'test_*.py'
 
   frontend-build:
     name: Frontend Build
@@ -216,6 +216,10 @@ jobs:
           sudo xcode-select --switch /Applications/Xcode_26.3.app/Contents/Developer
           test "$(uname -m)" = arm64
           echo "image=$ImageVersion" >> "$GITHUB_OUTPUT"
+      - name: Test macOS GPU credit transport
+        if: matrix.artifact == 'installer'
+        # Sanitizers run in the Linux job; retain native macOS socket coverage.
+        run: python3 -m unittest discover -s tests/graphics/transport -p 'test_*.py'
       - uses: actions/setup-node@v6
         with:
           node-version: '22'
@@ -276,7 +280,6 @@ jobs:
           python3 -m unittest discover -s tests/native -p 'test_*.py'
           python3 -m unittest discover -s tests/graphics/host -p 'test_*.py'
           python3 -m unittest discover -s tests/graphics/host/mesa -p 'test_*.py'
-          SENTINEL_TRANSPORT_SANITIZERS=1 python3 -m unittest discover -s tests/graphics/transport -p 'test_*.py'
           PATH="$PWD/build/graphics-sources/venv/bin:$PATH" sh tests/graphics/guest/run.sh
       - name: Build and verify installer
         if: matrix.artifact == 'installer'
