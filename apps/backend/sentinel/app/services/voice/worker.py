@@ -115,10 +115,16 @@ def main():
             )
             text = " ".join(segment.text.strip() for segment in segments)
             print(json.dumps({"text": text}), flush=True)
-        except Exception:
+        except Exception as exc:
+            # Keep the operator-facing wording, but carry the underlying cause so a
+            # dependency or decoder fault is diagnosable instead of looking like a
+            # dropped worker connection. Never include audio or transcript content.
             print(
                 json.dumps(
-                    {"error": "Local speech processing failed. Reconnect Voice and try again."}
+                    {
+                        "error": "Local speech processing failed. Reconnect Voice and try again.",
+                        "cause": f"{type(exc).__name__}: {exc}"[:300],
+                    }
                 ),
                 flush=True,
             )

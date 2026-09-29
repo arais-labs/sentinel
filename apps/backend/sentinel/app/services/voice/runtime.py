@@ -17,7 +17,11 @@ from .gateway import VoiceUnavailable
 
 PACKAGE = "faster-whisper==1.2.1"
 SPEECH_PACKAGE = "kokoro-onnx==0.6.1"
-INSTALL_VERSION = "faster-whisper-1.2.1-base-kokoro-0.6.1-int8-v2"
+# faster-whisper 1.2.1 decodes audio with av.open(..., metadata_errors="ignore").
+# PyAV 19 removed that keyword, so an unpinned transitive install breaks every
+# transcription with TypeError. Cap PyAV until faster-whisper supports it.
+AUDIO_PACKAGE = "av<19"
+INSTALL_VERSION = "faster-whisper-1.2.1-base-kokoro-0.6.1-int8-av18-v3"
 WORKER = Path(__file__).with_name("worker.py")
 
 
@@ -138,6 +142,7 @@ class VoiceRuntime:
                     "--only-binary=:all:",
                     PACKAGE,
                     SPEECH_PACKAGE,
+                    AUDIO_PACKAGE,
                 )
                 self.phase = "Downloading and verifying Whisper + Kokoro English"
                 await self._install_command(
@@ -247,7 +252,9 @@ class VoiceRuntime:
                 await self.process.stdin.drain()
                 result = json.loads(await asyncio.wait_for(self.process.stdout.readline(), 40))
                 if result.get("error"):
-                    raise VoiceUnavailable(result["error"])
+                    cause = result.get("cause")
+                    self.error = f"{result['error']} ({cause})" if cause else result["error"]
+                    raise VoiceUnavailable(self.error)
                 return result
             except BaseException:
                 await self._terminate(self.process)
