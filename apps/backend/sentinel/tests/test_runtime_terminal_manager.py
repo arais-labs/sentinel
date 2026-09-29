@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+import shlex
 import subprocess
 import tempfile
 import sys
@@ -167,14 +168,6 @@ def test_osc133_capture_is_clean_for_wrapped_multiline(tmp_path: Path, tmux_sock
         "printf 'OUT1\\n'\ncat <<'EOF'\nhello\nEOF\nprintf 'OUT2\\n'"
     )
 
-    def pane_command() -> str:
-        probe = subprocess.run(
-            ["tmux", "-S", socket, "display-message", "-p", "-t", name, "#{pane_current_command}"],
-            capture_output=True,
-            text=True,
-        )
-        return probe.stdout.strip()
-
     try:
         subprocess.run(
             [
@@ -189,10 +182,9 @@ def test_osc133_capture_is_clean_for_wrapped_multiline(tmp_path: Path, tmux_sock
                 "200",
                 "-y",
                 "50",
-                "/bin/bash",
-                "--rcfile",
-                str(rc),
-                "-i",
+                # Attach capture before starting Bash so its first prompt cannot be missed.
+                f"tmux -S {shlex.quote(socket)} wait-for capture-ready; "
+                f"exec /bin/bash --rcfile {shlex.quote(str(rc))} -i",
             ],
             check=True,
             capture_output=True,
@@ -202,9 +194,15 @@ def test_osc133_capture_is_clean_for_wrapped_multiline(tmp_path: Path, tmux_sock
             check=True,
             capture_output=True,
         )
-        ready = time.time() + 5
-        while time.time() < ready and pane_command() not in {"bash", "sh"}:
-            time.sleep(0.1)
+        subprocess.run(
+            ["tmux", "-S", socket, "wait-for", "-S", "capture-ready"],
+            check=True,
+            capture_output=True,
+        )
+        ready = time.monotonic() + 5
+        while not log.exists() or b"\x1b]133;B\x1b\\" not in log.read_bytes():
+            assert time.monotonic() < ready, "shell did not emit its prompt-ready marker"
+            time.sleep(0.01)
         subprocess.run(
             ["tmux", "-S", socket, "send-keys", "-t", name, "C-u"], check=True, capture_output=True
         )

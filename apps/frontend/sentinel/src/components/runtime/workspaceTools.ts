@@ -4,7 +4,6 @@ export const toolNames: Record<string, string> = {
   "kubectl": "kubectl",
   "helm": "Helm",
   "docker-builder": "Docker Builder",
-  "desktop": "Desktop",
   "git": "Git",
   "node": "Node.js",
   "bun": "Bun",

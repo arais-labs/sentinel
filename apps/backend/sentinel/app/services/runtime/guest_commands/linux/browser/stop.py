@@ -2,51 +2,49 @@ from __future__ import annotations
 
 import json
 import os
+import select
 import signal
 import sys
-import time
 from pathlib import Path
 
 request = json.loads(sys.argv[1])
 metadata_path = Path(request["runtime"]) / "browser.json"
 
 
-def pid_alive(pid):
-    if not isinstance(pid, int) or pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-
-
 def kill_pid(pid):
-    if not pid_alive(pid):
-        return
-    # A queued cleanup may run after reboot: never signal a reused PID.
-    profile_arg = "--user-data-dir=" + str(Path(request["browser"]) / "chromium")
-    try:
-        arguments = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
-    except (FileNotFoundError, ProcessLookupError):
-        return
-    if profile_arg.encode() not in arguments:
+    if pid <= 0:
         return
     try:
-        os.kill(pid, signal.SIGTERM)
+        descriptor = os.pidfd_open(pid)
     except ProcessLookupError:
         return
-    deadline = time.time() + 5
-    while time.time() < deadline:
-        if not pid_alive(pid):
+    try:
+        process = Path(f"/proc/{pid}")
+        try:
+            fields = (process / "stat").read_text().rsplit(")", 1)[1].split()
+            identity = {
+                "boot_id": Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
+                "start_ticks": fields[19],
+                "uid": process.stat().st_uid,
+            }
+        except FileNotFoundError:
             return
-        time.sleep(0.1)
-    try:
-        os.kill(pid, signal.SIGKILL)
-    except ProcessLookupError:
-        return
+        # Chromium rewrites argv; use birth identity and a stable kernel handle.
+        # A queued cleanup after reboot or PID reuse must never signal a stranger.
+        if identity != metadata.get("process_identity"):
+            raise ValueError("Browser process identity does not match; refusing to signal it")
+        poller = select.poll()
+        poller.register(descriptor, select.POLLIN)
+        try:
+            signal.pidfd_send_signal(descriptor, signal.SIGTERM)
+            if not poller.poll(5000):
+                signal.pidfd_send_signal(descriptor, signal.SIGKILL)
+                if not poller.poll(5000):
+                    raise TimeoutError("Browser did not exit after SIGKILL")
+        except ProcessLookupError:
+            pass
+    finally:
+        os.close(descriptor)
 
 
 try:

@@ -27,6 +27,7 @@ async def test_pending_migration_collects_existing_references_through_local_brid
         name="Project",
         directory="/project",
         distribution="ubuntu",
+        desktop="none",
         development_tools=["git"],
     )
 
@@ -58,6 +59,7 @@ async def test_pending_migration_collects_existing_references_through_local_brid
                 "name": row.name,
                 "project": row.directory,
                 "distribution": "ubuntu",
+                "desktop": "none",
                 "tools": ["git"],
             }
         ],

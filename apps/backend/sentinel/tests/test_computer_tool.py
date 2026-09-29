@@ -5,7 +5,7 @@ import sys
 import importlib.util
 import json
 from pathlib import Path
-from types import ModuleType, SimpleNamespace
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
@@ -19,14 +19,15 @@ from tests.test_runtime_desktop_cleanup import desktop_manager
 path = Path(__file__).parents[1] / "app/services/runtime/guest_commands/linux/desktop/computer.py"
 spec = importlib.util.spec_from_file_location("workspace_computer_worker", path)
 worker = importlib.util.module_from_spec(spec)
-# X11/Pillow are guest dependencies; controller validation needs no host display.
-xlib = ModuleType("Xlib")
-xlib.X, xlib.XK, xlib.display = SimpleNamespace(), SimpleNamespace(), SimpleNamespace()
-xlib_ext = ModuleType("Xlib.ext")
-xlib_ext.xtest = SimpleNamespace()
-pillow = ModuleType("PIL")
-pillow.Image = SimpleNamespace()
-with patch.dict(sys.modules, {"Xlib": xlib, "Xlib.ext": xlib_ext, "PIL": pillow}):
+# Import the actual guest adapter without requiring a display on the test host.
+adapter_path = (
+    Path(__file__).resolve().parents[4]
+    / "apps/desktop/sentinel/native/graphics/guest/sentinel_display.py"
+)
+adapter_spec = importlib.util.spec_from_file_location("sentinel_display", adapter_path)
+adapter = importlib.util.module_from_spec(adapter_spec)
+adapter_spec.loader.exec_module(adapter)
+with patch.dict(sys.modules, {"sentinel_display": adapter}):
     spec.loader.exec_module(worker)
 
 
@@ -82,12 +83,12 @@ async def test_computer_uses_bound_container_and_preserves_partial_failure():
     assert sent.pop("request_id")
     assert sent == request
     assert "$(do not execute)" not in args[2]
-    assert 'display.Display(":1")' in args[2]
+    assert "from sentinel_display import Desktop" in args[2]
 
 
 @pytest.mark.asyncio
 async def test_no_host_fallback_without_desktop_package():
-    manager, transport = desktop_manager(tools=())
+    manager, transport = desktop_manager(desktop="none")
     with pytest.raises(RuntimeError, match="Desktop"):
         await manager.computer("session", {"actions": []})
     transport.run.assert_not_awaited()
@@ -134,8 +135,7 @@ def test_latest_tool_screenshot_reaches_model_as_image_not_base64_text():
 
 def test_release_runs_when_drag_action_is_interrupted():
     desktop = object.__new__(worker.Desktop)
-    desktop.X = SimpleNamespace(ButtonPress=4)
-    desktop.press = lambda *args: None
+    desktop.input = lambda *args: None
     released = []
     desktop.release = lambda: released.append(True)
 

@@ -1,0 +1,54 @@
+.machine-folder-picker { margin: auto; width: min(780px, calc(100vw - 40px)); max-height: calc(100dvh - 40px); padding: 0; overflow: hidden; border: 1px solid var(--border-subtle); border-radius: 16px; background: var(--surface-1); color: var(--text-primary); box-shadow: 0 24px 80px #0005; }
+.machine-folder-picker::backdrop { background: #0008; backdrop-filter: blur(4px); }
+.machine-folder-shell { display: flex; flex-direction: column; max-height: calc(100dvh - 42px); }
+.machine-folder-picker button { cursor: pointer; }
+.machine-folder-picker button:disabled { opacity: .4; cursor: default; }
+.machine-folder-picker button:focus-visible, .machine-folder-picker input:focus-visible { outline: 1px solid var(--sentinel-blue); outline-offset: -1px; }
+.machine-folder-heading { display: flex; align-items: center; justify-content: space-between; padding: 22px 24px 16px; }
+.machine-folder-heading h2 { font-size: 16px; font-weight: 600; }
+.machine-folder-heading p { margin-top: 3px; font-size: 12px; color: var(--text-secondary); }
+.machine-folder-heading > button { padding: 8px; border-radius: 8px; }
+.machine-folder-toolbar { display: flex; align-items: center; gap: 12px; padding: 0 20px 16px; }
+.machine-folder-navigation { display: flex; gap: 2px; }
+.machine-folder-navigation button, .machine-folder-path button { display: grid; place-items: center; width: 30px; height: 34px; border-radius: 6px; }
+.machine-folder-picker button:not(:disabled):hover { background: var(--surface-2); }
+.machine-folder-breadcrumbs, .machine-folder-path { display: flex; align-items: center; flex: 1; min-width: 0; min-height: 36px; border: 1px solid var(--border-subtle); border-radius: 8px; background: var(--surface-0); padding: 0 5px; overflow-x: auto; }
+.machine-folder-breadcrumbs > span { display: flex; align-items: center; flex-shrink: 0; color: var(--text-muted); }
+.machine-folder-breadcrumbs button { display: inline-flex; align-items: center; gap: 6px; padding: 7px 8px; border-radius: 5px; font-size: 12px; white-space: nowrap; color: var(--text-secondary); }
+.machine-folder-breadcrumbs button[aria-current] { color: var(--text-primary); font-weight: 600; }
+.machine-folder-breadcrumbs .machine-folder-edit-path { margin-left: auto; }
+.machine-folder-path input { width: 100%; min-width: 0; padding: 7px; background: transparent; font-size: 12px; }
+.machine-folder-body { display: flex; min-height: 0; height: min(370px, 48dvh); border-block: 1px solid var(--border-subtle); }
+.machine-folder-sidebar { width: 166px; flex-shrink: 0; padding: 12px 8px; overflow-y: auto; border-right: 1px solid var(--border-subtle); }
+.machine-folder-sidebar h3 { padding: 8px 10px; font-size: 10px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: .08em; }
+.machine-folder-sidebar h3:not(:first-child) { margin-top: 12px; }
+.machine-folder-sidebar button { display: flex; align-items: center; gap: 9px; width: 100%; border-radius: 6px; padding: 8px 10px; text-align: left; font-size: 12px; color: var(--text-secondary); }
+.machine-folder-sidebar button[aria-current] { background: var(--surface-2); color: var(--text-primary); }
+.machine-folder-sidebar span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.machine-folder-sidebar svg { flex-shrink: 0; }
+.machine-folder-main { display: flex; flex-direction: column; flex: 1; min-width: 0; background: var(--surface-0); }
+.machine-folder-actions { display: flex; gap: 12px; align-items: center; padding: 12px 14px; }
+.machine-folder-actions label { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; color: var(--text-muted); }
+.machine-folder-actions input { background: transparent; width: 100%; min-width: 0; padding: 6px 0; font-size: 12px; }
+.machine-folder-actions > button { display: flex; align-items: center; gap: 7px; font-size: 11px; padding: 7px; border-radius: 6px; white-space: nowrap; }
+.machine-folder-list { flex: 1; min-height: 0; overflow-y: auto; padding: 0 6px; }
+.machine-folder-list > button { display: flex; align-items: center; gap: 10px; width: 100%; border-radius: 6px; padding: 10px; text-align: left; font-size: 13px; }
+.machine-folder-list > button > span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.machine-folder-list svg { flex-shrink: 0; color: var(--accent-solid); }
+.machine-folder-list > button[aria-pressed="true"] { background: color-mix(in srgb, var(--accent-solid) 14%, var(--surface-0)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-solid) 25%, transparent); }
+.machine-folder-message { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; min-height: 160px; padding: 20px; color: var(--text-secondary); font-size: 12px; text-align: center; }
+.machine-folder-message small { color: var(--text-muted); }
+.machine-folder-message button { padding: 8px; text-decoration: underline; }
+.machine-folder-create { padding: 6px 10px; }
+.machine-folder-create > div { display: flex; align-items: center; gap: 8px; }
+.machine-folder-create input { min-width: 0; flex: 1; background: var(--surface-1); border: 1px solid var(--border-strong); border-radius: 5px; padding: 7px; font-size: 13px; }
+.machine-folder-create button { padding: 5px; border-radius: 5px; }
+.machine-folder-create p { color: var(--text-secondary); font-size: 11px; margin-top: 6px; }
+.machine-folder-hint { padding: 10px 16px; font-size: 10px; color: var(--text-muted); }
+.machine-folder-footer { display: flex; align-items: center; gap: 10px; padding: 16px 20px; }
+.machine-folder-footer > div { flex: 1; min-width: 0; }
+.machine-folder-footer span { display: block; font-size: 10px; color: var(--text-muted); margin-bottom: 4px; }
+.machine-folder-footer strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; font-weight: 400; color: var(--text-secondary); }
+.machine-folder-footer p { font-size: 11px; color: var(--text-secondary); margin-top: 4px; }
+.machine-folder-footer > button { padding: 10px 14px; font-size: 12px; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 600px) { .machine-folder-sidebar { width: 124px; } .machine-folder-toolbar { padding-inline: 12px; gap: 6px; } .machine-folder-heading { padding-inline: 16px; } .machine-folder-footer { flex-wrap: wrap; padding: 12px; } .machine-folder-footer > div { flex-basis: 100%; } .machine-folder-actions > button span { display: none; } }

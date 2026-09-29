@@ -22,16 +22,96 @@ final class GuestPortForward: @unchecked Sendable {
         return directory.appendingPathComponent(name).path
     }
 
+    final class Connection: @unchecked Sendable {
+        private struct State {
+            var active = 0
+            var closed = false
+            var released = false
+        }
+        private let state = Mutex(State())
+        private let file: FileHandle
+        let identifier: Int32
+
+        init(_ file: FileHandle) {
+            self.file = file
+            identifier = file.fileDescriptor
+        }
+
+        func withDescriptor<T>(_ body: (Int32) throws -> T) throws -> T {
+            let accepted = state.withLock { state in
+                if state.closed { return false }
+                state.active += 1
+                return true
+            }
+            guard accepted else { throw RuntimeError("Guest forward connection closed") }
+            defer {
+                let release = state.withLock { state in
+                    state.active -= 1
+                    if state.closed && state.active == 0 && !state.released {
+                        state.released = true
+                        return true
+                    }
+                    return false
+                }
+                if release { try? file.close() }
+            }
+            return try body(identifier)
+        }
+
+        func finishWriting() {
+            _ = try? withDescriptor { shutdown($0, SHUT_WR) }
+        }
+
+        func cancel() {
+            let release = state.withLock { state in
+                if !state.closed {
+                    state.closed = true
+                    shutdown(identifier, SHUT_RDWR)
+                }
+                if state.active == 0 && !state.released {
+                    state.released = true
+                    return true
+                }
+                return false
+            }
+            if release { try? file.close() }
+        }
+
+        deinit { cancel() }
+    }
+
     final class SocketWriter: Writer {
-        let file: FileHandle
-        init(_ file: FileHandle) { self.file = file }
-        func write(_ data: Data) throws { try file.write(contentsOf: data) }
-        func close() { shutdown(file.fileDescriptor, SHUT_WR) }
+        let connection: Connection
+        let failure: @Sendable () -> Void
+        init(_ connection: Connection, failure: @escaping @Sendable () -> Void) {
+            self.connection = connection
+            self.failure = failure
+        }
+        func write(_ data: Data) throws {
+            do {
+                try connection.withDescriptor { fd in
+                    try data.withUnsafeBytes { bytes in
+                        var offset = 0
+                        while offset < bytes.count {
+                            let count = Darwin.send(fd, bytes.baseAddress!.advanced(by: offset), bytes.count - offset, 0)
+                            if count < 0 && errno == EINTR { continue }
+                            guard count > 0 else { throw RuntimeError("Guest forward connection closed") }
+                            offset += count
+                        }
+                    }
+                }
+            } catch {
+                failure()
+                throw error
+            }
+        }
+        func close() { connection.finishWriting() }
     }
     struct State {
         var closed = false
-        var clients: [Int32: FileHandle] = [:]
+        var clients: [Int32: Connection] = [:]
         var processes: [Int32: LinuxProcess] = [:]
+        var inputs: [Int32: BinaryInput] = [:]
     }
     private let state = Mutex(State())
     private let listener: Int32
@@ -58,53 +138,61 @@ final class GuestPortForward: @unchecked Sendable {
                 if fd < 0 { break }
                 var noSignal: Int32 = 1
                 setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSignal, socklen_t(MemoryLayout<Int32>.size))
-                var timeout = timeval(tv_sec: 5, tv_usec: 0)
-                setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
                 let file = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+                let connection = Connection(file)
                 let accepted = state.withLock { state in
                     guard !state.closed, state.clients.count < 16 else { return false }
-                    state.clients[fd] = file
+                    state.clients[fd] = connection
                     return true
                 }
-                guard accepted else { try? file.close(); continue }
-                Task { await self.serve(file, container: container, port: port) }
+                guard accepted else { connection.cancel(); continue }
+                Task { await self.serve(connection, container: container, port: port) }
             }
         }
     }
 
-    private func serve(_ file: FileHandle, container: LinuxContainer, port: Int) async {
-        let fd = file.fileDescriptor, input = BinaryInput()
+    private func serve(_ connection: Connection, container: LinuxContainer, port: Int) async {
+        let fd = connection.identifier, input = BinaryInput()
         var process: LinuxProcess?
-        let readers = DispatchGroup()
         defer {
-            input.close()
-            shutdown(fd, SHUT_RDWR)
-            state.withLock { state in state.clients.removeValue(forKey: fd); state.processes.removeValue(forKey: fd) }
-            readers.notify(queue: .global()) { try? file.close() }
+            input.cancel()
+            connection.cancel()
+            state.withLock { state in
+                guard state.clients[fd] === connection else { return }
+                state.clients.removeValue(forKey: fd)
+                state.processes.removeValue(forKey: fd)
+                state.inputs.removeValue(forKey: fd)
+            }
         }
         do {
+            guard state.withLock({ state in
+                if state.closed || state.clients[fd] !== connection { return false }
+                state.inputs[fd] = input
+                return true
+            }) else { throw RuntimeError("Guest forward closed") }
             let child = try await container.exec(UUID().uuidString) { config in
                 // Send interactive input immediately; Nagle plus delayed ACKs
                 // otherwise batches mouse events and VNC requests for ~40 ms.
                 config.arguments = ["socat", "-", "TCP:127.0.0.1:\(port),nodelay"]
                 config.environmentVariables = ["PATH=\(LinuxProcessConfiguration.defaultPath)", "HOME=/root"]
                 config.stdin = input
-                config.stdout = SocketWriter(file)
+                config.stdout = SocketWriter(connection) { self.abort(connection) }
                 config.stderr = RuntimeLog(container.id)
             }
             process = child
             guard state.withLock({ state in
-                if state.closed { return false }
+                if state.closed || state.clients[fd] !== connection { return false }
                 state.processes[fd] = child
                 return true
             }) else { throw RuntimeError("Guest forward closed") }
             try await child.start()
-            readers.enter()
             DispatchQueue.global().async {
-                defer { input.close(); readers.leave() }
+                defer { input.close() }
                 do {
-                    while let data = try RemoteControl.readChunk(fd) { try input.write(data) }
-                } catch { shutdown(fd, SHUT_RDWR) }
+                    while let data = try connection.withDescriptor({ try RemoteControl.readChunk($0) }) {
+                        try input.write(data)
+                    }
+                } catch { self.abort(connection) }
             }
             _ = try await child.wait()
             try? await child.delete()
@@ -113,14 +201,26 @@ final class GuestPortForward: @unchecked Sendable {
         }
     }
 
+    private func abort(_ connection: Connection) {
+        let fd = connection.identifier
+        connection.cancel()
+        let endpoint = state.withLock { state -> (BinaryInput?, LinuxProcess?) in
+            guard state.clients[fd] === connection else { return (nil, nil) }
+            return (state.inputs[fd], state.processes[fd])
+        }
+        endpoint.0?.cancel()
+        if let process = endpoint.1 { Task { try? await process.kill(.kill) } }
+    }
+
     func stop() async {
-        let processes = state.withLock { state in
+        let pending = state.withLock { state in
             state.closed = true
             shutdown(listener, SHUT_RDWR)
-            for file in state.clients.values { shutdown(file.fileDescriptor, SHUT_RDWR) }
-            return Array(state.processes.values)
+            for connection in state.clients.values { connection.cancel() }
+            return (Array(state.processes.values), Array(state.inputs.values))
         }
-        for process in processes { try? await process.kill(.kill) }
+        for input in pending.1 { input.cancel() }
+        for process in pending.0 { try? await process.kill(.kill) }
         unlink(path)
     }
 }

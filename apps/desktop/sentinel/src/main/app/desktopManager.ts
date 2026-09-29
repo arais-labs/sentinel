@@ -404,29 +404,27 @@ export class DesktopManager {
       const resources = app.isPackaged ? path.join(resourceRoot(), 'workspace-runtime')
         : path.join(resourceRoot(), 'apps/desktop/sentinel/build/macos-arm64/runtime/workspace-runtime');
       const manifest = JSON.parse(await readFile(path.join(resources, 'manifest.json'), 'utf8')) as KernelManifest & {
-        protocol: number; initImage: string; workspaceImage: string;
+        protocol: number; initImage: string;
       };
-      if (manifest.protocol !== 1 || !manifest.initImage || !manifest.workspaceImage) {
+      if (manifest.protocol !== 1 || !manifest.initImage) {
         throw new Error('The bundled workspace runtime is incomplete. Reinstall Sentinel.');
       }
-      const kernel = new WorkspaceKernel(path.join(hostStateRoot(), 'workspace-runtime'), manifest,
+      const kernel = new WorkspaceKernel(resources, manifest,
         message => this.supervisor.appendManagerLog(message));
-      // Warm the shared kernel cache without waiting for it or starting any VM.
-      void kernel.ensure().catch(error => this.supervisor.appendManagerLog(`Workspace kernel download will retry when needed: ${String(error)}`));
+      // Verify the bundled kernel without starting a VM or downloading anything.
+      void kernel.ensure().catch(error => this.supervisor.appendManagerLog(`Workspace kernel unavailable: ${String(error)}`));
       this.workspaceRuntime = new WorkspaceRuntime({
         prepare: () => kernel.ensure(),
         cancelPreparation: () => kernel.cancel(),
         command: path.join(resources, 'sentinel-workspace-runtime'),
-        args: [path.join(hostStateRoot(), 'workspace-runtime'), kernel.file, manifest.initImage, manifest.workspaceImage],
+        args: [path.join(hostStateRoot(), 'workspace-runtime'), kernel.file, manifest.initImage],
         onProgress: message => this.supervisor.appendManagerLog(message),
         onFailure: message => this.supervisor.appendManagerLog(message),
         log: message => this.supervisor.appendManagerLog(message),
       });
     }
     if (!this.workspaceLifecycle) {
-      const resources = app.isPackaged ? path.join(resourceRoot(), 'workspace-runtime/graphics')
-        : path.join(resourceRoot(), 'apps/desktop/sentinel/build/macos-arm64/runtime/workspace-runtime/graphics');
-      this.workspaceGraphics = new WorkspaceGraphics(this.workspaceRuntime, resources);
+      this.workspaceGraphics = new WorkspaceGraphics(this.workspaceRuntime);
       this.workspaceLifecycle = new WorkspaceLifecycle(this.workspaceRuntime, path.join(hostStateRoot(), 'workspace-runtime'), this.workspaceGraphics);
       this.workspaceLifecycle.events.on('changed', (id, entry) => {
         try { publishWorkspaceNotification(this.notifications, id, entry); }
@@ -442,7 +440,7 @@ export class DesktopManager {
       await this.workspaceLifecycle.load();
     }
     this.workspaceRuntimeBridge ??= await openWorkspaceRuntimeBridge(
-      this.workspaceRuntime, path.join(this.socketDirectory!, 'workspaces.sock'), this.secrets!.desktopToken, this.workspaceLifecycle, this.workspaceGraphics, this.notifications,
+      this.workspaceRuntime, path.join(this.socketDirectory!, 'workspaces.sock'), this.secrets!.desktopToken, this.workspaceLifecycle, this.notifications,
     );
   }
 

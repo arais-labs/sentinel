@@ -35,7 +35,7 @@ test('session layouts isolate, capture pending edits, restore and persist indepe
   };
   const server = await createServer({
     root: fileURLToPath(new URL('..', import.meta.url)), configFile: false,
-    // The production registry imports page renderers (including noVNC). Only
+    // The production registry imports page renderers (including desktop video). Only
     // tab IDs are relevant to these store tests; don't mount any UI here.
     plugins: [{
       name: 'layout-test-tab-registry',

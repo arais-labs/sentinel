@@ -1,0 +1,3 @@
+option('mesa_source_dir', type: 'string', value: '', description: 'Mesa source tree for inline-write and EGL headers')
+option('drm_planes', type: 'boolean', value: false, description: 'Run the live DRM plane capability gate (Linux)')
+option('egl_library', type: 'string', value: '', description: 'Packaged libEGL.so.1 for the live OpenGL gate (Linux)')

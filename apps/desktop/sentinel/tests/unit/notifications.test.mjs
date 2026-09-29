@@ -75,7 +75,7 @@ test('authenticated backend can publish over the desktop bridge without starting
   const { openWorkspaceRuntimeBridge } = await import('../../.test-dist/main/transport/workspaceRuntimeBridge.js');
   const { request } = await import('node:http');
   const socket = path.join(path.dirname(file), 'bridge.sock');
-  const bridge = await openWorkspaceRuntimeBridge({}, socket, 'test-token', {}, undefined, inbox);
+  const bridge = await openWorkspaceRuntimeBridge({}, socket, 'test-token', {}, inbox);
   t.after(() => bridge.close());
   const post = token => new Promise((resolve, reject) => {
     const req = request({ socketPath: socket, path: '/v1/notifications', method: 'POST', headers: { 'x-sentinel-desktop-token': token } }, response => {

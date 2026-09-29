@@ -36,7 +36,6 @@ class RuntimeLiveViewResponse(BaseModel):
     mode: str = "none"
     url: str | None = None
     ws_url: str | None = None
-    vnc_update_mode: Literal["native", "paced"] = "paced"
     display: str | None = None
     geometry: str | None = None
     reason: str | None = None

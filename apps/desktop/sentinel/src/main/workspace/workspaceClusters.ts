@@ -183,8 +183,9 @@ ${tools.includes('docker-builder') ? 'Build and publish: docker buildx build --b
 ${contexts.length ? 'Kubernetes contexts: ' + contexts.join(', ') + '\nChoose: kubectl config use-context <context>\nUse localhost:5001/my-app:dev as the image in your manifests.\nExpose a service inside this workspace: kubectl port-forward service/<name> 8080:80\nUse Sentinel port_forward only when the user needs a preview outside the workspace.' : ''}
 
 Storage and credentials stay on this workspace's private disk. Stop/start preserves them.
-Reinstall preserves cluster data and versions; it does not recreate clusters.
-Deleting the workspace removes its clusters, registry and build cache.
+Ordinary tool setup reuses existing clusters and preserves their data and versions.
+Reinstall erases the private Linux disk, including clusters, registry, build cache and credentials, then creates fresh selected tools.
+Deleting the workspace also removes this private data. Neither operation deletes the mounted host project folder.
 DOC
 `, 10);
   }

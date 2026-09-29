@@ -1,4 +1,5 @@
 import type { SetupStep } from './workspaceTools.js';
+import type { WorkspaceDistribution } from './workspaceDistributions.js';
 
 // Official ARM64 releases, checked 2026-09-14. Checksums come from upstream release metadata.
 export const binaryReleases = {
@@ -75,10 +76,10 @@ ${release.check}
 }
 
 // Ubuntu and Debian share these glibc recipes and the existing cluster lifecycle.
-export function binaryToolSteps(tools: string[]): SetupStep[] {
+export function binaryToolSteps(tools: string[], distribution: WorkspaceDistribution): SetupStep[] {
   const steps: SetupStep[] = [];
   const add = (message: string, script: string, timeout = 660) => steps.push({ message, arguments: ['sh', '-ec', script], timeout });
-  const node = tools.some(tool => ['node', 'pnpm', 'yarn', 'typescript', 'chromium', 'desktop'].includes(tool));
+  const node = tools.some(tool => ['node', 'pnpm', 'yarn', 'typescript'].includes(tool));
   if (node) add('Installing Node.js…', installBinary(binaryReleases.node));
   for (const id of ['bun', 'uv', 'deno', 'dotnet'] as const) {
     if (tools.includes(id)) add(`Installing ${id === 'dotnet' ? '.NET' : id}…`, installBinary(binaryReleases[id]));
@@ -101,26 +102,15 @@ if yarn --version 2>/dev/null | grep -Fx '1.22.22' >/dev/null; then exit 0; fi
 npm install --global --prefix /usr/local --no-audit --no-fund 'yarn@1.22.22'
 yarn --version
 `, 360);
-  if (tools.includes('chromium') || tools.includes('desktop')) add('Installing Chromium…', `
-export PLAYWRIGHT_BROWSERS_PATH=/opt/sentinel/browsers
-version=$(node -e 'try { console.log(require("/opt/sentinel/browser-driver/node_modules/playwright/package.json").version) } catch {}')
-browser=$(node -e 'try { console.log(require("/opt/sentinel/browser-driver/node_modules/playwright").chromium.executablePath()) } catch {}')
-if [ "$version" = 1.63.0 ] && [ -x "$browser" ] && chromium --version >/dev/null 2>&1 && grep -q SENTINEL_CHROMIUM_WRAPPER /usr/local/bin/chromium; then exit 0; fi
-if [ "$version" != 1.63.0 ]; then
-  npm install --prefix /opt/sentinel/browser-driver --no-audit --no-fund playwright@1.63.0
-fi
-/opt/sentinel/browser-driver/node_modules/.bin/playwright install --with-deps --no-shell chromium
-browser=$(node -e 'console.log(require("/opt/sentinel/browser-driver/node_modules/playwright").chromium.executablePath())')
-test -x "$browser"
-python3 - "$browser" <<'LAUNCHER'
-import pathlib, shlex, sys
-path = pathlib.Path("/usr/local/bin/chromium")
-path.unlink(missing_ok=True)
-path.write_text('#!/bin/sh\\n# SENTINEL_CHROMIUM_WRAPPER\\nexec ' + shlex.quote(sys.argv[1]) + ' \${CHROMIUM_USER_FLAGS:-} "$@"\\n')
-path.chmod(0o755)
-LAUNCHER
-chromium --version
+  if (distribution === 'ubuntu' && (tools.includes('chromium') || tools.includes('desktop'))) add('Installing Chromium…', `
+grep -qw squashfs /proc/filesystems || { echo 'The workspace kernel needs SquashFS support for Chromium Snap' >&2; exit 1; }
+test -d /sys/kernel/security/apparmor || { echo 'The workspace kernel needs active AppArmor support for Chromium Snap' >&2; exit 1; }
+systemctl start apparmor.service
+systemctl enable --now snapd.apparmor.service
+systemctl enable --now snapd.socket
+snap wait system seed.loaded
+snap list chromium >/dev/null 2>&1 || snap install chromium --channel=latest/stable
+test -x /snap/bin/chromium
 `, 900);
-  if (tools.includes('desktop')) add('Preparing desktop commands…', 'test -x /usr/bin/Xtigervnc && ln -sf /usr/bin/Xtigervnc /usr/local/bin/Xvnc', 10);
   return steps;
 }

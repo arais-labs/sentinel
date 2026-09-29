@@ -48,6 +48,8 @@ function readTabId(params: Partial<WorkspacePaneParams> | undefined): WorkspaceT
  * neutralise the pointer backend.
  */
 function blockDrag(event: SyntheticEvent) {
+  // React portals bubble through this header, but their inputs must retain normal focus.
+  if (!event.currentTarget.contains(event.target as Node)) return;
   event.stopPropagation();
   event.preventDefault();
 }

@@ -1,0 +1,10 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Desktop audio test</title>
+<button id="enable">Enable test audio</button>
+<script type="module">
+  import { DesktopAudio } from '../../src/lib/desktop-audio';
+  window.audioErrors = [];
+  window.desktopAudio = new DesktopAudio(error => window.audioErrors.push(error));
+  document.querySelector('#enable').onclick = () => { window.audioReady = window.desktopAudio.enable(); };
+</script>

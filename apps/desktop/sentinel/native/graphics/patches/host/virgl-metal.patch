@@ -1,0 +1,235 @@
+--- a/src/virglrenderer.c
++++ b/src/virglrenderer.c
+@@ -945,7 +945,7 @@
+       state.vrend_initialized = true;
+    }
+ 
+-   if (!state.proxy_initialized) {
++   if ((flags & VIRGL_RENDERER_VENUS) && !state.proxy_initialized) {
+       ret = proxy_renderer_init(&proxy_cbs, flags | VIRGL_RENDERER_NO_VIRGL);
+       if (ret) {
+          virgl_error("failed to initialize venus renderer");
+--- a/src/vrend/vrend_renderer.c
++++ b/src/vrend/vrend_renderer.c
+@@ -7761,11 +7761,6 @@
+ 
+    init_features(gles ? 0 : gl_ver,
+                  gles ? gl_ver : 0);
+-
+-#ifdef __APPLE__
+-   /* macOS core GL 4.1 lacks GL_ARB_copy_image; force fallback paths. */
+-   clear_feature(feat_copy_image);
+-#endif
+ 
+    if (!vrend_winsys_has_gl_colorspace())
+       clear_feature(feat_srgb_write_control) ;
+@@ -8889,19 +8884,7 @@
+       }
+ 
+       if (pr->nr_samples > 1) {
+-         /* Metal backend (macOS): Silently downgrade MSAA to non-MSAA when not supported.
+-          * gl=es mode (ANGLE) handles MSAA correctly, so only apply this workaround
+-          * for desktop GL where Metal backend doesn't support multisampled textures. */
+-         const char *renderer_str = (const char *)glGetString(GL_RENDERER);
+-         bool is_metal_backend = (renderer_str && strstr(renderer_str, "Metal"));
+-         
+-         if (is_metal_backend && !vrend_state.use_gles && !has_feature(feat_storage_multisample)) {
+-            /* Metal backend: No MSAA support, downgrade to regular texture */
+-            virgl_debug("[VREND] Metal backend: MSAA texture requested (samples=%d, target=0x%x), downgrading to non-MSAA\n",
+-                        pr->nr_samples, gr->target);
+-            gr->target = (gr->target == GL_TEXTURE_2D_MULTISAMPLE) ? GL_TEXTURE_2D : GL_TEXTURE_2D_ARRAY;
+-            pr->nr_samples = 0;
+-         } else if (format_can_texture_storage) {
++         if (format_can_texture_storage) {
+             if (gr->target == GL_TEXTURE_2D_MULTISAMPLE) {
+                glTexStorage2DMultisample(gr->target, pr->nr_samples,
+                                          internalformat, pr->width0, pr->height0,
+@@ -8922,9 +8905,7 @@
+                                        GL_TRUE);
+             }
+          }
+-      }
+-      
+-      if (pr->nr_samples <= 1 && gr->target == GL_TEXTURE_CUBE_MAP) {
++      } else if (gr->target == GL_TEXTURE_CUBE_MAP) {
+             int i;
+             if (format_can_texture_storage)
+                glTexStorage2D(GL_TEXTURE_CUBE_MAP, pr->last_level + 1, internalformat, pr->width0, pr->height0);
+@@ -9835,9 +9816,30 @@
+ 
+    glPixelStorei(GL_PACK_ALIGNMENT, 4);
+ 
+-   write_transfer_data(&res->base, iov, num_iovs, data + send_offset,
+-                       info->stride, info->box, info->level, info->offset,
+-                       false);
++   uint64_t source_stride = util_format_get_stride(res->base.format,
++                                                   u_minify(res->base.width0, info->level));
++   uint64_t source_rows = util_format_get_nblocksy(res->base.format,
++                                                  u_minify(res->base.height0, info->level));
++   uint64_t source_layer_stride = source_stride * source_rows;
++   uint64_t row_bytes = util_format_get_stride(res->base.format, info->box->width);
++   uint64_t rows = util_format_get_nblocksy(res->base.format, info->box->height);
++   uint64_t destination_stride = info->stride ? info->stride : source_stride;
++   uint64_t destination_layer_stride = info->layer_stride ? info->layer_stride : destination_stride * source_rows;
++   uint64_t source_start = send_offset +
++      (info->box->y / util_format_get_blockheight(res->base.format)) * source_stride +
++      (info->box->x / util_format_get_blockwidth(res->base.format)) * (uint64_t)elsize;
++   for (uint32_t layer = 0; layer < (uint32_t)info->box->depth; layer++) {
++      for (uint64_t row = 0; row < rows; row++) {
++         uint64_t source_offset = source_start + layer * source_layer_stride + row * source_stride;
++         uint64_t destination_offset = info->offset + layer * destination_layer_stride + row * destination_stride;
++         if (source_offset > tex_size || row_bytes > tex_size - source_offset ||
++             destination_offset > iov_size || row_bytes > iov_size - destination_offset) {
++            free(data);
++            return EINVAL;
++         }
++         vrend_write_to_iovec(iov, num_iovs, destination_offset, data + source_offset, row_bytes);
++      }
++   }
+    free(data);
+    return 0;
+ }
+@@ -10119,12 +10121,16 @@
+    if (has_bit(res->storage_bits, VREND_STORAGE_GL_BUFFER)) {
+       glBindBufferARB(res->target, res->gl_id);
+       void *data = glMapBufferRange(res->target, info->box->x, info->box->width, GL_MAP_READ_BIT);
+-      if (!data)
++      if (!data) {
+          virgl_error("Unable to open buffer for reading %d\n", res->target);
+-      else
+-         vrend_write_to_iovec(iov, num_iovs, info->offset, data, info->box->width);
+-      glUnmapBuffer(res->target);
++         glBindBufferARB(res->target, 0);
++         return EIO;
++      }
++      vrend_write_to_iovec(iov, num_iovs, info->offset, data, info->box->width);
++      GLboolean valid = glUnmapBuffer(res->target);
+       glBindBufferARB(res->target, 0);
++      if (!valid)
++         return EIO;
+    } else {
+       int ret = -1;
+       bool can_readpixels = true;
+@@ -10280,6 +10286,15 @@
+    }
+ #endif
+ 
++   if (has_bit(res->storage_bits, VREND_STORAGE_GL_BUFFER)) {
++      struct virgl_sub_upload_data upload = { .target = res->target, .box = info->box };
++      glBindBufferARB(res->target, res->gl_id);
++      vrend_read_from_iovec_cb(info->iovec, info->iovec_cnt, info->offset,
++                               info->box->width, iov_buffer_upload, &upload);
++      GLenum error = glGetError();
++      glBindBufferARB(res->target, 0);
++      return error == GL_NO_ERROR ? 0 : EIO;
++   }
+    return vrend_renderer_transfer_write_iov(ctx, res, info->iovec, info->iovec_cnt, info);
+ 
+ }
+@@ -10711,18 +10726,7 @@
+    glBindBuffer(GL_COPY_READ_BUFFER, src_res->gl_id);
+    glBindBuffer(GL_COPY_WRITE_BUFFER, dst_res->gl_id);
+ 
+-#ifdef __APPLE__
+-   /* Apple CGL does not implement glCopyBufferSubData */
+-   if (!vrend_state.use_gles) {
+-      void *src = glMapBufferRange(GL_COPY_READ_BUFFER, srcx, width, GL_MAP_READ_BIT);
+-      glBufferSubData(GL_COPY_WRITE_BUFFER, dstx, width, src);
+-      glUnmapBuffer(GL_COPY_READ_BUFFER);
+-   } else {
+-      glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, srcx, dstx, width);
+-   }
+-#else
+    glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, srcx, dstx, width);
+-#endif
+    glBindBuffer(GL_COPY_READ_BUFFER, 0);
+    glBindBuffer(GL_COPY_WRITE_BUFFER, 0);
+ }
+@@ -12480,16 +12484,6 @@
+ static void vrend_fill_caps_glsl_version(int gl_ver, int gles_ver,
+                                          union virgl_caps *caps)
+ {
+-#ifdef __APPLE__
+-   /* macOS Metal reports GL 4.1 core but Mesa needs explicit GLSL 4.10.
+-    * Force this for any desktop GL context on macOS to avoid fallback to GL 2.1.
+-    */
+-   if (gl_ver >= 30 && gles_ver == 0) {
+-      caps->v1.glsl_level = 410;
+-      return;
+-   }
+-#endif
+-
+    if (gles_ver > 0) {
+       caps->v1.glsl_level = 120;
+ 
+@@ -12758,7 +12752,10 @@
+    }
+ 
+    if (has_feature(feat_timer_query)) {
+-      caps->v1.bset.timer_query = 1;
++      GLint timestamp_bits = 0, elapsed_bits = 0;
++      glGetQueryiv(GL_TIMESTAMP, GL_QUERY_COUNTER_BITS, &timestamp_bits);
++      glGetQueryiv(GL_TIME_ELAPSED, GL_QUERY_COUNTER_BITS, &elapsed_bits);
++      caps->v1.bset.timer_query = timestamp_bits > 0 && elapsed_bits > 0;
+    }
+ 
+    /* Common limits for all backends. */
+@@ -12794,7 +12791,6 @@
+    GLfloat range[2];
+    uint32_t video_memory;
+    const char *renderer = (const char *)glGetString(GL_RENDERER);
+-   const bool angle_in_renderer = (renderer && strstr(renderer, "ANGLE"));
+ 
+    /* Count this up when you add a feature flag that is used to set a CAP in
+     * the guest that was set unconditionally before. Then check that flag and
+@@ -12802,8 +12798,6 @@
+     * run on an old virgl host. Use it also to indicate non-cap fixes on the
+     * host that help enable features in the guest. */
+    caps->v2.host_feature_check_version = 23;
+-   if (gles_ver > 0 && angle_in_renderer)
+-      caps->v2.host_feature_check_version = 4;
+ 
+    /* Forward host GL_RENDERER to the guest.
+     *
+@@ -13056,20 +13050,6 @@
+    caps->v1.max_samples = vrend_renderer_query_multisample_caps(caps->v1.max_samples, &caps->v2);
+    virgl_debug("[VREND CAPS] After query_multisample_caps: max_samples=%u\n", caps->v1.max_samples);
+    
+-   /* For macOS Metal backend: Override to max_samples=1 to trigger Mesa's fake_sw_msaa.
+-    * Even though MSAA tests confirm 4 samples work, Mesa's format queries can't verify
+-    * multisample support, causing MaxSamples=0. Reporting 1 triggers fake_sw_msaa workaround.
+-    * Apply to both desktop GL and GLES (ANGLE) modes. */
+-   const char *version = (const char *)glGetString(GL_VERSION);
+-   bool is_metal = (version && strstr(version, "Metal"));
+-   bool is_angle = (version && strstr(version, "ANGLE"));
+-   if ((is_metal || is_angle) && caps->v1.max_samples > 1) {
+-      virgl_debug("[VREND CAPS] %s backend: Overriding max_samples %u -> 1 for fake_sw_msaa\n", 
+-                  is_angle ? "ANGLE" : "Metal",
+-                  caps->v1.max_samples);
+-      caps->v1.max_samples = 1;
+-   }
+-
+    caps->v2.capability_bits |= VIRGL_CAP_TGSI_INVARIANT | VIRGL_CAP_SET_MIN_SAMPLES |
+                                VIRGL_CAP_TGSI_PRECISE | VIRGL_CAP_APP_TWEAK_SUPPORT;
+ 
+@@ -13329,7 +13309,7 @@
+    if (has_feature(feat_khr_debug))
+        caps->v2.capability_bits_v2 |= VIRGL_CAP_V2_STRING_MARKER;
+ 
+-   if (has_feature(feat_implicit_msaa))
++   if (has_feature(feat_implicit_msaa) && !vrend_state.use_gles)
+        caps->v2.capability_bits_v2 |= VIRGL_CAP_V2_IMPLICIT_MSAA;
+ 
+    if (vrend_winsys_different_gpu())
+@@ -14276,8 +14256,10 @@
+ {
+    GLint video_memory = vrend_winsys_query_video_memory();
+ 
+-   if (!video_memory && has_feature(feat_nvx_gpu_memory_info))
++   if (!video_memory && has_feature(feat_nvx_gpu_memory_info)) {
+       glGetIntegerv(GL_GPU_MEMORY_INFO_DEDICATED_VIDMEM_NVX, &video_memory);
++      video_memory /= 1024;
++   }
+ 
+    return video_memory;
+ }

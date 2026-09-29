@@ -1,0 +1,229 @@
+--- a/src/util/disk_cache.c
++++ b/src/util/disk_cache.c
+@@ -74,8 +74,17 @@
+ static bool
+ disk_cache_init_queue(struct disk_cache *cache)
+ {
+-   if (util_queue_is_initialized(&cache->cache_queue))
++   /* Reads and cache creation must not spawn a worker before an application's
++    * sandbox is ready. Serialize the first write, including failed attempts.
++    */
++   if (cache->path_init_failed && !cache->blob_put_cb)
++      return false;
++
++   simple_mtx_lock(&cache->queue_init_lock);
++   if (util_queue_is_initialized(&cache->cache_queue)) {
++      simple_mtx_unlock(&cache->queue_init_lock);
+       return true;
++   }
+ 
+    /* 4 threads were chosen below because just about all modern CPUs currently
+     * available that run Mesa have *at least* 4 cores. For these CPUs allowing
+@@ -87,10 +96,12 @@
+     * The queue will resize automatically when it's full, so adding new jobs
+     * doesn't stall.
+     */
+-   return util_queue_init(&cache->cache_queue, "disk$", 32, 4,
++   bool initialized = util_queue_init(&cache->cache_queue, "disk$", 32, 4,
+                           UTIL_QUEUE_INIT_RESIZE_IF_FULL |
+                           UTIL_QUEUE_INIT_USE_MINIMUM_PRIORITY |
+                           UTIL_QUEUE_INIT_SET_FULL_THREAD_AFFINITY, NULL);
++   simple_mtx_unlock(&cache->queue_init_lock);
++   return initialized;
+ }
+ 
+ static struct disk_cache *
+@@ -116,6 +127,8 @@
+    if (cache == NULL)
+       goto fail;
+ 
++   simple_mtx_init(&cache->queue_init_lock, mtx_plain);
++
+    /* Assume failure. */
+    cache->path_init_failed = true;
+    cache->type = DISK_CACHE_NONE;
+@@ -142,9 +155,11 @@
+    if (cache_type == DISK_CACHE_SINGLE_FILE) {
+       if (!disk_cache_load_cache_index_foz(local, cache))
+          goto path_fail;
++      cache->backend_initialized = true;
+    } else if (cache_type == DISK_CACHE_DATABASE) {
+       if (!disk_cache_db_load_cache_index(local, cache))
+          goto path_fail;
++      cache->backend_initialized = true;
+    }
+ 
+    if (!os_get_option("MESA_SHADER_CACHE_DIR") && !os_get_option("MESA_GLSL_CACHE_DIR"))
+@@ -163,9 +178,6 @@
+    if (cache->type == DISK_CACHE_DATABASE)
+       mesa_cache_db_multipart_set_size_limit(&cache->cache_db, cache->max_size);
+ 
+-   if (!disk_cache_init_queue(cache))
+-      goto fail;
+-
+    cache->path_init_failed = false;
+ 
+  path_fail:
+@@ -208,7 +220,7 @@
+    return cache;
+ 
+  fail:
+-   ralloc_free(cache);
++   disk_cache_destroy(cache);
+    ralloc_free(local);
+ 
+    return NULL;
+@@ -333,17 +345,23 @@
+    if (cache && util_queue_is_initialized(&cache->cache_queue)) {
+       util_queue_finish(&cache->cache_queue);
+       util_queue_destroy(&cache->cache_queue);
++   }
+ 
++   if (cache) {
+       if (cache->foz_ro_cache)
+          disk_cache_destroy(cache->foz_ro_cache);
+ 
+-      if (cache->type == DISK_CACHE_SINGLE_FILE)
+-         foz_destroy(&cache->foz_db);
++      if (cache->backend_initialized) {
++         if (cache->type == DISK_CACHE_SINGLE_FILE)
++            foz_destroy(&cache->foz_db);
+ 
+-      if (cache->type == DISK_CACHE_DATABASE)
+-         mesa_cache_db_multipart_close(&cache->cache_db);
++         if (cache->type == DISK_CACHE_DATABASE)
++            mesa_cache_db_multipart_close(&cache->cache_db);
+ 
+-      disk_cache_destroy_mmap(cache);
++      }
++      if (cache->index_mmap_size)
++         disk_cache_destroy_mmap(cache);
++      simple_mtx_destroy(&cache->queue_init_lock);
+    }
+ 
+    ralloc_free(cache);
+@@ -352,7 +370,11 @@
+ void
+ disk_cache_wait_for_idle(struct disk_cache *cache)
+ {
+-   util_queue_finish(&cache->cache_queue);
++   simple_mtx_lock(&cache->queue_init_lock);
++   bool initialized = util_queue_is_initialized(&cache->cache_queue);
++   simple_mtx_unlock(&cache->queue_init_lock);
++   if (initialized)
++      util_queue_finish(&cache->cache_queue);
+ }
+ 
+ void
+@@ -565,7 +587,7 @@
+                const void *data, size_t size,
+                struct cache_item_metadata *cache_item_metadata)
+ {
+-   if (!util_queue_is_initialized(&cache->cache_queue))
++   if (!disk_cache_init_queue(cache))
+       return;
+ 
+    struct disk_cache_put_job *dc_job =
+@@ -583,7 +605,7 @@
+                       void *data, size_t size,
+                       struct cache_item_metadata *cache_item_metadata)
+ {
+-   if (!util_queue_is_initialized(&cache->cache_queue)) {
++   if (!disk_cache_init_queue(cache)) {
+       free(data);
+       return;
+    }
+@@ -699,7 +721,6 @@
+ {
+    cache->blob_put_cb = put;
+    cache->blob_get_cb = get;
+-   disk_cache_init_queue(cache);
+ }
+ 
+ #endif /* ENABLE_SHADER_CACHE */
+--- a/src/util/disk_cache_os.h
++++ b/src/util/disk_cache_os.h
+@@ -61,9 +61,11 @@
+    /* The path to the cache directory. */
+    char *path;
+    bool path_init_failed;
++   bool backend_initialized;
+ 
+    /* Thread queue for compressing and writing cache entries to disk */
+    struct util_queue cache_queue;
++   simple_mtx_t queue_init_lock;
+ 
+    struct foz_db foz_db;
+ 
+--- a/src/util/tests/cache_test.cpp
++++ b/src/util/tests/cache_test.cpp
+@@ -37,6 +37,8 @@
+ #include <time.h>
+ #include <unistd.h>
+ #include <utime.h>
++#include <thread>
++#include <vector>
+ 
+ #include "util/detect_os.h"
+ #include "util/disk_cache_os.h"
+@@ -737,6 +739,60 @@
+       ralloc_free(mem_ctx);
+    }
+ };
++
++TEST_F(Cache, LazyQueueLifecycle)
++{
++#ifndef ENABLE_SHADER_CACHE
++   GTEST_SKIP() << "ENABLE_SHADER_CACHE not defined.";
++#else
++   char directory[] = "./lazy-cache-XXXXXX";
++   ASSERT_NE(mkdtemp(directory), nullptr);
++   os_set_option("MESA_SHADER_CACHE_DIR", directory, true);
++   os_set_option("MESA_SHADER_CACHE_DISABLE", "false", true);
++   struct disk_cache *cache = disk_cache_create_custom("lazy", "test", 0, "lazy", 1024 * 1024);
++   ASSERT_NE(cache, nullptr);
++   ASSERT_FALSE(cache->path_init_failed);
++   EXPECT_FALSE(util_queue_is_initialized(&cache->cache_queue));
++   cache_key absent = {};
++   EXPECT_EQ(disk_cache_get(cache, absent, nullptr), nullptr);
++   disk_cache_wait_for_idle(cache);
++   EXPECT_FALSE(util_queue_is_initialized(&cache->cache_queue));
++   disk_cache_destroy(cache);
++
++   cache = disk_cache_create_custom("lazy", "test", 0, "lazy", 1024 * 1024);
++   ASSERT_NE(cache, nullptr);
++   ASSERT_FALSE(cache->path_init_failed);
++   std::vector<std::thread> writers;
++   for (unsigned i = 0; i < 32; ++i) {
++      writers.emplace_back([cache, i]() {
++         cache_key key;
++         disk_cache_compute_key(cache, &i, sizeof(i), key);
++         disk_cache_put(cache, key, &i, sizeof(i), nullptr);
++      });
++   }
++   for (auto &writer : writers)
++      writer.join();
++   disk_cache_wait_for_idle(cache);
++   EXPECT_TRUE(util_queue_is_initialized(&cache->cache_queue));
++   for (unsigned i = 0; i < 32; ++i) {
++      cache_key key;
++      disk_cache_compute_key(cache, &i, sizeof(i), key);
++      size_t size = 0;
++      void *value = disk_cache_get(cache, key, &size);
++      EXPECT_NE(value, nullptr);
++      if (value) {
++         EXPECT_EQ(size, sizeof(i));
++         if (size == sizeof(i))
++            EXPECT_EQ(memcmp(value, &i, size), 0);
++      }
++      free(value);
++   }
++   disk_cache_destroy(cache);
++   os_unset_option("MESA_SHADER_CACHE_DIR");
++   os_unset_option("MESA_SHADER_CACHE_DISABLE");
++   EXPECT_EQ(rmrf_local(directory), 0);
++#endif
++}
+ 
+ TEST_F(Cache, MultiFile)
+ {

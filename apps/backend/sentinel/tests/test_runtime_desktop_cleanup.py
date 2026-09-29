@@ -10,7 +10,7 @@ from app.services.runtime.desktop import RuntimeDesktopManager, RuntimeDesktopEr
 from app.services.runtime.workspace import WorkspaceLocation
 
 
-def desktop_manager(tools=("desktop",), state="running"):
+def desktop_manager(tools=(), state="running", desktop="xfce"):
     transport = SimpleNamespace(
         run=AsyncMock(),
         is_ready=AsyncMock(return_value=state == "running"),
@@ -25,6 +25,7 @@ def desktop_manager(tools=("desktop",), state="running"):
             str(uuid4()),
             "/project",
             tools,
+            desktop=desktop,
         ),
     )
     return manager, transport
@@ -45,7 +46,7 @@ async def test_session_cleanup_closes_tunnel_but_preserves_shared_desktop(stop_r
 
 @pytest.mark.asyncio
 async def test_unselected_desktop_never_runs_commands_or_starts_workspace():
-    manager, transport = desktop_manager(tools=())
+    manager, transport = desktop_manager(desktop="none")
     assert (await manager.status())["state"] == "not_installed"
     with pytest.raises(RuntimeDesktopError, match="Add the Desktop"):
         await manager.ensure_session_desktop(uuid4())
@@ -62,7 +63,7 @@ async def test_status_and_stop_never_resurrect_a_stopped_workspace():
 
 
 @pytest.mark.asyncio
-async def test_graphics_stop_failure_still_closes_local_tunnels(monkeypatch):
+async def test_desktop_stop_failure_still_closes_local_tunnels(monkeypatch):
     from app.services.runtime import workspace_containers
 
     manager, transport = desktop_manager()
@@ -71,7 +72,9 @@ async def test_graphics_stop_failure_still_closes_local_tunnels(monkeypatch):
         json.dumps({"ok": True, "state": "stopped"}),
         "",
     )
-    manager._command = AsyncMock(return_value={"state": "stopped"})
+    manager._command = AsyncMock(
+        side_effect=workspace_containers.WorkspaceContainerError("disconnected")
+    )
     listener = SimpleNamespace(close=Mock(), wait_closed=AsyncMock())
     manager._handles[str(uuid4())] = SimpleNamespace(listener=listener)
     monkeypatch.setattr(
@@ -113,8 +116,8 @@ async def test_browser_reuses_desktop_geometry_and_read_only_reconnect_does_not_
         assert json.loads(shlex.split(call.args[0])[3])["action"] == "status"
     await manager.close_all()
     assert [call.args[0] for call in graphics.await_args_list] == [
-        "graphics_start",
-        "graphics_start",
+        "display_start",
+        "display_start",
     ]
 
 

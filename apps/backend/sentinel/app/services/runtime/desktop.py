@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+from importlib.resources import files
 from dataclasses import dataclass
-from typing import Literal
 from uuid import UUID, uuid4
 
 from app.services.runtime.guest_commands import guest_python_command
 from app.services.runtime.desktop_appearance import desktop_default_files
+from app.services.runtime.desktop_keyboard import host_keyboard
 from app.services.runtime.terminal_manager import RuntimeTerminalManager
 from app.services.runtime.workspace import WorkspaceLocation
 from app.services.runtime import workspace_containers
@@ -27,7 +28,6 @@ class RuntimeDesktop:
     target_port: int
     geometry: str
     socket_path: str
-    vnc_update_mode: Literal["native", "paced"] = "paced"
 
 
 @dataclass(slots=True)
@@ -53,7 +53,7 @@ class RuntimeDesktopManager:
 
     @property
     def enabled(self) -> bool:
-        return "desktop" in self._workspace_location.tools
+        return self._workspace_location.desktop in {"xfce", "weston", "lxqt", "gnome", "plasma"}
 
     async def _command(self, action: str, geometry: str | None = None) -> dict:
         result = await self._transport.run(
@@ -65,11 +65,14 @@ class RuntimeDesktopManager:
                             "action": action,
                             "geometry": geometry,
                             "defaults": desktop_default_files() if action == "start" else {},
+                            "keyboard": await host_keyboard() if action == "start" else None,
                         }
                     )
                 ],
             ),
-            timeout=25,
+            # Native PAM/compositor startup has a bounded 60-second readiness
+            # window. Keep the transport alive through that window and cleanup.
+            timeout=90 if action == "start" else 25,
         )
         try:
             payload = json.loads(result.stdout or "{}")
@@ -112,9 +115,6 @@ class RuntimeDesktopManager:
             payload["port"],
             payload["geometry"],
             socket_path,
-            # SSH needs VNC's flow control and continuous streaming. The local
-            # transport keeps its existing pacing until separately validated.
-            vnc_update_mode="native" if listener is not None else "paced",
         )
         self._handles[session_id] = _DesktopHandle(desktop, listener)
         return desktop
@@ -129,7 +129,7 @@ class RuntimeDesktopManager:
                 )
             if not await self._transport.is_ready():
                 raise RuntimeDesktopError("Start the workspace before starting its desktop.")
-            await self._ensure_graphics()
+            await self._ensure_graphics(geometry)
             payload = await self._command("status") if geometry is None else {}
             if payload.get("state") != "running":
                 payload = await self._command("start", geometry or self._geometry)
@@ -186,19 +186,83 @@ class RuntimeDesktopManager:
             ) from exc
         if not isinstance(payload, dict) or "ok" not in payload:
             raise RuntimeDesktopError(
-                "Workspace computer worker failed; install Desktop dependencies: py3-xlib, py3-pillow, xdotool"
+                "Workspace computer control is unavailable. Reinstall the workspace desktop."
             )
         # Keep partial completion and the screenshot visible instead of hiding
         # them in an exception that could encourage replay of completed actions.
         return payload
 
-    async def _ensure_graphics(self) -> None:
+    async def _ensure_graphics(self, geometry: str | None = None) -> None:
+        width, height = map(int, (geometry or self._geometry).split("x"))
         try:
             await workspace_containers.request(
-                "graphics_start", workspace=self._workspace_location.workspace_id
+                "display_start",
+                workspace=self._workspace_location.workspace_id,
+                width=width,
+                height=height,
             )
         except workspace_containers.WorkspaceContainerError as exc:
             raise RuntimeDesktopError(f"Metal desktop graphics unavailable: {exc}") from exc
+
+    async def clipboard(self, payload: dict) -> dict:
+        if (await self.status()).get("state") != "running":
+            raise RuntimeDesktopError("Start the desktop before sharing its clipboard")
+        process = await self._transport.create_process(
+            "python3 /opt/sentinel/desktop/desktop-clipboard.py",
+            encoding=None,
+            start_if_needed=False,
+        )
+        try:
+            async with asyncio.timeout(15):
+                data = json.dumps(payload).encode()
+                for offset in range(0, len(data), 32768):
+                    await process.send_input(data[offset : offset + 32768])
+                await process.send_input(None)
+                output = bytearray()
+                while chunk := await process.stdout.read(65536):
+                    output.extend(chunk)
+                    if len(output) > 2_097_152:
+                        raise RuntimeDesktopError("Clipboard response exceeded its limit")
+                await process.wait()
+                result = json.loads(output)
+                if process.exit_status != 0 or not result.get("ok"):
+                    raise RuntimeDesktopError(result.get("reason") or "Clipboard transfer failed")
+                return result
+        finally:
+            process.terminate()
+
+    async def wallpaper(self, design: str) -> dict:
+        if design not in {"satin", "horizon", "geometry", "spectrum", "paper", "monochrome"}:
+            raise RuntimeDesktopError("Unknown wallpaper")
+        if (await self.status()).get("state") != "running":
+            raise RuntimeDesktopError("Start the desktop before choosing its wallpaper")
+        data = (
+            files("app.services.runtime.guest_commands")
+            .joinpath("linux", "desktop", "wallpapers", design + ".png")
+            .read_bytes()
+        )
+        process = await self._transport.create_process(
+            guest_python_command("linux/desktop/set_wallpaper.py", []),
+            encoding=None,
+            start_if_needed=False,
+        )
+        try:
+            async with asyncio.timeout(45):
+                for offset in range(0, len(data), 32768):
+                    await process.send_input(data[offset : offset + 32768])
+                await process.send_input(None)
+                output = bytearray()
+                while chunk := await process.stdout.read(65536):
+                    output.extend(chunk)
+                    if len(output) > 65536:
+                        raise RuntimeDesktopError("Wallpaper response exceeded its limit")
+                await process.wait()
+                result = json.loads(output)
+                if process.exit_status != 0 or not result.get("ok"):
+                    raise RuntimeDesktopError(result.get("reason") or "Could not apply wallpaper")
+                return result
+        finally:
+            process.terminate()
 
     async def stop(self) -> None:
         async with self._lock:
@@ -206,9 +270,6 @@ class RuntimeDesktopManager:
             try:
                 if await self._transport.is_ready():
                     await self._command("stop")
-                    await workspace_containers.request(
-                        "graphics_stop", workspace=self._workspace_location.workspace_id
-                    )
             except workspace_containers.WorkspaceContainerError as exc:
                 raise RuntimeDesktopError(f"Desktop graphics could not stop: {exc}") from exc
             finally:

@@ -20,7 +20,7 @@ for (const name of ['content', 'state.json', 'initfs.ext4']) await cp(path.join(
 await writeFile(path.join(project, 'output.txt'), Array.from({length:100}, (_,i)=>`LINE_${i} ${'command text '.repeat(i%4 ? 1 : 15)}`).join('\n')+'\nPython 3.14.7\nNode 24\nnpm 11\nDONE\n');
 const workspace = randomUUID();
 const processId = randomUUID();
-const runtime = new WorkspaceRuntime({command:path.join(resources,'sentinel-workspace-runtime'), args:[root,path.join(cache,'kernels',manifest.kernelFileSha256,'kernel'),manifest.initImage,manifest.workspaceImage],onProgress:console.log,onFailure:console.error,log:()=>{}});
+const runtime = new WorkspaceRuntime({command:path.join(resources,'sentinel-workspace-runtime'), args:[root,path.join(cache,'kernels',manifest.kernelFileSha256,'kernel'),manifest.initImage],onProgress:console.log,onFailure:console.error,log:()=>{}});
 const terminal = new xterm.Terminal({cols:100,rows:60,allowProposedApi:true});
 let writes = Promise.resolve();
 let input = Promise.resolve();

@@ -1,0 +1,2 @@
+option('graphics_work', type: 'string', description: 'Prepared graphics sources and headers')
+option('graphics_libraries', type: 'string', description: 'Bundled graphics library directory')

@@ -1,0 +1,99 @@
+From: Sentinel graphics maintainers
+Subject: [PATCH] util/queue: destroy finish barrier after all workers return
+
+The fallback barrier used on Darwin returns true in every participant. More
+importantly, even a single last-arriving participant cannot destroy its mutex
+and condition variable while other participants are still waking up. The
+finish caller owns the stack barrier and already waits for fences signalled
+after each execute callback returns. Destroy it there, exactly once, after all
+participants have left. This also works with the native pthread barrier.
+
+--- a/src/util/u_queue.c
++++ b/src/util/u_queue.c
+@@ -522,7 +522,6 @@ util_queue_finish_execute(void *data, void *gdata, int num_thread)
+ {
+    util_barrier *barrier = data;
+-   if (util_barrier_wait(barrier))
+-      util_barrier_destroy(barrier);
++   util_barrier_wait(barrier);
+ }
+ 
+ void
+@@ -729,6 +728,9 @@ util_queue_finish(struct util_queue *queue)
+       util_queue_fence_destroy(&fences[i]);
+    }
+ 
++   /* All worker callbacks have returned; none can still access the barrier. */
++   util_barrier_destroy(&barrier);
++
+    free(fences);
+ }
+ 
+--- a/src/util/meson.build
++++ b/src/util/meson.build
+@@ -569,3 +569,15 @@
+   subdir('tests/vma')
+   subdir('tests/format')
+ endif
++
++if with_tests and host_machine.system() in ['darwin', 'linux']
++  queue_finish_test = executable(
++    'queue_finish_test',
++    'tests/queue_finish_test.c',
++    dependencies : idep_mesautil,
++    c_args : [c_msvc_compat_args],
++  )
++  test('queue-finish-barrier-lifetime', queue_finish_test,
++       suite : ['util'], timeout : 30)
++endif
++
+--- /dev/null
++++ b/src/util/tests/queue_finish_test.c
+@@ -0,0 +1,47 @@
++/* SPDX-License-Identifier: MIT */
++#include <stdio.h>
++#include <stdlib.h>
++#include <unistd.h>
++#include "util/u_queue.h"
++
++#define CHECK(condition) do { if (!(condition)) { \
++   fprintf(stderr, "FAIL line %d: %s\n", __LINE__, #condition); \
++   exit(1); \
++} } while (0)
++
++static void
++count_job(void *data, void *global_data, int thread_index)
++{
++   (void)global_data;
++   (void)thread_index;
++   p_atomic_inc((unsigned *)data);
++   thrd_yield();
++}
++
++int
++main(void)
++{
++   /* Exercise both the trivial barrier and the multi-worker case seen in the
++    * disk cache. Repeated empty finishes also test barrier storage reuse.
++    * alarm makes a stuck regression fail even outside the Meson runner.
++    */
++   alarm(25);
++   for (unsigned workers = 1; workers <= 4; workers++) {
++      struct util_queue queue = {0};
++      unsigned completed = 0;
++      CHECK(util_queue_init(&queue, "finish-test", 32, workers,
++                            UTIL_QUEUE_INIT_RESIZE_IF_FULL, NULL));
++      util_queue_adjust_num_threads(&queue, workers, false);
++      for (unsigned round = 0; round < 1000; round++) {
++         for (unsigned job = 0; job < 16; job++)
++            util_queue_add_job(&queue, &completed, NULL, count_job, NULL, 0);
++         util_queue_finish(&queue);
++         CHECK(p_atomic_read(&completed) == (round + 1) * 16);
++         util_queue_finish(&queue);
++      }
++      util_queue_destroy(&queue);
++   }
++   alarm(0);
++   puts("PASS: queue finish drains work and safely retires its barrier");
++   return 0;
++}

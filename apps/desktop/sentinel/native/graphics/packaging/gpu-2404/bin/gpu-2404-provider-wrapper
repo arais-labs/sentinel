@@ -1,0 +1,12 @@
+#!/bin/sh
+set -eu
+provider_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+provider_lib="$provider_root/usr/lib/aarch64-linux-gnu"
+export LD_LIBRARY_PATH="$provider_lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export LIBGL_DRIVERS_PATH="$provider_lib/dri"
+export GBM_BACKENDS_PATH="$provider_lib/gbm"
+export __EGL_VENDOR_LIBRARY_DIRS="$provider_root/usr/share/glvnd/egl_vendor.d"
+export DRIRC_CONFIGDIR="$provider_root/drirc.d"
+export XLOCALEDIR="$provider_root/usr/share/X11/locale"
+export XDG_DATA_DIRS="$provider_root/usr/share${XDG_DATA_DIRS:+:$XDG_DATA_DIRS}"
+exec "$@"

@@ -28,3 +28,22 @@
 .workspace-stat-network span:last-child svg { color: #ad91ed; }
 .workspace-runtime-stats > p { margin: 10px 0 0; color: var(--text-muted); font-size: 10px; line-height: 1.5; }
 @media (prefers-reduced-motion: reduce) { .workspace-stat-meter i { transition: none; } }
+.workspace-performance-chip { position: relative; isolation: isolate; display: inline-flex; align-items: center; gap: 8px; height: 28px; padding: 0 12px; border: 1px solid var(--border-subtle); border-radius: 999px; overflow: hidden; background: var(--surface-1); color: var(--text-primary); font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .1em; flex-shrink: 0; }
+.workspace-performance-chip:hover { border-color: var(--border-strong); }
+.workspace-performance-chip > svg { flex-shrink: 0; color: var(--accent-solid); }
+.workspace-performance-name { max-width: 144px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workspace-performance-fill { position: absolute; inset: 0 auto 0 0; z-index: -1; opacity: .35; pointer-events: none; transition: width .7s ease, color .7s ease; }
+.workspace-performance-fill .session-liquid-gauge { display: block; width: 104.167%; height: 100%; overflow: visible; }
+.workspace-performance-fill stop { transition: stop-color .7s ease; }
+.workspace-performance-panel { pointer-events: auto; }
+.workspace-performance-panel .workspace-runtime-stats { margin-top: 0; }
+.workspace-performance-selector { position: sticky; top: -14px; z-index: 1; margin: -14px -14px 12px; background: var(--surface-0); border-bottom: 1px solid var(--border-subtle); }
+.workspace-performance-selector .run-settings-section-value { max-width: 120px; overflow: hidden; text-overflow: ellipsis; font-size: 12px; font-weight: 500; color: var(--text-primary); }
+.workspace-performance-options { padding: 10px 0; }
+.workspace-performance-options input { width: calc(100% - 28px); margin: 0 14px 10px; border: 1px solid var(--border-subtle); border-radius: 999px; background: var(--surface-1); padding: 8px 10px; font-size: 11px; }
+.workspace-performance-choices { max-height: 180px; overflow-y: auto; }
+.workspace-performance-options button { display: flex; align-items: center; gap: 8px; width: 100%; padding: 9px 14px; text-align: left; border-radius: 0; font-size: 11px; }
+.workspace-performance-options button:hover { background: var(--surface-1); }
+.workspace-performance-options button span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workspace-performance-options button:disabled { opacity: .5; }
+@media (prefers-reduced-motion: reduce) { .workspace-performance-fill, .workspace-performance-fill stop { transition: none; } }

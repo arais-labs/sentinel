@@ -36,12 +36,6 @@ TOOLS = [
         "detail": "BuildKit builder, persistent cache and local image registry",
         "category": "Containers",
     },
-    {
-        "id": "desktop",
-        "name": "Desktop",
-        "detail": "Graphical desktop, terminal and Chromium · starts on demand",
-        "category": "Desktop",
-    },
     {"id": "git", "name": "Git", "detail": "Version control", "category": "Essentials"},
     {
         "id": "node",
@@ -219,12 +213,6 @@ STACKS = [
         "name": "Docker Builder",
         "description": "Build, cache & publish container images",
         "tools": ["docker-builder"],
-    },
-    {
-        "id": "desktop",
-        "name": "Desktop",
-        "description": "Graphical apps & interactive browsing",
-        "tools": ["desktop"],
     },
     {
         "id": "node",

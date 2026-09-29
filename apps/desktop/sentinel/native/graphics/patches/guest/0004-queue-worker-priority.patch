@@ -1,0 +1,209 @@
+From: Sentinel graphics maintainers
+Subject: [PATCH] util/queue: configure low priority from the worker itself
+
+The creator must not change another thread's scheduler after sandbox entry.
+Chromium restricts scheduling operations to the calling thread. Configure both
+nice and batch policy in the worker before it takes any jobs, using Linux's
+pid-zero spelling of the calling thread. This also avoids racing the first job
+with the creator's priority update. No sandbox policy or queue flags change.
+Use the Linux syscall directly: musl's public sched_setscheduler wrapper is
+an ENOSYS stub, unlike its pthread_setschedparam implementation.
+
+--- a/src/util/u_queue.c
++++ b/src/util/u_queue.c
+@@ -258,7 +258,15 @@ util_queue_thread_func(void *input)
+ #if defined(__linux__)
+    if (queue->flags & UTIL_QUEUE_INIT_USE_MINIMUM_PRIORITY) {
+       /* The nice() function can only set a maximum of 19. */
+-      setpriority(PRIO_PROCESS, syscall(SYS_gettid), 19);
++      setpriority(PRIO_PROCESS, 0, 19);
++#if defined(SCHED_BATCH)
++      struct sched_param sched_param = {0};
++      /* Set our own policy before processing jobs. A sandbox may forbid the
++       * creator from changing a different thread's scheduler. SCHED_BATCH
++       * tells Linux that this worker is latency insensitive.
++       */
++      syscall(SYS_sched_setscheduler, 0, SCHED_BATCH, &sched_param);
++#endif
+    }
+ #endif
+ 
+@@ -330,20 +338,6 @@ util_queue_create_thread(struct util_queue *queue, unsigned index)
+       return false;
+    }
+ 
+-   if (queue->flags & UTIL_QUEUE_INIT_USE_MINIMUM_PRIORITY) {
+-#if defined(__linux__) && defined(SCHED_BATCH)
+-      struct sched_param sched_param = {0};
+-
+-      /* The nice() function can only set a maximum of 19.
+-       * SCHED_BATCH gives the scheduler a hint that this is a latency
+-       * insensitive thread.
+-       *
+-       * Note that Linux only allows decreasing the priority. The original
+-       * priority can't be restored.
+-       */
+-      pthread_setschedparam(queue->threads[index], SCHED_BATCH, &sched_param);
+-#endif
+-   }
+    return true;
+ }
+ 
+
+--- a/src/util/meson.build
++++ b/src/util/meson.build
+@@ -532,3 +532,15 @@
+   subdir('tests/vma')
+   subdir('tests/format')
+ endif
++
++if with_tests and host_machine.system() == 'linux' and host_machine.cpu_family() in ['aarch64', 'x86_64']
++  queue_priority_test = executable(
++    'queue_priority_test',
++    'tests/queue_priority_test.c',
++    dependencies : idep_mesautil,
++    c_args : [c_msvc_compat_args],
++  )
++  test('queue-priority', queue_priority_test, suite : ['util'], timeout : 20)
++  test('queue-priority-scheduler', queue_priority_test,
++       args : ['--scheduler-only'], suite : ['util'], timeout : 20)
++endif
+
+--- /dev/null
++++ b/src/util/tests/queue_priority_test.c
+@@ -0,0 +1,134 @@
++/* SPDX-License-Identifier: MIT */
++#ifndef _GNU_SOURCE
++#define _GNU_SOURCE
++#endif
++#include <errno.h>
++#include <linux/audit.h>
++#include <linux/filter.h>
++#include <linux/seccomp.h>
++#include <sched.h>
++#include <signal.h>
++#include <stddef.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/prctl.h>
++#include <sys/resource.h>
++#include <sys/syscall.h>
++#include <sys/wait.h>
++#include <unistd.h>
++#include "util/u_queue.h"
++
++#if defined(__aarch64__)
++#define TEST_ARCH AUDIT_ARCH_AARCH64
++#elif defined(__x86_64__)
++#define TEST_ARCH AUDIT_ARCH_X86_64
++#else
++#error This regression supports native Linux aarch64 and x86_64.
++#endif
++
++#define CHECK(x) do { if (!(x)) { \
++   fprintf(stderr, "FAIL line %d: %s (errno=%d)\n", __LINE__, #x, errno); \
++   _exit(1); \
++} } while (0)
++
++/* Installed only in the forked child, before it creates any queue threads.
++ * pid=0 is the unambiguous current-thread form. Rejecting other IDs is
++ * deliberately stricter than a policy which also permits explicit self TIDs.
++ * Scheduler-only mode isolates the original creator -> worker operation.
++ */
++static void install_filter(int scheduler_only)
++{
++   struct sock_filter insns[] = {
++      BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, arch)),
++      BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, TEST_ARCH, 1, 0),
++      BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRAP),
++      BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr)),
++      BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_sched_setscheduler, 0, 3),
++      BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, args[0])),
++      BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 0, 6, 0),
++      BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRAP),
++      BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K,
++               scheduler_only ? (unsigned)-1 : SYS_setpriority, 0, 4),
++      BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, args[1])),
++      BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 0, 2, 0),
++      BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRAP),
++      BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRAP),
++      BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
++   };
++   struct sock_fprog program = {
++      .len = sizeof(insns) / sizeof(insns[0]), .filter = insns,
++   };
++   CHECK(prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) == 0);
++   CHECK(prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &program) == 0);
++}
++
++struct observed { int policy, nice_value, nice_errno; long tid; };
++
++static void first_job(void *data, void *global_data, int thread_index)
++{
++   (void)global_data;
++   (void)thread_index;
++   struct observed *out = data;
++   out->tid = syscall(SYS_gettid);
++   out->policy = syscall(SYS_sched_getscheduler, 0);
++   errno = 0;
++   out->nice_value = getpriority(PRIO_PROCESS, 0);
++   out->nice_errno = errno;
++}
++
++static void run_child(int scheduler_only)
++{
++   alarm(10);
++   struct rlimit no_core = {0, 0};
++   CHECK(setrlimit(RLIMIT_CORE, &no_core) == 0);
++   int original_policy = syscall(SYS_sched_getscheduler, 0);
++   errno = 0;
++   int original_nice = getpriority(PRIO_PROCESS, 0);
++   CHECK(errno == 0 && original_policy == SCHED_OTHER && original_nice < 19);
++   long creator_tid = syscall(SYS_gettid);
++   install_filter(scheduler_only);
++
++   struct util_queue queue = {0};
++   struct util_queue_fence fence;
++   struct observed out = { .policy = -1, .nice_value = -1 };
++   util_queue_fence_init(&fence);
++   CHECK(util_queue_init(&queue, "priority-test", 1, 1,
++                         UTIL_QUEUE_INIT_USE_MINIMUM_PRIORITY, NULL));
++   util_queue_add_job(&queue, &out, &fence, first_job, NULL, 0);
++   util_queue_fence_wait(&fence);
++   CHECK(out.tid != creator_tid);
++   CHECK(out.policy == SCHED_BATCH);
++   CHECK(out.nice_errno == 0 && out.nice_value == 19);
++   CHECK(syscall(SYS_sched_getscheduler, 0) == original_policy);
++   errno = 0;
++   CHECK(getpriority(PRIO_PROCESS, 0) == original_nice && errno == 0);
++   util_queue_destroy(&queue);
++   util_queue_fence_destroy(&fence);
++   _exit(0);
++}
++
++int main(int argc, char **argv)
++{
++   int scheduler_only = argc == 2 && !strcmp(argv[1], "--scheduler-only");
++   if (argc != 1 && !scheduler_only) {
++      fprintf(stderr, "usage: %s [--scheduler-only]\n", argv[0]);
++      return 2;
++   }
++   pid_t child = fork();
++   if (child < 0) { perror("fork"); return 1; }
++   if (child == 0) run_child(scheduler_only);
++   int status;
++   pid_t waited;
++   do { waited = waitpid(child, &status, 0); } while (waited < 0 && errno == EINTR);
++   if (waited < 0) { perror("waitpid"); return 1; }
++   if (WIFSIGNALED(status)) {
++      fprintf(stderr, "FAIL: child signal %d (%s)%s\n", WTERMSIG(status),
++              strsignal(WTERMSIG(status)),
++              WTERMSIG(status) == SIGSYS ? ": seccomp rejected explicit target TID" : "");
++      return 1;
++   }
++   if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) return 1;
++   puts("PASS: first worker job is SCHED_BATCH/nice19; creator unchanged");
++   return 0;
++}
+ 

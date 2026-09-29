@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 
 const fluidColors = ['#459aff', '#24cfdf', '#4bd888', '#d8e74e', '#ffb039', '#ff6258'];
 
@@ -13,8 +13,16 @@ export function reasoningColor(position: number) {
 }
 
 /** Horizontal liquid gauge: a continuous spectrum and two soft surface waves. */
-export function ReasoningFluid({ amount }: { amount: number }) {
+export function ReasoningFluid({ amount, color, waveWidth }: { amount: number; color?: string; waveWidth?: number }) {
   const id = useId().replace(/:/g, '');
+  const svg = useRef<SVGSVGElement>(null);
+  const [width, setWidth] = useState(1000);
+  useEffect(() => {
+    if (waveWidth == null || !svg.current) return;
+    const observer = new ResizeObserver(([entry]) => setWidth(Math.max(1, entry.contentRect.width)));
+    observer.observe(svg.current);
+    return () => observer.disconnect();
+  }, [waveWidth]);
   const [reduced, setReduced] = useState(false);
   useEffect(() => {
     const query = matchMedia('(prefers-reduced-motion: reduce)');
@@ -25,19 +33,19 @@ export function ReasoningFluid({ amount }: { amount: number }) {
   }, []);
   const fill = Math.max(0, Math.min(1, amount));
   const edge = fill * 1000;
-  const amplitude = fill > 0 && fill < 1 ? Math.min(24, edge / 3) : 0;
+  const amplitude = fill > 0 && fill < 1 ? Math.min(waveWidth == null ? 24 : waveWidth * 1000 / width, edge / 3) : 0;
   const surface = (phase: number, bend = -phase, middle = 20) => {
     const a = edge + amplitude * phase;
     const b = edge + amplitude * bend;
     return `M0 0H${edge}C${a} ${middle * .3} ${a} ${middle * .7} ${edge} ${middle}S${b} ${middle + (40 - middle) * .65} ${edge} 40H0Z`;
   };
-  const colors = fluidColors;
+  const colors = color ? [color, color] : fluidColors;
   const front = [surface(.4, -.8, 17), surface(-.7, .3, 24), surface(.9, .5, 14), surface(-.2, -.9, 21), surface(.6, -.2, 26), surface(.4, -.8, 17)].join(';');
   const back = [surface(-.5, .7, 23), surface(.8, -.4, 15), surface(.2, .9, 25), surface(-.8, -.3, 18), surface(.3, -.6, 20), surface(-.5, .7, 23)].join(';');
-  return <svg className="session-liquid-gauge" viewBox="0 0 1000 40" preserveAspectRatio="none" aria-hidden="true">
+  return <svg ref={svg} className="session-liquid-gauge" viewBox="0 0 1000 40" preserveAspectRatio="none" aria-hidden="true">
     <defs>
       <linearGradient id={`${id}-spectrum`} x1="0" y1="0" x2="1000" y2="0" gradientUnits="userSpaceOnUse">
-        {colors.map((color, index) => <stop key={color} offset={`${index / (colors.length - 1) * 100}%`} stopColor={color} />)}
+        {colors.map((color, index) => <stop key={index} offset={`${index / (colors.length - 1) * 100}%`} stopColor={color} />)}
       </linearGradient>
       <linearGradient id={`${id}-light`} x1="0" y1="0" x2="0" y2="1">
         <stop stopColor="#fff" stopOpacity=".18" />

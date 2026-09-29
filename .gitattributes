@@ -1,0 +1,3 @@
+# Unified diffs preserve upstream whitespace, including blank context lines.
+apps/desktop/sentinel/native/graphics/patches/*.patch -whitespace
+apps/desktop/sentinel/native/graphics/patches/**/*.patch -whitespace

@@ -15,6 +15,7 @@ import app.database as database_module
 from app.config import settings
 from app.models import Workspace
 from app.models.manager import Machine
+from app.services.runtime.compatibility import RuntimeCompatibilityError
 
 
 class WorkspaceContainerError(RuntimeError):
@@ -42,6 +43,9 @@ async def local_request(action: str, **values) -> dict:
             data = response.json()
         except (httpx.HTTPError, ValueError) as exc:
             raise WorkspaceContainerError("Could not reach workspace services.") from exc
+        RuntimeCompatibilityError.check(
+            data, machine_id=_workspace_machines.get(str(values.get("workspace")))
+        )
         if response.is_error or data.get("error"):
             raise WorkspaceContainerError(data.get("error") or "Workspace operation failed")
         return data
@@ -50,24 +54,35 @@ async def local_request(action: str, **values) -> dict:
 # Explicit workspace ownership; populated by workspace routes and session binding.
 _workspace_machines: dict[str, str] = {}
 _workspace_distributions: dict[str, str] = {}
+_workspace_desktops: dict[str, str] = {}
+_workspace_browsers: dict[str, str] = {}
 
 
-def bind(workspace_id, machine_id, distribution=None) -> None:
+def bind(workspace_id, machine_id, distribution=None, desktop=None, browser=None) -> None:
     _workspace_machines[str(workspace_id)] = str(machine_id)
     if distribution is not None:
         _workspace_distributions[str(workspace_id)] = distribution
+    if desktop is not None:
+        _workspace_desktops[str(workspace_id)] = desktop
+    if browser is not None:
+        _workspace_browsers[str(workspace_id)] = browser
 
 
 async def remote_for(workspace_id):
 
     machine_id = _workspace_machines.get(str(workspace_id))
     if machine_id is None:
-
         for context in instance_context.instance_runtime_context_registry.all():
             async with context.session_factory() as db:
                 workspace = await db.get(Workspace, UUID(str(workspace_id)))
                 if workspace:
-                    bind(workspace.id, workspace.machine_id, workspace.distribution)
+                    bind(
+                        workspace.id,
+                        workspace.machine_id,
+                        workspace.distribution,
+                        workspace.desktop,
+                        workspace.browser,
+                    )
                     machine_id = str(workspace.machine_id)
                     break
     if machine_id:
@@ -87,7 +102,7 @@ async def request(action: str, **values) -> dict:
         if action == "status":
             return await overview()
         return await local_request(action, **values)
-    except WorkspaceContainerError:
+    except (WorkspaceContainerError, RuntimeCompatibilityError):
         raise
     except Exception as exc:
         raise WorkspaceContainerError(str(exc)) from exc
@@ -133,7 +148,7 @@ async def statuses(workspace_id=None) -> dict:
             remote = await remote_for(workspace_id)
             snapshot = await remote.overview() if remote else await local_request("status")
             return snapshot.get("states", {})
-        except WorkspaceContainerError:
+        except (WorkspaceContainerError, RuntimeCompatibilityError):
             raise
         except Exception as exc:
             raise WorkspaceContainerError(str(exc)) from exc
@@ -149,11 +164,15 @@ async def start(
     notification_context: dict[str, str] | None = None,
 ) -> None:
     values = {"resources": resources} if resources is not None else {}
+    if str(workspace_id) in _workspace_browsers:
+        values["browser"] = _workspace_browsers[str(workspace_id)]
     if notification_context:
         values["notificationContext"] = notification_context
     distribution = _workspace_distributions.get(str(workspace_id))
     if distribution and distribution != "alpine":
         values["distribution"] = distribution
+    if str(workspace_id) in _workspace_desktops:
+        values["desktop"] = _workspace_desktops[str(workspace_id)]
     await request("prepare", workspace=str(workspace_id), project=directory, tools=tools, **values)
 
 
@@ -163,19 +182,43 @@ async def reinstall(
     tools: list[str],
     *,
     notification_context: dict[str, str] | None = None,
-) -> None:
-    await request(
+    distribution: str | None = None,
+    desktop: str | None = None,
+    browser: str | None = None,
+    resources: dict[str, int] | None = None,
+    spec: dict | None = None,
+    revision: int | None = None,
+) -> dict:
+    result = await request(
         "reinstall",
+        confirmed=True,
+        **({"spec": spec} if spec else {}),
+        **({"revision": revision} if revision is not None else {}),
+        **({"resources": resources} if resources else {}),
         **(
-            {"distribution": _workspace_distributions[str(workspace_id)]}
-            if _workspace_distributions.get(str(workspace_id), "alpine") != "alpine"
+            {"browser": browser or _workspace_browsers.get(str(workspace_id), "chromium")}
+            if browser or str(workspace_id) in _workspace_browsers
+            else {}
+        ),
+        **(
+            {
+                "distribution": distribution
+                or _workspace_distributions.get(str(workspace_id), "alpine")
+            }
+            if distribution is not None or str(workspace_id) in _workspace_distributions
             else {}
         ),
         workspace=str(workspace_id),
         project=directory,
         tools=tools,
+        **(
+            {"desktop": desktop or _workspace_desktops.get(str(workspace_id), "none")}
+            if desktop or str(workspace_id) in _workspace_desktops
+            else {}
+        ),
         **({"notificationContext": notification_context} if notification_context else {}),
     )
+    return result
 
 
 async def stop(workspace_id: UUID, *, delete: bool = False) -> None:

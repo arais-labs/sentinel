@@ -150,6 +150,22 @@ class ContainerTransport:
 
     async def run(self, command, *, timeout=300, cwd=None, env=None):
         await self.wait_ready()
+        return await self._run(command, timeout=timeout, cwd=cwd, env=env)
+
+    async def run_if_running(self, command, *, timeout=300, cwd=None, env=None):
+        """Non-starting command for inspection/cleanup; offline is a no-op."""
+        if (await self.workspace_status()).get("state") != "running":
+            return None
+        try:
+            return await self._run(command, timeout=timeout, cwd=cwd, env=env)
+        except containers.WorkspaceContainerError:
+            # Stop can win between the status check and execution. Only suppress
+            # that case; failures on a still-running workspace remain errors.
+            if (await self.workspace_status()).get("state") in {"stopped", "stopping"}:
+                return None
+            raise
+
+    async def _run(self, command, *, timeout, cwd, env):
         reply = await containers.request(
             "exec",
             workspace=str(self.workspace_id),

@@ -12,7 +12,7 @@ protocol RuntimeMigration: Sendable {
 }
 
 enum RuntimeMigrations {
-    static let scripts: [any RuntimeMigration] = [WorkerOwnershipMigration()]
+    static let scripts: [any RuntimeMigration] = [WorkerOwnershipMigration(), VirtualDesktopMigration()]
 
     static func completed(root: URL) throws -> [String] {
         let value = try RuntimeUpdate.read(root.appendingPathComponent("migrations.json").path)

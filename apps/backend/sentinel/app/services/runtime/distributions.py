@@ -16,7 +16,7 @@ DISTRIBUTIONS = [
     },
     {
         "id": "ubuntu",
-        "name": "Ubuntu 24.04 LTS",
+        "name": "Ubuntu 26.04 LTS",
         "detail": "All stacks and accelerated desktop",
         "tools": sorted(APT_TOOLS),
     },

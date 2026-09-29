@@ -14,6 +14,9 @@ class AgentRunRegistry:
     def __init__(self) -> None:
         self._tasks: dict[str, asyncio.Task[object]] = {}
         self._lock = asyncio.Lock()
+        self._changes = asyncio.Condition(self._lock)
+        self._changing_sessions: set[str] = set()
+        self._workspace_change = False
         self._interjections: dict[str, list[ConversationItem]] = {}
         self._on_idle_interjections: Callable[[str], Awaitable[None]] | None = None
         self._phases: dict[str, str] = {}
@@ -62,17 +65,41 @@ class AgentRunRegistry:
     @asynccontextmanager
     async def workspace_change_guard(self):
         """Hold run registration and attachment changes while inspecting bindings."""
-        async with self._lock:
-            yield {key for key, task in self._tasks.items() if not task.done()}
+        async with self._changes:
+            await self._changes.wait_for(
+                lambda: not self._workspace_change and not self._changing_sessions
+            )
+            self._workspace_change = True
+            running = {key for key, task in self._tasks.items() if not task.done()}
+        try:
+            yield running
+        finally:
+            async with self._changes:
+                self._workspace_change = False
+                self._changes.notify_all()
 
     @asynccontextmanager
     async def idle_guard(self, session_id: str):
         """Serialize workspace changes with new agent-run registration."""
-        async with self.workspace_change_guard() as running:
-            yield session_id not in running
+        async with self._changes:
+            await self._changes.wait_for(
+                lambda: not self._workspace_change and session_id not in self._changing_sessions
+            )
+            self._changing_sessions.add(session_id)
+            task = self._tasks.get(session_id)
+            idle = task is None or task.done()
+        try:
+            yield idle
+        finally:
+            async with self._changes:
+                self._changing_sessions.remove(session_id)
+                self._changes.notify_all()
 
     async def register(self, session_id: str, task: asyncio.Task[object]) -> bool:
-        async with self._lock:
+        async with self._changes:
+            await self._changes.wait_for(
+                lambda: not self._workspace_change and session_id not in self._changing_sessions
+            )
             current = self._tasks.get(session_id)
             if current is not None and not current.done():
                 return False
@@ -85,7 +112,10 @@ class AgentRunRegistry:
     ) -> asyncio.Task | None:
         """Create the task only after workspace changes and other starts finish."""
         try:
-            async with self._lock:
+            async with self._changes:
+                await self._changes.wait_for(
+                    lambda: not self._workspace_change and session_id not in self._changing_sessions
+                )
                 current = self._tasks.get(session_id)
                 if self._shutting_down or (
                     require_interjections and not self.has_interjections(session_id)

@@ -1,0 +1,15 @@
+name: sentinel-gpu-2404
+version: '@VERSION@'
+summary: Sentinel virtual GPU userspace for core24 applications
+description: |
+  Sentinel virgl Mesa libraries for confined core24 applications.
+  This provider supplies OpenGL/EGL/GBM, not a Vulkan driver or video codec driver.
+base: core24
+architectures: [arm64]
+grade: devel
+confinement: strict
+slots:
+  gpu-2404:
+    interface: content
+    content: gpu-2404
+    read: [$SNAP]

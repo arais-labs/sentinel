@@ -1,0 +1,6 @@
+#%PAM-1.0
+auth include greetd
+account include greetd
+password include greetd
+session required pam_env.so conffile=/etc/sentinel/pam-x11.conf readenv=0
+session include greetd

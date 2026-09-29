@@ -1,0 +1,183 @@
+--- a/src/rvgpu-renderer/virgl/rvgpu-virgl.c
++++ b/src/rvgpu-renderer/virgl/rvgpu-virgl.c
+@@ -89,13 +89,12 @@
+ 	struct rvgpu_res_message_header msg = { .type = RVGPU_FENCE,
+ 						.fence_id = fence };
+ 
++	ssize_t res = write_all(state->res_socket, &msg,
++				sizeof(struct rvgpu_res_message_header));
++	if (res != sizeof(msg))
++		errx(1, "Incomplete GPU fence response");
+ 	if (fence > state->fence_sent)
+ 		state->fence_sent = fence;
+-
+-	ssize_t res = write_all(state->res_socket, &msg,
+-				sizeof(struct rvgpu_res_message_header));
+-	assert(res >= 0);
+-	(void)res;
+ }
+ 
+ static struct virgl_renderer_callbacks virgl_cbs = {
+@@ -118,6 +117,10 @@
+ 	pfd[0].events = POLLIN;
+ 	//	n = rvgpu_egl_prepare_events(p->egl, &pfd[1], MAX_PFD - 1);
+ 
++	if (p->egl->cb->process_wake && p->egl->wake_fd >= 0) {
++		pfd[++n] = (struct pollfd){ .fd = p->egl->wake_fd, .events = POLLIN };
++	}
++
+ 	if (p->fence_received == p->fence_sent)
+ 		timeout = -1;
+ 
+@@ -130,6 +133,8 @@
+ 			timeout = -1;
+ 	}
+ 	//	rvgpu_egl_process_events(p->egl, &pfd[1], n);
++	if (n && (pfd[1].revents & POLLIN))
++		p->egl->cb->process_wake(p->egl);
+ 	if (pfd[0].revents & POLLIN) {
+ 		ssize_t n;
+ 
+@@ -197,7 +202,8 @@
+ 	p->egl = e;
+ 
+ 	ret = virgl_renderer_init(p, 0, &virgl_cbs);
+-	assert(ret == 0);
++	if (ret)
++		errx(1, "GPU renderer initialization failed: %d", ret);
+ 
+ 	ret = fcntl(0, F_GETFL);
+ 	if (ret != -1)
+@@ -449,17 +455,41 @@
+ static void rvgpu_serve_update_cursor(struct rvgpu_pr_state *p,
+ 				      struct virtio_gpu_update_cursor *c)
+ {
+-	uint32_t w, h;
+-	void *data;
++	uint32_t w = 0, h = 0;
++	void *data = NULL;
++	struct virgl_renderer_resource_info info = {0};
+ 
+ 	if (!p->egl->cb->set_cursor)
+ 		return;
+ 
+-	data = virgl_renderer_get_cursor_data(c->resource_id, &w, &h);
+-	if (!data)
+-		return;
+-
+-	p->egl->cb->set_cursor(p->egl, w, h, data);
++	if (c->resource_id) {
++		int result = virgl_renderer_resource_get_info(c->resource_id, &info);
++		if (result ||
++		    !info.width || !info.height || info.width > 128 || info.height > 128 ||
++		    (info.virgl_format != VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM &&
++		     info.virgl_format != VIRTIO_GPU_FORMAT_R8G8B8A8_UNORM &&
++		     info.virgl_format != VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM &&
++		     info.virgl_format != VIRTIO_GPU_FORMAT_R8G8B8X8_UNORM))
++			errx(1, "Invalid cursor resource: id=%u lookup=%d size=%ux%u format=%u hotspot=%u,%u",
++			     c->resource_id, result, info.width, info.height, info.virgl_format, c->hot_x, c->hot_y);
++		data = virgl_renderer_get_cursor_data(c->resource_id, &w, &h);
++		if (!data)
++			errx(1, "Cannot read cursor resource");
++		/* VirGL's cursor helper always flips rows. Undo that for resources
++		 * whose uploads were not inverted. Keep raw alpha: XRGB dumb-buffer
++		 * allocation does not change the cursor plane's ARGB semantics. */
++		if (!(info.flags & VIRTIO_GPU_RESOURCE_FLAG_Y_0_TOP)) {
++			unsigned char row[128 * 4], *bytes = data;
++			size_t stride = w * 4;
++			for (uint32_t y = 0; y < h / 2; y++) {
++				unsigned char *top = bytes + y * stride, *bottom = bytes + (h - y - 1) * stride;
++				memcpy(row, top, stride);
++				memcpy(top, bottom, stride);
++				memcpy(bottom, row, stride);
++			}
++		}
++	}
++	p->egl->cb->set_cursor(p->egl, c, w, h, info.virgl_format, data);
+ 
+ 	free(data);
+ }
+@@ -470,7 +483,7 @@
+ 	if (!p->egl->cb->move_cursor)
+ 		return;
+ 
+-	p->egl->cb->move_cursor(p->egl, c->pos.x, c->pos.y);
++	p->egl->cb->move_cursor(p->egl, c);
+ }
+ 
+ static void rvgpu_handle_submit_3d(struct rvgpu_pr_state *p, union virtio_gpu_cmd *r)
+@@ -481,9 +494,13 @@
+ 	uint32_t c_submit_len = 0;
+ 	uint32_t c_submit_rs_id = 0;
+ 	c_submit_buf = r->c_cmdbuf;
++	if (r->c_submit.size % sizeof(uint32_t))
++		errx(1, "Unaligned 3D command buffer");
+ 	while (c_submit_buf_offset < (r->c_submit.size / 4)) {
+ 		c_submit_header = c_submit_buf[c_submit_buf_offset];
+ 		c_submit_len = c_submit_header >> 16;
++		if (c_submit_len >= r->c_submit.size / 4 - c_submit_buf_offset)
++			errx(1, "Truncated 3D command");
+ 		const uint32_t *buf = &c_submit_buf[c_submit_buf_offset];
+ 		switch (c_submit_header) {
+ 			case VIRGL_CMD0(VIRGL_CCMD_TRANSFER3D,0,VIRGL_TRANSFER3D_SIZE):
+@@ -504,8 +521,10 @@
+ 		}
+ 		c_submit_buf_offset += c_submit_len + 1;
+ 	}
+-	virgl_renderer_submit_cmd(r->c_cmdbuf, (int)r->hdr.ctx_id,
+-							  r->c_submit.size / 4);
++	int result = virgl_renderer_submit_cmd(r->c_cmdbuf, (int)r->hdr.ctx_id,
++					     r->c_submit.size / 4);
++	if (result)
++		errx(1, "3D command submission failed: %d", result);
+ 	p->egl->has_submit_3d_draw = true;
+ }
+ 
+@@ -676,12 +695,14 @@
+ 			break;
+ 		case VIRTIO_GPU_CMD_TRANSFER_FROM_HOST_3D:
+ 			if (check_box(r.t_h3d.resource_id, &r.t_h3d.box)) {
+-				virgl_renderer_transfer_read_iov(
++				int transfer_result = virgl_renderer_transfer_read_iov(
+ 					r.t_h3d.resource_id, r.hdr.ctx_id,
+ 					r.t_h3d.level, r.t_h3d.stride,
+ 					r.t_h3d.layer_stride,
+ 					(struct virgl_box *)&r.t_h3d.box,
+ 					r.t_h3d.offset, NULL, 0);
++				if (transfer_result)
++					errx(1, "Resource readback failed: %d", transfer_result);
+ 				upload_resource(p, &r.t_h3d, uhdr.bpp, uhdr.stride);
+ 			} else {
+ 				errx(1, "Invalid box transfer");
+@@ -752,14 +773,11 @@
+ 			ret = virgl_renderer_create_fence(hdr_fence_id,
+ 							  hdr_type);
+ 
+-			if (ret != 0) {
+-				fprintf(stderr, "%s(): err create fence: %s\n",
+-					__func__, strerror(ret));
+-			} else {
+-				if (hdr_fence_id > p->fence_received)
+-					p->fence_received = hdr_fence_id;
+-				virgl_renderer_poll();
+-			}
++			if (ret)
++				errx(1, "GPU fence creation failed: %zu", ret);
++			if (hdr_fence_id > p->fence_received)
++				p->fence_received = hdr_fence_id;
++			virgl_renderer_poll();
+ 		}
+ 
+ 		if (p->egl->scanouts[current_scanout_id].fps_params.show_fps) {
+--- a/src/rvgpu-sanity/rvgpu-sanity.c
++++ b/src/rvgpu-sanity/rvgpu-sanity.c
+@@ -366,8 +366,7 @@
+ 
+ 	switch (cmd->hdr.type) {
+ 	case VIRTIO_GPU_CMD_UPDATE_CURSOR:
+-		if (cmd->cursor.resource_id == 0)
+-			return VIRTIO_GPU_RESP_ERR_INVALID_RESOURCE_ID;
++		/* resource_id == 0 hides the cursor (virtio-gpu protocol). */
+ 		/* FALLTHROUGH */
+ 	case VIRTIO_GPU_CMD_MOVE_CURSOR:
+ 		if (cmd->cursor.pos.scanout_id >= VIRTIO_GPU_MAX_SCANOUTS)

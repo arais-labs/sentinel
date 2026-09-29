@@ -12,7 +12,7 @@ const cache=path.join(desktop,'build/graphics-sources/guest');
 const root=await mkdtemp(path.join(cache,'resize-'));
 const project=await mkdtemp('/tmp/sentinel-resize-');
 const workspace=randomUUID();
-const runtime=new WorkspaceRuntime({command:path.join(resources,'sentinel-workspace-runtime'),args:[root,path.join(cache,config.kernelFileSha256),config.initImage,config.workspaceImage],onProgress:console.log,onFailure:console.error,log:()=>{}});
+const runtime=new WorkspaceRuntime({command:path.join(resources,'sentinel-workspace-runtime'),args:[root,path.join(cache,config.kernelFileSha256),config.initImage],onProgress:console.log,onFailure:console.error,log:()=>{}});
 const disk=path.join(root,'store/containers',workspace,'rootfs.ext4');
 async function exec(script) {
  const r=await runtime.request('exec',{workspace,arguments:['sh','-ec',script],timeout:120},150_000);

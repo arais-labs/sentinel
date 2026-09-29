@@ -32,16 +32,20 @@ filesystem is private to that workspace:
 | Location | Storage |
 |---|---|
 | Selected project path | Shared host project folder |
-| `/root` (`HOME`) | Workspace's persistent container disk |
+| `/root` (administrative commands) | Workspace's persistent container disk |
+| `/home/sentinel` (desktop applications) | Workspace's persistent container disk |
 | `/tmp` (`TMPDIR`) | Inside the workspace container |
 | Installed packages and caches | Workspace's persistent container disk |
-| Docker images and volumes | Workspace's private Docker engine |
+| Docker images and volumes, when Docker is installed | Workspace's private Docker engine |
 
 Agents can install missing packages with the distribution’s package manager
 (`apk` on Alpine, `apt` on Ubuntu or Debian) or put local executables in
 `$HOME/.local/bin`, which is on the terminal PATH. These are Linux programs; a
 macOS executable in the shared project does not become a Linux executable.
 Container root is not host root. No host Docker socket is shared.
+Desktop applications run as an ordinary Linux user with sudo available, while
+administrative agent operations retain root access. Docker and Kubernetes are
+optional tools, not requirements for booting a workspace.
 
 ## Commands and terminals
 
@@ -86,3 +90,8 @@ Stopping a workspace stops its container and terminals while retaining its disk.
 Removing it deletes its private container data and detaches linked sessions when
 requested; the selected host project folder is preserved. Active agents must stop
 before their workspace can be removed.
+
+Reinstall requires explicit confirmation and erases the private Linux system
+disk before rebuilding it from the current bundled distribution image. Guest-only
+files, packages and settings are lost; the mounted host project is preserved.
+Sentinel does not perform an in-place Linux distribution upgrade.

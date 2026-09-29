@@ -1,0 +1,29 @@
+--- a/src/rvgpu-proxy/gpu/rvgpu-gpu-device.c
++++ b/src/rvgpu-proxy/gpu/rvgpu-gpu-device.c
+@@ -364,11 +364,12 @@
+ size_t process_fences(struct gpu_device *g, uint32_t fence_id)
+ {
+ 	struct async_resp *r = g->async_resp;
+-	struct cmd *cmd;
++	struct cmd *cmd, *next;
+ 	size_t processed = 0;
+ 
+-	TAILQ_FOREACH(cmd, &r->async_cmds, cmds)
++	for (cmd = TAILQ_FIRST(&r->async_cmds); cmd != NULL; cmd = next)
+ 	{
++		next = TAILQ_NEXT(cmd, cmds);
+ 		if ((cmd->hdr.fence_id > fence_id) ||
+ 		    (cmd->hdr.flags & VIRTIO_GPU_FLAG_VSYNC))
+ 			continue;
+--- a/src/rvgpu-sanity/rvgpu-sanity.c
++++ b/src/rvgpu-sanity/rvgpu-sanity.c
+@@ -366,8 +366,7 @@
+ 
+ 	switch (cmd->hdr.type) {
+ 	case VIRTIO_GPU_CMD_UPDATE_CURSOR:
+-		if (cmd->cursor.resource_id == 0)
+-			return VIRTIO_GPU_RESP_ERR_INVALID_RESOURCE_ID;
++		/* resource_id == 0 hides the cursor (virtio-gpu protocol). */
+ 		/* FALLTHROUGH */
+ 	case VIRTIO_GPU_CMD_MOVE_CURSOR:
+ 		if (cmd->cursor.pos.scanout_id >= VIRTIO_GPU_MAX_SCANOUTS)

@@ -1,0 +1,74 @@
+[
+  {
+    "name": "libclc",
+    "version": "23.1.1",
+    "url": "https://ghcr.io/v2/homebrew/core/libclc/blobs/sha256:9b7f7dbc7f8277430626bfadd3a8de0fc8696702f1072988bc20687848c44ecd",
+    "sha256": "9b7f7dbc7f8277430626bfadd3a8de0fc8696702f1072988bc20687848c44ecd"
+  },
+  {
+    "name": "spirv-headers",
+    "version": "1.4.357.0",
+    "url": "https://ghcr.io/v2/homebrew/core/spirv-headers/blobs/sha256:eac59c62ed2b1ed63d112a6574dc0caa15530c08c2a6ad44429d08bfc51ec4ba",
+    "sha256": "eac59c62ed2b1ed63d112a6574dc0caa15530c08c2a6ad44429d08bfc51ec4ba"
+  },
+  {
+    "name": "spirv-llvm-translator",
+    "version": "23.1.1",
+    "url": "https://ghcr.io/v2/homebrew/core/spirv-llvm-translator/blobs/sha256:bee3764d7f2b6fd3d88140809238dcf1a16f847c3e36308d8d0d3c4f9fffa2a7",
+    "sha256": "bee3764d7f2b6fd3d88140809238dcf1a16f847c3e36308d8d0d3c4f9fffa2a7"
+  },
+  {
+    "name": "spirv-tools",
+    "version": "1.4.357.0",
+    "url": "https://ghcr.io/v2/homebrew/core/spirv-tools/blobs/sha256:a00b484190a546a8b5284da248deebb92ab6fac0688f3f3ba1b334fe8f127f74",
+    "sha256": "a00b484190a546a8b5284da248deebb92ab6fac0688f3f3ba1b334fe8f127f74"
+  },
+  {
+    "name": "z3",
+    "version": "5.1.0",
+    "url": "https://ghcr.io/v2/homebrew/core/z3/blobs/sha256:5968f6ca3a4c4f2b12e4711b9ca7556fa65a82937f1af7a2a210456ab754adb7",
+    "sha256": "5968f6ca3a4c4f2b12e4711b9ca7556fa65a82937f1af7a2a210456ab754adb7"
+  },
+  {
+    "name": "llvm",
+    "version": "23.1.1",
+    "url": "https://ghcr.io/v2/homebrew/core/llvm/blobs/sha256:6542e45742b50f455290cb54dcb6a1a91098bc2234393855569860676f4035ee",
+    "sha256": "6542e45742b50f455290cb54dcb6a1a91098bc2234393855569860676f4035ee"
+  },
+  {
+    "name": "bison",
+    "version": "3.8.2",
+    "url": "https://ghcr.io/v2/homebrew/core/bison/blobs/sha256:d47d87f1bead6f00956ea21f147d46ded1c5c2ac0c53193a1ed7b46105492228",
+    "sha256": "d47d87f1bead6f00956ea21f147d46ded1c5c2ac0c53193a1ed7b46105492228"
+  },
+  {
+    "name": "zstd",
+    "version": "1.5.7_1",
+    "url": "https://ghcr.io/v2/homebrew/core/zstd/blobs/sha256:628a4ef53428d0078e3d76d297171ce8d0294f5ec1de3f20305e08c4dd333565",
+    "sha256": "628a4ef53428d0078e3d76d297171ce8d0294f5ec1de3f20305e08c4dd333565"
+  },
+  {
+    "name": "vulkan-loader",
+    "version": "1.4.357.0",
+    "url": "https://ghcr.io/v2/homebrew/core/vulkan-loader/blobs/sha256:fcca79db1d905b8d119ac29f172e3fa4c2a5a9928eee5865e11131492d7f1f67",
+    "sha256": "fcca79db1d905b8d119ac29f172e3fa4c2a5a9928eee5865e11131492d7f1f67"
+  },
+  {
+    "name": "lz4",
+    "version": "1.10.0",
+    "url": "https://ghcr.io/v2/homebrew/core/lz4/blobs/sha256:2be9df952396d89008e56232b065354b3bd51dde5f8a30c1fe18d765ff26e017",
+    "sha256": "2be9df952396d89008e56232b065354b3bd51dde5f8a30c1fe18d765ff26e017"
+  },
+  {
+    "name": "xz",
+    "version": "5.8.4",
+    "url": "https://ghcr.io/v2/homebrew/core/xz/blobs/sha256:d291ad2277682238329b0e4d249e5e2c948c4b10cd64dba1963d897330ad88dd",
+    "sha256": "d291ad2277682238329b0e4d249e5e2c948c4b10cd64dba1963d897330ad88dd"
+  },
+  {
+    "name": "pkgconf",
+    "version": "3.0.7",
+    "url": "https://ghcr.io/v2/homebrew/core/pkgconf/blobs/sha256:338c66b0d559ed78c2f77c038e141cd7b0060d6fcdf80affd1034509e8ab180c",
+    "sha256": "338c66b0d559ed78c2f77c038e141cd7b0060d6fcdf80affd1034509e8ab180c"
+  }
+]

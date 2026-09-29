@@ -244,8 +244,16 @@ async def _resolve_runtime(
         spec = record["spec"]
         workspace.directory = spec["project"]
         workspace.distribution = spec["distribution"]
+        workspace.desktop = spec["desktop"]
+        workspace.browser = spec.get("browser", "chromium")
         workspace.development_tools = spec["tools"]
-    workspace_containers.bind(workspace.id, workspace.machine_id, workspace.distribution)
+    workspace_containers.bind(
+        workspace.id,
+        workspace.machine_id,
+        workspace.distribution,
+        workspace.desktop,
+        workspace.browser,
+    )
     binding = WorkspaceLocation(
         workspace.directory,
         "/var/lib/sentinel",
@@ -253,6 +261,7 @@ async def _resolve_runtime(
         workspace.directory,
         tuple(workspace.development_tools or []),
         distribution=workspace.distribution,
+        desktop=workspace.desktop,
     )
     return machine, binding
 

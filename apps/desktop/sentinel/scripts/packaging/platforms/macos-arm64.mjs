@@ -2,8 +2,15 @@ import { existsSync } from 'node:fs';
 import { cp, mkdir, readdir, rename, rm, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { stageWorkspaceImages, verifyWorkspaceImages, workspaceImageSource } from '../workspace-images/stage.mjs';
 
-export const runtimeBuildVersion = 5;
+export const runtimeBuildVersion = 7;
+
+export function workspaceRuntimeManifest(config, kernel, images) {
+  // Compiler containers are build inputs, never workspace boot requirements.
+  const { buildImage, glibcBuildImage, ...runtimeConfig } = config;
+  return { protocol: 1, ...runtimeConfig, ...kernel, workspaceImages: images };
+}
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
@@ -58,7 +65,22 @@ export function verifyBuildTools() {
 
 export function runtimeRequirements() {
   return {
-    'workspace-runtime': ['sentinel-workspace-runtime', 'manifest.json', 'graphics/sentinel-graphics-renderer', 'graphics/libEGL.dylib', 'graphics/libGLESv2.dylib', 'graphics/libepoxy.0.dylib', 'graphics/libvirglrenderer.1.dylib', 'graphics/install-guest.py', 'graphics/guest-bridge.py', 'graphics/mesa-linux-arm64.tar.xz', 'graphics/mesa-linux-arm64.json', 'graphics/mesa-linux-arm64-glibc.tar.xz', 'graphics/mesa-linux-arm64-glibc.json'],
+    'workspace-runtime': ['sentinel-workspace-runtime', 'manifest.json', 'kernel',
+      'workspace-images/manifest.json',
+      ...['alpine', 'ubuntu', 'debian'].flatMap(name => [
+        `workspace-images/${name}/index.json`, `workspace-images/${name}/oci-layout`,
+      ]),
+      'graphics/sentinel-desktop-renderer',
+      'graphics/libEGL.dylib', 'graphics/libgallium-26.3.0-devel.dylib',
+      'graphics/libepoxy.0.dylib', 'graphics/libvirglrenderer.1.dylib',
+      'graphics/libvulkan_kosmickrisp.dylib', 'graphics/libvulkan.1.dylib',
+      'graphics/libSPIRV-Tools.dylib', 'graphics/icd.json',
+      'graphics/install-guest.py', 'graphics/gpu-start.sh',
+      'graphics/install-browser-graphics.py', 'graphics/gpu-2404.snap', 'graphics/gpu-2404.json',
+      'graphics/mesa-linux-arm64.tar.xz', 'graphics/mesa-linux-arm64.json',
+      'graphics/mesa-linux-arm64-glibc.tar.xz', 'graphics/mesa-linux-arm64-glibc.json',
+      'graphics/kernel-linux-arm64.tar.xz', 'graphics/kernel-linux-arm64.json',
+      'graphics/desktop-runtime.tar.xz', 'graphics/desktop-runtime.json'],
     'runtime-seed': [
       'python/bin/python3',
       'git/bin/git',
@@ -69,13 +91,20 @@ export function runtimeRequirements() {
 
 export function runtimeComponents({ config, paths }) {
   const requirements = runtimeRequirements();
+  const images = workspaceImageSource(paths.desktopDir);
   return [
     {
       name: 'workspace-runtime',
-      version: 1,
+      version: 2,
       config: config.workspaceRuntime,
       required: requirements['workspace-runtime'],
-      inputs: ['native/macos/Package.swift', 'native/macos/Package.resolved', 'native/macos/Sources', 'native/graphics/guest', 'native/graphics/patches', 'scripts/packaging/graphics', 'runtime.lock.json', 'packaging/macos/workspace-runtime.plist'].map(file => path.join(paths.desktopDir, file)),
+      inputs: [
+        ...['native/macos/Package.swift', 'native/macos/Package.resolved', 'native/macos/Sources',
+          'native/graphics', 'scripts/packaging/graphics', 'native/workspace-images',
+          'scripts/packaging/workspace-images', 'runtime.lock.json',
+          'packaging/macos/workspace-runtime.plist'].map(file => path.join(paths.desktopDir, file)),
+        ...images.manifests,
+      ],
       build: buildWorkspaceRuntime,
     },
     {
@@ -92,11 +121,14 @@ export function runtimeComponents({ config, paths }) {
   ];
 }
 
-export async function buildWorkspaceRuntime({ config, paths, configuration = "release" }) {
+export async function buildWorkspaceRuntime({ config, paths, configuration = "release", workspaceImages }) {
   const cfg = config.workspaceRuntime;
-  if (!cfg?.kernelFileSha256 || !cfg?.kernelSha256 || !cfg?.initImage || !cfg?.workspaceImage) {
+  if (!cfg?.kernelFileSha256 || !cfg?.kernelSha256 || !cfg?.initImage) {
     throw new Error('runtime.lock.json must pin the workspace runtime assets.');
   }
+  // Fail before compilation if the native Linux image bundle is missing/stale.
+  const dest = path.join(paths.runtimeDir, 'workspace-runtime');
+  const images = stageWorkspaceImages(paths.desktopDir, dest, workspaceImages);
   const source = path.join(paths.desktopDir, 'native/macos');
   const manifest = await readFile(path.join(source, 'Package.swift'), 'utf8');
   if (!manifest.includes(`exact: "${cfg.containerizationVersion}"`)) {
@@ -105,7 +137,6 @@ export async function buildWorkspaceRuntime({ config, paths, configuration = "re
   const scratch = path.join(paths.targetDir, 'swift');
   run('swift', ['build', '--package-path', source, '--scratch-path', scratch, '-c', configuration, '--jobs', '4', '--force-resolved-versions']);
   const binDir = output('swift', ['build', '--package-path', source, '--scratch-path', scratch, '-c', configuration, '--show-bin-path']);
-  const dest = path.join(paths.runtimeDir, 'workspace-runtime');
   await mkdir(dest, { recursive: true });
   const binary = path.join(dest, 'sentinel-workspace-runtime');
   const staging = binary + '.next';
@@ -115,9 +146,9 @@ export async function buildWorkspaceRuntime({ config, paths, configuration = "re
   run('codesign', ['--force', '--sign', '-', '--entitlements', path.join(paths.desktopDir, 'packaging/macos/workspace-runtime.plist'), staging]);
   // A running VM keeps the previous signed executable until its owner exits.
   await rename(staging, binary);
-  await rm(path.join(dest, 'kernel'), { force: true });
-  await writeFile(path.join(dest, 'manifest.json'), JSON.stringify({ protocol: 1, ...cfg }, null, 2) + '\n');
   run('python3', [path.join(paths.desktopDir, 'scripts/packaging/graphics/build.py'), path.join(dest, 'graphics')]);
+  const kernel = JSON.parse(await readFile(path.join(dest, 'kernel-manifest.json'), 'utf8'));
+  await writeFile(path.join(dest, 'manifest.json'), JSON.stringify(workspaceRuntimeManifest(cfg, kernel, images), null, 2) + '\n');
   assertNoExternalDylibs(dest, 'Workspace runtime');
 }
 
@@ -403,6 +434,8 @@ function verifyPythonSQLite(python) {
 
 export async function verifyRuntime({ paths }) {
   const runtimeDir = paths.runtimeDir;
+  // Cached component stamps cannot detect removed/corrupted OCI layer bytes.
+  verifyWorkspaceImages(paths.desktopDir, path.join(runtimeDir, 'workspace-runtime'));
   const pythonDir = path.join(runtimeDir, 'runtime-seed/python');
   if (existsSync(pythonDir)) {
     verifyPythonSQLite(path.join(pythonDir, 'bin/python3'));
@@ -452,7 +485,7 @@ export function electronBuilderConfig({ paths, baseConfig }) {
       // other data files. These are sealed as resources by the app signature;
       // only executable code needs an individual signature.
       signIgnore: ['\\.(pyc|pyo|whl|gif|ico|png|pickle|exe|gz|xz|pak|dat|asar|icns|woff2?|ttf)$'],
-      binaries: ['Contents/Resources/workspace-runtime/sentinel-workspace-runtime', 'Contents/Resources/workspace-runtime/graphics/sentinel-graphics-renderer'],
+      binaries: ['Contents/Resources/workspace-runtime/sentinel-workspace-runtime', 'Contents/Resources/workspace-runtime/graphics/sentinel-desktop-renderer'],
       extendInfo: { ...(baseConfig.mac?.extendInfo || {}), LSMinimumSystemVersion: '26.0' },
     },
     dmg: {

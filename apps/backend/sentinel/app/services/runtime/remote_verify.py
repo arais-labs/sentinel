@@ -1,12 +1,11 @@
 """On-demand, read-only checks of an enrolled remote runtime.
 
 No service starts, workspace boots, or repairs happen here. The installed release
-hash covers the helper, kernel, graphics assets and image references; it does not
-verify downloaded image layers or prove that a guest can render a desktop.
+hash covers the helper, kernel, graphics assets and bundled native OCI image
+files; it does not prove that a guest can boot or render a desktop.
 """
 
 import asyncio
-import hashlib
 import json
 import re
 from pathlib import PurePosixPath
@@ -22,6 +21,7 @@ from app.services.runtime.remote_mac import (
     service_request,
 )
 from app.services.runtime.ssh_client import SSHClient
+from app.services.runtime.workspace_image_assets import runtime_version
 
 
 async def verify_installation(machine):
@@ -65,9 +65,9 @@ async def verify_installation(machine):
                     or manifest["kernel"] != str(release / "kernel")
                     or not re.fullmatch(r"[a-f0-9]{16}", manifest["version"])
                     or not isinstance(manifest["initImage"], str)
-                    or not isinstance(manifest["workspaceImage"], str)
                 ):
                     raise ValueError("Invalid release metadata")
+                files = runtime_assets(manifest, installed=True)
             except (KeyError, TypeError, ValueError) as exc:
                 add(
                     "Installation metadata",
@@ -90,21 +90,28 @@ async def verify_installation(machine):
                 "Installed release metadata is readable.",
             )
 
-            paths = [str(release / name) for _, name in runtime_assets(manifest)]
-            hashed = await conn.run(
-                "/usr/bin/shasum -a 256 " + " ".join(map(quote, paths)),
-                check=False,
-                timeout=35,
-            )
-            lines = hashed.stdout.splitlines()
+            paths = [str(release / name) for _, name in files]
+            # Bound argv size even when OCI images acquire many small layers.
+            lines = []
+            checksums_ok = True
+            for offset in range(0, len(paths), 64):
+                hashed = await conn.run(
+                    "/usr/bin/shasum -a 256 " + " ".join(map(quote, paths[offset : offset + 64])),
+                    check=False,
+                    timeout=35,
+                )
+                lines.extend(hashed.stdout.splitlines())
+                checksums_ok = checksums_ok and hashed.exit_status == 0
             hashes = [line.split()[0] for line in lines if line.split()]
             valid_hashes = len(hashes) == len(paths) and all(
                 re.fullmatch(r"[a-f0-9]{64}", value) for value in hashes
             )
-            version = hashlib.sha256(
-                json.dumps([*hashes, manifest["initImage"], manifest["workspaceImage"]]).encode()
-            ).hexdigest()[:16]
-            if hashed.exit_status != 0 or not valid_hashes or version != manifest["version"]:
+            version = (
+                runtime_version([name for _, name in files], hashes, manifest["initImage"])
+                if valid_hashes
+                else None
+            )
+            if not checksums_ok or not valid_hashes or version != manifest["version"]:
                 add(
                     "Runtime files",
                     "failed",
@@ -114,14 +121,14 @@ async def verify_installation(machine):
             add(
                 "Runtime files",
                 "passed",
-                "Helper, kernel, renderer and graphics libraries match the installed release checksum.",
+                "Helper, kernel, graphics and bundled native Linux images match the installed release checksum.",
             )
 
             for label, path in (
                 ("Runtime helper", str(executable)),
                 (
                     "Graphics renderer",
-                    str(release / "graphics/sentinel-graphics-renderer"),
+                    str(release / "graphics/sentinel-desktop-renderer"),
                 ),
             ):
                 verified = await conn.run(

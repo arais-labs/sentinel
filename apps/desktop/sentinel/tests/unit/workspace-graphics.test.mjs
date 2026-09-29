@@ -1,49 +1,34 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { EventEmitter } from 'node:events';
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
-import path from 'node:path';
 import { WorkspaceGraphics } from '../../.test-dist/main/workspace/workspaceGraphics.js';
+import { validateDesktop } from '../../.test-dist/main/workspace/workspaceDesktop.js';
 
-test('a damaged bundled archive fails before a guest installer is started', async () => {
-  const resources = await mkdtemp('/tmp/sentinel-graphics-bundle-');
-  const calls = [];
-  const runtime = { events: new EventEmitter(), request: async action => { calls.push(action); return { exitCode: 1 }; } };
-  try {
-    await writeFile(path.join(resources, 'mesa-linux-arm64.json'), JSON.stringify({ version: 'test', sha256: 'a'.repeat(64) }));
-    await writeFile(path.join(resources, 'mesa-linux-arm64.tar.xz'), 'damaged');
-    const graphics = new WorkspaceGraphics(runtime, resources);
-    await assert.rejects(graphics.install('test'), /checksum mismatch/);
-    assert.deepEqual(calls, ['exec']);
-  } finally { await rm(resources, { recursive: true, force: true }); }
+test('desktop validation preserves every supported desktop selection', () => {
+  for (const desktop of ['none', 'xfce', 'weston', 'lxqt', 'gnome', 'plasma']) assert.doesNotThrow(() => validateDesktop(desktop));
+  for (const desktop of ['', 'wayland', 'LXQt', 'unknown']) assert.throws(() => validateDesktop(desktop), /Unknown workspace desktop/);
 });
 
-
-test('graphics use native runtime ownership and survive viewer closure', async () => {
+test('normal desktop selections are forwarded unchanged to the worker', async () => {
   const calls = [];
-  const runtime = { isReady: true, request: async (action, values) => { calls.push([action, values]); return {}; } };
-  const workspace = '11111111-1111-4111-8111-111111111111';
-  const graphics = new WorkspaceGraphics(runtime, '/unused');
-  await graphics.start(workspace);
-  await graphics.start(workspace);
-  await graphics.close();
-  assert.deepEqual(calls.map(([action]) => action), ['graphics_start', 'graphics_start']);
-  await graphics.stop(workspace);
-  assert.deepEqual(calls.at(-1), ['graphics_stop', { workspace }]);
-  await assert.rejects(graphics.start('../bad'), /UUID/);
+  const graphics = new WorkspaceGraphics({ request: async (...args) => { calls.push(args); } });
+  for (const desktop of ['xfce', 'lxqt', 'gnome', 'plasma']) await graphics.install('workspace-id', desktop, 'alpine');
+  assert.deepEqual(calls, ['xfce', 'lxqt', 'gnome', 'plasma'].map(desktop => ['graphics_install', { workspace: 'workspace-id', desktop, distribution: 'alpine' }, 1_200_000]));
 });
 
-
-test('Ubuntu and Debian choose the glibc bundle without reading Alpine archives', async () => {
-  const resources = await mkdtemp('/tmp/sentinel-glibc-bundle-');
-  const digest = 'b'.repeat(64);
+test('desktop installation runs on the worker with explicit desktop and distribution', async () => {
   const calls = [];
-  const runtime = { request: async (action, values) => { calls.push([action, values]); return { exitCode: 0, stdout: digest }; } };
-  try {
-    await writeFile(path.join(resources, 'mesa-linux-arm64-glibc.json'), JSON.stringify({ version: 'test', sha256: digest }));
-    const graphics = new WorkspaceGraphics(runtime, resources);
-    for (const distribution of ['ubuntu', 'debian']) await graphics.install('test', distribution);
-    assert.equal(calls.length, 2);
-    assert.ok(calls.every(([action]) => action === 'exec'));
-  } finally { await rm(resources, { recursive: true, force: true }); }
+  const graphics = new WorkspaceGraphics({ request: async (...args) => { calls.push(args); } });
+  for (const distribution of ['alpine', 'ubuntu', 'debian']) {
+    await graphics.install('workspace-id', 'weston', distribution);
+  }
+  assert.deepEqual(calls, ['alpine', 'ubuntu', 'debian'].map(distribution =>
+    ['graphics_install', { workspace: 'workspace-id', desktop: 'weston', distribution }, 1_200_000]));
+});
+
+test('worker installation failures propagate without a client-side fallback', async () => {
+  const failure = new Error('Bundled desktop graphics checksum mismatch');
+  const graphics = new WorkspaceGraphics({ request: async () => { throw failure; } });
+  await assert.rejects(graphics.install('workspace-id', 'xfce'), error => error === failure);
+  assert.equal(graphics.start, undefined);
+  assert.equal(graphics.stop, undefined);
 });

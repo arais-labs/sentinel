@@ -1,0 +1,14 @@
+--- a/src/view-impl-common.c
++++ b/src/view-impl-common.c
+@@ -17,6 +17,11 @@ view_impl_map(struct view *view)
+ 	if (!view->been_mapped) {
+ 		window_rules_apply(view, LAB_WINDOW_RULE_EVENT_ON_FIRST_MAP);
+ 	}
++	/* Mapping changes the hit-test scene even when the view is already
++	 * topmost and view_move_to_front() has no stacking work to perform.
++	 * Refresh stationary pointer focus after visibility and rules apply.
++	 */
++	cursor_update_focus();
+ 
+ 	/*
+ 	 * Create foreign-toplevel handle, respecting skipTaskbar rules.

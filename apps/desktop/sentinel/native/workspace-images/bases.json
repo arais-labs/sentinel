@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "boot_contract": 1,
+  "platform": "linux/arm64",
+  "buildkit_image": "docker.io/moby/buildkit@sha256:5a8cd84cb3fcfd082789a08f92bd36f8e745c6231edd78e24a3bf34fd471a823",
+  "distributions": {
+    "alpine": {
+      "release": "3.24",
+      "image": "docker.io/library/alpine@sha256:260479a1cfaf304c4c20da7f8405d3ce313513dcd534bb743257bdd2fe0f3e2d",
+      "entrypoint": ["/sbin/openrc-init"]
+    },
+    "ubuntu": {
+      "release": "26.04",
+      "image": "docker.io/library/ubuntu@sha256:e03767b4dc7cb87fc57b1f119d40d9a997ecc5570dc6e22d57d6b7e333bbe78c",
+      "entrypoint": ["/sbin/init"]
+    },
+    "debian": {
+      "release": "13",
+      "image": "docker.io/library/debian@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132",
+      "entrypoint": ["/sbin/init"]
+    }
+  }
+}

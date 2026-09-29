@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from app.services.runtime.compatibility import RuntimeCompatibilityError
 
 
 def _status_to_code(status_code: int) -> str:
@@ -42,6 +43,18 @@ def _json_safe(value):
 
 
 def register_error_handlers(app: FastAPI) -> None:
+    @app.exception_handler(RuntimeCompatibilityError)
+    async def runtime_compatibility_handler(
+        request: Request, exc: RuntimeCompatibilityError
+    ) -> JSONResponse:
+        response = JSONResponse(
+            status_code=409,
+            content=_error_payload(code=exc.code, message=str(exc), details=exc.details),
+        )
+        if request_id := _request_id(request):
+            response.headers["X-Request-ID"] = request_id
+        return response
+
     @app.exception_handler(HTTPException)
     async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
         code = _status_to_code(exc.status_code)

@@ -13,7 +13,7 @@ const config = JSON.parse(await readFile(path.join(resources, 'manifest.json'), 
 const root = process.env.SENTINEL_DISTRO_TEST_ROOT || await mkdtemp('/tmp/sentinel-distro-vms-');
 const project = await mkdtemp('/tmp/sentinel-distro-project-');
 const runtime = new WorkspaceRuntime({ command: process.env.SENTINEL_DISTRO_HELPER || path.join(resources, 'sentinel-workspace-runtime'),
-  args: [root, process.env.SENTINEL_DISTRO_KERNEL || path.join(desktop, 'build/graphics-sources/guest', config.kernelFileSha256), config.initImage, config.workspaceImage],
+  args: [root, process.env.SENTINEL_DISTRO_KERNEL || path.join(desktop, 'build/graphics-sources/guest', config.kernelFileSha256), config.initImage],
   onProgress: console.log, onFailure: console.error, log: () => {} });
 const ids = [];
 try {

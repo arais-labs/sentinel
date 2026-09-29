@@ -1,0 +1,68 @@
+--- a/src/gallium/drivers/virgl/virgl_resource.c
++++ b/src/gallium/drivers/virgl/virgl_resource.c
+@@ -507,6 +507,8 @@
+    if (replicated) {
+       if (usage & PIPE_MAP_PERSISTENT)
+          return virgl_mapped_map(ctx, resource, usage, box, transfer);
++      if (usage & PIPE_MAP_WRITE)
++         virgl_mapped_host_write(resource);
+       virgl_mapped_before_consumer(ctx);
+       usage &= ~PIPE_MAP_DIRECTLY;
+       if (usage & PIPE_MAP_DISCARD_WHOLE_RESOURCE) {
+@@ -1131,7 +1133,7 @@
+    return vs->vws->resource_get_handle(vs->vws, res->hw_res, stride, whandle);
+ }
+ 
+-void virgl_resource_dirty(struct virgl_resource *res, uint32_t level)
++void virgl_resource_dirty_tracked_upload(struct virgl_resource *res, uint32_t level)
+ {
+    if (res) {
+       if (res->b.target == PIPE_BUFFER)
+@@ -1140,3 +1142,10 @@
+          res->clean_mask &= ~(1 << level);
+    }
+ }
++
++void virgl_resource_dirty(struct virgl_resource *res, uint32_t level)
++{
++   if (res)
++      virgl_mapped_host_write(&res->b);
++   virgl_resource_dirty_tracked_upload(res, level);
++}
+--- a/src/gallium/drivers/virgl/virgl_resource.h
++++ b/src/gallium/drivers/virgl/virgl_resource.h
+@@ -215,6 +215,7 @@
+                                unsigned usage);
+ 
+ void virgl_resource_dirty(struct virgl_resource *res, uint32_t level);
++void virgl_resource_dirty_tracked_upload(struct virgl_resource *res, uint32_t level);
+ 
+ void *virgl_texture_transfer_map(struct pipe_context *ctx,
+                                  struct pipe_resource *resource,
+--- a/src/gallium/drivers/virgl/virgl_encode.c
++++ b/src/gallium/drivers/virgl/virgl_encode.c
+@@ -1750,6 +1750,7 @@
+ 
+ void virgl_encode_get_memory_info(struct virgl_context *ctx, struct virgl_resource *res)
+ {
++   virgl_resource_dirty(res, 0);
+    virgl_encoder_write_cmd_dword(ctx, VIRGL_CMD0(VIRGL_CCMD_GET_MEMORY_INFO, 0, 1));
+    virgl_encoder_write_res(ctx, res);
+ }
+@@ -1847,6 +1848,8 @@
+                                    struct virgl_video_buffer *buf,
+                                    struct virgl_resource *tgt)
+ {
++   virgl_resource_dirty(tgt, 0);
++   virgl_resource_dirty(virgl_resource(cdc->feed_buffers[cdc->cur_buffer]), 0);
+    virgl_encoder_write_cmd_dword(ctx, VIRGL_CMD0(VIRGL_CCMD_ENCODE_BITSTREAM, 0, 5));
+    virgl_encoder_write_dword(ctx->cbuf, cdc->handle);
+    virgl_encoder_write_dword(ctx->cbuf, buf->handle);
+@@ -1897,6 +1900,7 @@
+                               struct virgl_resource *out_res,
+                               struct virgl_resource *res)
+ {
++   virgl_resource_dirty(out_res, 0);
+    virgl_encoder_write_cmd_dword(ctx, VIRGL_CMD0(VIRGL_CCMD_GET_PIPE_RESOURCE_LAYOUT, 0, VIRGL_RESOURCE_LAYOUT_SIZE));
+    virgl_encoder_write_res(ctx, out_res);
+    virgl_encoder_write_res(ctx, res);

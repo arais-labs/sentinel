@@ -1,0 +1,10 @@
+{
+  "mesa": {"repository": "chaotic-cx/mesa-mirror", "revision": "e46ee71b43b1693a2baf22740b0157e7d31b79cc"},
+  "mesa-guest": {"url": "https://archive.mesa3d.org/mesa-26.1.6.tar.xz", "sha256": "5296b88a0f1e012e2cb9ada150a2bbadf728ca81e5a4fb2ab43c83a4d2158606"},
+  "labwc": {"url": "https://codeload.github.com/labwc/labwc/tar.gz/refs/tags/0.20.0", "sha256": "3e0b7cfd8e371ed4826f2d5467749edc7f9d6c06491dd943a55ed1c0b49a369a", "version": "0.20.0", "wlrootsAbi": "0.20"},
+  "epoxy": {"repository": "utmapp/libepoxy", "revision": "bf98587477fe68d07b93319ece7b40a7d0e2eabe"},
+  "virgl": {"repository": "utmapp/virglrenderer", "revision": "71a67414013f120c158729da7f56f29b55bf4f6c"},
+  "egl": {"repository": "KhronosGroup/EGL-Registry", "revision": "5961a7fe64cf8a126890ced6f13d69e0a1e1b83e"},
+  "wl-clipboard": {"url": "https://codeload.github.com/bugaevc/wl-clipboard/tar.gz/refs/tags/v2.3.0", "sha256": "b4dc560973f0cd74e02f817ffa2fd44ba645a4f1ea94b7b9614dacc9f895f402", "version": "2.3.0"},
+  "wayland-protocols": {"url": "https://gitlab.freedesktop.org/wayland/wayland-protocols/-/archive/1.39/wayland-protocols-1.39.tar.gz", "sha256": "42c16435dfc83f320ff727b6d446bb0d4feb361dc11796a2c5d3c0fb6532a517", "version": "1.39"}
+}

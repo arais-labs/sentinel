@@ -176,7 +176,6 @@ async function installNodeDependencies(includeFrontend = true) {
   }
   // Electron's npm package no longer installs the binary through postinstall.
   // Its installer verifies the pinned version and reuses an existing download.
-  // The native graphics bundle also needs the binary's ANGLE libraries.
   run(process.execPath, [path.join(desktopDir, 'node_modules/electron/install.js')]);
 }
 

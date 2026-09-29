@@ -2,8 +2,9 @@ import path from 'node:path';
 import { readFile } from 'node:fs/promises';
 import { workspaceSetupSteps } from '../workspaceTools.js';
 import type { WorkspaceSpec } from '../workspaceLifecycle.js';
+import { migrateDesktopSelection } from './desktopSelection.js';
 
-type Reference = { id: string; name: string; project: string; distribution: string; tools: string[] };
+type Reference = { id: string; name: string; project: string; distribution: string; tools: string[]; desktop?: string };
 
 /** Only the updater calls this. Legacy registry interpretation stays here. */
 export async function runtimeMigrationInputs(root: string, machine: string, references: Reference[]) {
@@ -23,16 +24,19 @@ export async function runtimeMigrationInputs(root: string, machine: string, refe
     if (!entries[row.id]) throw new Error(`Lifecycle registration is missing for ${row.name}`);
   }
   const workspaces = Object.fromEntries(Object.entries(entries).map(([id, entry]) => {
+    migrateDesktopSelection(entry);
     if (!/^[0-9a-f-]{36}$/i.test(id) || !entry.resources) throw new Error(`Workspace ${id} has incomplete registration data`);
     if (['preparing', 'stopping', 'recovering'].includes(entry.state)) throw new Error('Finish pending workspace operations before updating');
     const row = rows.get(id);
     const distribution = entry.distribution ?? 'alpine';
     const name = row?.name ?? entry.notificationContext?.name;
     if (!name) throw new Error(`Workspace ${id} has no recorded name`);
-    if (row && (row.project !== entry.project || row.distribution !== distribution || [...row.tools].sort().join() !== [...entry.tools].sort().join())) {
+    const rowDesktop = row?.desktop ?? (row?.tools.includes('desktop') ? 'xfce' : 'none');
+    if (row && (row.project !== entry.project || row.distribution !== distribution || rowDesktop !== entry.desktop ||
+        row.tools.filter(tool => tool !== 'desktop').sort().join() !== [...entry.tools].sort().join())) {
       throw new Error(`Database and lifecycle registrations disagree for ${name}`);
     }
-    return [id, { spec: { name, project: entry.project, distribution, tools: entry.tools, resources: entry.resources,
+    return [id, { spec: { name, project: entry.project, distribution, desktop: entry.desktop, tools: entry.tools, resources: entry.resources,
       steps: workspaceSetupSteps(entry.tools, { distribution }) }, revision: 1,
       reconfigure: Boolean(entry.reconfigure), grow_disk: Boolean(entry.growDisk),
       ...(entry.recoveryBackup ? { recovery_backup: entry.recoveryBackup } : {}),

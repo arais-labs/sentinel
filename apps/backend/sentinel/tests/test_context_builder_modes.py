@@ -120,6 +120,8 @@ def test_runtime_context_uses_selected_distribution_package_manager(monkeypatch)
     monkeypatch.setattr(ssh_runtime, "get_runtime_terminal_manager", manager)
     builder = ContextBuilder(instance_name="work", available_tools={"runtime"})
     message = _run(builder._runtime_environment_message(uuid4()))
-    assert "Ubuntu 24.04 LTS" in message.content
+    assert "Ubuntu" in message.content
+    # Distribution selection does not identify the installed guest release.
+    assert "26.04" not in message.content
     assert "Use apt-get" in message.content
     assert "Use apk" not in message.content

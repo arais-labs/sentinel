@@ -1,0 +1,479 @@
+diff --git a/src/egl/drivers/dri2/platform_surfaceless.c b/src/egl/drivers/dri2/platform_surfaceless.c
+index 8fbb9a6..0930c13 100644
+--- a/src/egl/drivers/dri2/platform_surfaceless.c
++++ b/src/egl/drivers/dri2/platform_surfaceless.c
+@@ -389,7 +389,7 @@ dri2_initialize_surfaceless(_EGLDisplay *disp)
+     */
+    driver_loaded = surfaceless_probe_device(disp, disp->Options.ForceSoftware,
+                                             disp->Options.Zink);
+-   if (!driver_loaded && disp->Options.ForceSoftware) {
++   if (!driver_loaded && (disp->Options.ForceSoftware || disp->Options.Zink)) {
+       _eglLog(_EGL_DEBUG, "Falling back to surfaceless swrast without DRM.");
+       driver_loaded = surfaceless_probe_device_sw(disp);
+    }
+diff --git a/src/gallium/drivers/zink/meson.build b/src/gallium/drivers/zink/meson.build
+index 073f0a4..fe75b3f 100644
+--- a/src/gallium/drivers/zink/meson.build
++++ b/src/gallium/drivers/zink/meson.build
+@@ -76,8 +76,7 @@ if host_machine.system() == 'darwin'
+       endif
+     endif
+     inc_zink_vk += include_directories(moltenvk_includes)
+-  else
+-    error('moltenvk-dir is required but not set.')
++    zink_c_args += '-DZINK_MOLTENVK'
+   endif
+ 
+   zink_c_args += ['-x','objective-c'] # Put compiler into objective-C mode to allow for MacOS types, like IOSurface and CAMetalLayer
+diff --git a/src/gallium/drivers/zink/zink_batch.c b/src/gallium/drivers/zink/zink_batch.c
+index c615d47..af4637b 100644
+--- a/src/gallium/drivers/zink/zink_batch.c
++++ b/src/gallium/drivers/zink/zink_batch.c
+@@ -898,11 +898,14 @@ zink_end_batch(struct zink_context *ctx)
+ 
+    set_foreach(&bs->dmabuf_exports, entry) {
+       struct zink_resource *res = (void*)entry->key;
++      const bool metal = res->obj->exportable_metal;
++      const uint32_t external_queue = metal ? VK_QUEUE_FAMILY_EXTERNAL : VK_QUEUE_FAMILY_FOREIGN_EXT;
++      const VkImageLayout external_layout = metal ? VK_IMAGE_LAYOUT_GENERAL : res->layout;
+       if (screen->info.have_KHR_synchronization2) {
+          VkImageMemoryBarrier2 imb;
+-         zink_resource_image_barrier2_init(&imb, res, res->layout, 0, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
++         zink_resource_image_barrier2_init(&imb, res, external_layout, 0, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+          imb.srcQueueFamilyIndex = screen->gfx_queue;
+-         imb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_FOREIGN_EXT;
++         imb.dstQueueFamilyIndex = external_queue;
+          VkDependencyInfo dep = {
+             VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+             NULL,
+@@ -917,9 +920,9 @@ zink_end_batch(struct zink_context *ctx)
+          VKCTX(CmdPipelineBarrier2)(bs->cmdbuf, &dep);
+       } else {
+          VkImageMemoryBarrier imb;
+-         zink_resource_image_barrier_init(&imb, res, res->layout, 0, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
++         zink_resource_image_barrier_init(&imb, res, external_layout, 0, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+          imb.srcQueueFamilyIndex = screen->gfx_queue;
+-         imb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_FOREIGN_EXT;
++         imb.dstQueueFamilyIndex = external_queue;
+          VKCTX(CmdPipelineBarrier)(
+             bs->cmdbuf,
+             res->obj->access_stage,
+@@ -930,18 +933,14 @@ zink_end_batch(struct zink_context *ctx)
+             1, &imb
+          );
+       }
+-      res->queue = VK_QUEUE_FAMILY_FOREIGN_EXT;
+-
+-      /* We just transitioned to VK_QUEUE_FAMILY_FOREIGN_EXT.  We'll need a
+-       * barrier to transition back to our queue before we can use this
+-       * resource again.  Set need_barriers if bound.
+-       */
++      res->queue = external_queue;
++      res->layout = external_layout;
+       for (unsigned i = 0; i < ARRAY_SIZE(ctx->need_barriers); i++) {
+          if (res->bind_count[i])
+             _mesa_set_add(ctx->need_barriers[i], res);
+       }
+ 
+-      for (; res; res = zink_resource(res->base.b.next)) {
++      for (; !metal && res; res = zink_resource(res->base.b.next)) {
+          VkSemaphore sem = zink_create_exportable_semaphore(screen);
+          if (sem) {
+             util_dynarray_append(&ctx->bs->signal_semaphores, sem);
+diff --git a/src/gallium/drivers/zink/zink_device_info.py b/src/gallium/drivers/zink/zink_device_info.py
+index 4a6a1c4..a052ff7 100644
+--- a/src/gallium/drivers/zink/zink_device_info.py
++++ b/src/gallium/drivers/zink/zink_device_info.py
+@@ -105,6 +105,7 @@ EXTENSIONS = [
+     Extension("VK_KHR_external_memory_win32"),
+     Extension("VK_KHR_external_semaphore_win32"),
+     Extension("VK_EXT_external_memory_dma_buf"),
++    Extension("VK_EXT_external_memory_metal", guard=True),
+     Extension("VK_KHR_buffer_device_address",
+               alias="bda",
+               features=True),
+diff --git a/src/gallium/drivers/zink/zink_fence.c b/src/gallium/drivers/zink/zink_fence.c
+index 6aac146..ff38098 100644
+--- a/src/gallium/drivers/zink/zink_fence.c
++++ b/src/gallium/drivers/zink/zink_fence.c
+@@ -135,12 +135,6 @@ fence_wait(struct zink_screen *screen, struct zink_fence *fence, uint64_t timeou
+    if (fence->completed)
+       return true;
+ 
+-   if (screen->threaded_submit) {
+-      int64_t abs_timeout = os_time_get_absolute_timeout(timeout_ns);
+-      if (!util_queue_fence_wait_timeout(&bs->flush_completed, abs_timeout))
+-         return false;
+-   }
+-
+    assert(fence->batch_id);
+    assert(fence->submitted);
+ 
+@@ -184,6 +178,20 @@ zink_fence_finish(struct zink_screen *screen, struct pipe_context *pctx, struct
+       return true;
+ 
+    struct zink_fence *fence = mfence->fence;
++   if (zink_batch_submit_count_diff(zink_batch_state(fence)->usage.submit_count,
++                                    mfence->submit_count) > 1)
++      return true;
++
++   if (screen->threaded_submit) {
++      int64_t abs_timeout = os_time_get_absolute_timeout(timeout_ns);
++      if (!util_queue_fence_wait_timeout(&zink_batch_state(fence)->flush_completed,
++                                         abs_timeout))
++         return false;
++      if (timeout_ns && abs_timeout != OS_TIMEOUT_INFINITE) {
++         int64_t now = os_time_get_nano();
++         timeout_ns = abs_timeout > now ? abs_timeout - now : 0;
++      }
++   }
+ 
+    unsigned submit_diff = zink_batch_submit_count_diff(zink_batch_state(mfence->fence)->usage.submit_count, mfence->submit_count);
+    /* this batch is known to have finished because it has been submitted more than 1 time
+diff --git a/src/gallium/drivers/zink/zink_instance.py b/src/gallium/drivers/zink/zink_instance.py
+index 234d0ec..a4d3b6b 100755
+--- a/src/gallium/drivers/zink/zink_instance.py
++++ b/src/gallium/drivers/zink/zink_instance.py
+@@ -80,7 +80,7 @@ header_code = """
+ 
+ #include <vulkan/vulkan_core.h>
+ 
+-#ifdef __APPLE__
++#ifdef ZINK_MOLTENVK
+ #include "MoltenVK/mvk_vulkan.h"
+ // Source of MVK_VERSION
+ #include "MoltenVK/mvk_config.h"
+diff --git a/src/gallium/drivers/zink/zink_resource.c b/src/gallium/drivers/zink/zink_resource.c
+index c37fa55..8bc4fe5 100644
+--- a/src/gallium/drivers/zink/zink_resource.c
++++ b/src/gallium/drivers/zink/zink_resource.c
+@@ -32,6 +32,7 @@
+ #include "zink_screen.h"
+ #include "zink_surface.h"
+ #include "zink_kopper.h"
++#include "zink_metal_interop.h"
+ 
+ #ifdef VK_USE_PLATFORM_METAL_EXT
+ #include "QuartzCore/CAMetalLayer.h"
+@@ -60,7 +61,7 @@
+ #define DRM_FORMAT_MOD_LINEAR 0
+ #endif
+ 
+-#ifdef __APPLE__
++#ifdef ZINK_MOLTENVK
+ #include "MoltenVK/mvk_vulkan.h"
+ // Source of MVK_VERSION
+ #include "MoltenVK/mvk_config.h"
+@@ -1001,6 +1002,15 @@ struct mem_alloc_info {
+ static inline bool
+ get_export_flags(struct zink_screen *screen, const struct pipe_resource *templ, struct mem_alloc_info *alloc_info)
+ {
++#ifdef VK_USE_PLATFORM_METAL_EXT
++   if (screen->info.have_EXT_external_memory_metal &&
++       (templ->bind & PIPE_BIND_SHARED) && !alloc_info->whandle &&
++       !alloc_info->user_mem && templ->target == PIPE_TEXTURE_2D) {
++      alloc_info->external = VK_EXTERNAL_MEMORY_HANDLE_TYPE_MTLTEXTURE_BIT_EXT;
++      alloc_info->export_types = VK_EXTERNAL_MEMORY_HANDLE_TYPE_MTLTEXTURE_BIT_EXT;
++      return true;
++   }
++#endif
+    bool needs_export = (templ->bind & (ZINK_BIND_VIDEO | ZINK_BIND_DMABUF)) != 0;
+    if (alloc_info->whandle) {
+       if (alloc_info->whandle->type == WINSYS_HANDLE_TYPE_FD ||
+@@ -1074,6 +1084,9 @@ allocate_bo(struct zink_screen *screen, const struct pipe_resource *templ,
+       mai.pNext = &emai;
+       obj->exportable = true;
+       obj->exportable_dmabuf = !!(alloc_info->export_types & VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT);
++#ifdef VK_USE_PLATFORM_METAL_EXT
++      obj->exportable_metal = !!(alloc_info->export_types & VK_EXTERNAL_MEMORY_HANDLE_TYPE_MTLTEXTURE_BIT_EXT);
++#endif
+    }
+ 
+ #ifdef ZINK_USE_DMABUF
+@@ -1506,7 +1519,12 @@ setup_image_pnext(struct zink_screen *screen, const struct pipe_resource *templ,
+          s->idfmlci.pDrmFormatModifiers = modifiers;
+          ici->pNext = &s->idfmlci;
+       } else if (ici->tiling == VK_IMAGE_TILING_OPTIMAL) {
+-         alloc_info->shared = false;
++         bool metal_export = false;
++#ifdef VK_USE_PLATFORM_METAL_EXT
++         metal_export = alloc_info->export_types & VK_EXTERNAL_MEMORY_HANDLE_TYPE_MTLTEXTURE_BIT_EXT;
++#endif
++         if (!metal_export)
++            alloc_info->shared = false;
+       }
+    } else if (alloc_info->user_mem) {
+       s->emici.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO;
+@@ -1966,7 +1984,7 @@ resource_create(struct pipe_screen *pscreen,
+       if (res->obj->image && res->queue != VK_QUEUE_FAMILY_FOREIGN_EXT && screen->driver_workarounds.general_layout)
+          zink_resource_image_hic_transition(screen, res, VK_IMAGE_LAYOUT_GENERAL);
+    }
+-   if (res->obj->exportable)
++   if (res->obj->exportable && !res->obj->exportable_metal)
+       res->base.b.bind |= ZINK_BIND_DMABUF;
+    return &res->base.b;
+ 
+@@ -2057,6 +2075,133 @@ add_resource_bind(struct zink_context *ctx, struct zink_resource *res, unsigned
+    return true;
+ }
+ 
++#ifdef VK_USE_PLATFORM_METAL_EXT
++static bool
++zink_metal_interop_use_timeline(struct zink_screen *screen,
++                              struct zink_resource *res, uint64_t *value)
++{
++   const struct zink_bo_usage usage[] = {
++      res->obj->bo->reads,
++      res->obj->bo->writes,
++   };
++   *value = 0;
++   for (unsigned i = 0; i < ARRAY_SIZE(usage); i++) {
++      struct zink_batch_usage *u = usage[i].u;
++      if (!u || zink_batch_submit_count_diff(u->submit_count, usage[i].submit_count) > 1)
++         continue;
++      struct zink_batch_state *bs = container_of(u, struct zink_batch_state, usage);
++      if (screen->threaded_submit)
++         util_queue_fence_wait(&bs->flush_completed);
++      if (zink_batch_submit_count_diff(u->submit_count, usage[i].submit_count) > 1)
++         continue;
++      if (u->unflushed || !u->usage)
++         return false;
++      *value = MAX2(*value, u->usage);
++   }
++   return true;
++}
++
++static uint32_t
++zink_metal_interop_export_object(struct pipe_screen *pscreen,
++                                 struct pipe_resource *pres,
++                                 uint32_t size, void *data,
++                                 bool *need_export_dmabuf)
++{
++   if (size < sizeof(struct zink_metal_interop_export) || !data)
++      return 0;
++
++   struct zink_metal_interop_export request;
++   memcpy(&request, data, sizeof(request));
++   if (request.magic != ZINK_METAL_INTEROP_MAGIC)
++      return 0;
++
++   *need_export_dmabuf = false;
++   struct zink_metal_interop_export out = {
++      .magic = ZINK_METAL_INTEROP_MAGIC,
++      .version = ZINK_METAL_INTEROP_VERSION,
++      .status = ZINK_METAL_INTEROP_UNSUPPORTED,
++   };
++   bool sync = request.version == ZINK_METAL_INTEROP_SYNC_VERSION;
++   uint64_t value = 0;
++   struct zink_screen *screen = zink_screen(pscreen);
++   if ((request.version != ZINK_METAL_INTEROP_VERSION && !sync) ||
++       (sync && size < sizeof(struct zink_metal_interop_export_sync))) {
++      out.status = ZINK_METAL_INTEROP_INVALID_VERSION;
++      goto done;
++   }
++   out.version = request.version;
++   struct zink_resource *res = zink_resource(pres);
++   if (pres->target != PIPE_TEXTURE_2D || pres->last_level ||
++       pres->array_size != 1 || pres->nr_samples > 1 || res->swapchain ||
++       (pres->flags & PIPE_RESOURCE_FLAG_SPARSE) ||
++       (pres->bind & (PIPE_BIND_LINEAR | PIPE_BIND_PROTECTED)) ||
++       (pres->format != PIPE_FORMAT_R8G8B8A8_UNORM &&
++        pres->format != PIPE_FORMAT_R8G8B8A8_SRGB &&
++        pres->format != PIPE_FORMAT_B8G8R8A8_UNORM &&
++        pres->format != PIPE_FORMAT_B8G8R8A8_SRGB))
++      goto done;
++
++   if (!res->obj->exportable_metal) {
++      if (res->obj->exportable || (pres->bind & PIPE_BIND_SHARED))
++         goto done;
++      if (sync && !zink_metal_interop_use_timeline(screen, res, &value)) {
++         out.status = ZINK_METAL_INTEROP_NOT_READY;
++         goto done;
++      }
++      if (zink_resource_usage_is_unflushed(res)) {
++         out.status = ZINK_METAL_INTEROP_NOT_READY;
++         goto done;
++      }
++      zink_screen_lock_context(screen);
++      if (!add_resource_bind(screen->copy_context, res, PIPE_BIND_SHARED)) {
++         zink_screen_unlock_context(screen);
++         out.status = ZINK_METAL_INTEROP_ALLOCATION_FAILED;
++         goto done;
++      }
++      if (res->all_binds)
++         p_atomic_inc(&screen->image_rebind_counter);
++      screen->copy_context->base.flush(&screen->copy_context->base, NULL, 0);
++      zink_screen_unlock_context(screen);
++   }
++
++   if (sync && !zink_metal_interop_use_timeline(screen, res, &value)) {
++      out.status = ZINK_METAL_INTEROP_NOT_READY;
++      goto done;
++   }
++
++   VkMemoryGetMetalHandleInfoEXT info = {
++      .sType = VK_STRUCTURE_TYPE_MEMORY_GET_METAL_HANDLE_INFO_EXT,
++      .memory = zink_bo_get_mem(res->obj->bo),
++      .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_MTLTEXTURE_BIT_EXT,
++   };
++   void *texture = NULL;
++   VkResult result = VKSCR(GetMemoryMetalHandleEXT)(screen->dev, &info, &texture);
++   if (result != VK_SUCCESS || !texture) {
++      out.status = ZINK_METAL_INTEROP_EXPORT_FAILED;
++      goto done;
++   }
++   out.status = ZINK_METAL_INTEROP_SUCCESS;
++   out.flags = ZINK_METAL_INTEROP_TEXTURE_BORROWED;
++   out.texture = (uintptr_t)texture;
++   out.width = pres->width0;
++   out.height = pres->height0;
++   out.format = zink_get_format(screen, pres->format);
++done:
++   if (sync && size >= sizeof(struct zink_metal_interop_export_sync)) {
++      struct zink_metal_interop_export_sync packet = {
++         .base = out,
++         .device = out.status == ZINK_METAL_INTEROP_SUCCESS ? (uintptr_t)screen->dev : 0,
++         .semaphore = out.status == ZINK_METAL_INTEROP_SUCCESS ? (uintptr_t)screen->sem : 0,
++         .value = out.status == ZINK_METAL_INTEROP_SUCCESS ? value : 0,
++      };
++      memcpy(data, &packet, sizeof(packet));
++      return sizeof(packet);
++   }
++   memcpy(data, &out, sizeof(out));
++   return sizeof(out);
++}
++#endif
++
+ static bool
+ zink_resource_is_aux_plane(struct pipe_resource *pres)
+ {
+@@ -3585,6 +3730,12 @@ zink_screen_resource_init(struct pipe_screen *pscreen)
+       pscreen->resource_get_handle = zink_resource_get_handle;
+       pscreen->resource_from_handle = zink_resource_from_handle;
+    }
++#ifdef VK_USE_PLATFORM_METAL_EXT
++   if (screen->info.have_EXT_external_memory_metal) {
++      pscreen->interop_export_object = zink_metal_interop_export_object;
++      pscreen->resource_get_handle = zink_resource_get_handle;
++   }
++#endif
+    if (screen->info.have_EXT_external_memory_host) {
+       pscreen->resource_from_user_memory = zink_resource_from_user_memory;
+    }
+diff --git a/src/gallium/drivers/zink/zink_screen.c b/src/gallium/drivers/zink/zink_screen.c
+index 9bb41fc..492d213 100644
+--- a/src/gallium/drivers/zink/zink_screen.c
++++ b/src/gallium/drivers/zink/zink_screen.c
+@@ -80,7 +80,7 @@ bool zink_tracing = false;
+ #endif
+ #endif
+ 
+-#ifdef __APPLE__
++#ifdef ZINK_MOLTENVK
+ #include "MoltenVK/mvk_vulkan.h"
+ // Source of MVK_VERSION
+ #include "MoltenVK/mvk_config.h"
+@@ -667,7 +667,12 @@ zink_init_shader_caps(struct zink_screen *screen)
+ 
+       caps->supported_irs = (1 << PIPE_SHADER_IR_NIR) | (1 << PIPE_SHADER_IR_TGSI);
+ 
+-      if (screen->info.feats.features.shaderStorageImageExtendedFormats &&
++      bool supports_memory_writes = i == MESA_SHADER_COMPUTE ||
++         (i == MESA_SHADER_FRAGMENT ?
++            screen->info.feats.features.fragmentStoresAndAtomics :
++            screen->info.feats.features.vertexPipelineStoresAndAtomics);
++      if (supports_memory_writes &&
++          screen->info.feats.features.shaderStorageImageExtendedFormats &&
+           screen->info.feats.features.shaderStorageImageWriteWithoutFormat) {
+          caps->max_shader_images =
+             MIN2(screen->info.props.limits.maxPerStageDescriptorStorageImages,
+diff --git a/src/gallium/drivers/zink/zink_types.h b/src/gallium/drivers/zink/zink_types.h
+index 9c461cf..71fa664 100644
+--- a/src/gallium/drivers/zink/zink_types.h
++++ b/src/gallium/drivers/zink/zink_types.h
+@@ -1233,6 +1233,7 @@ struct zink_resource_object {
+    bool is_buffer;
+    bool exportable;
+    bool exportable_dmabuf;
++   bool exportable_metal;
+ 
+    /* TODO: this should be a union */
+    int handle;
+diff --git a/src/mesa/main/blit.c b/src/mesa/main/blit.c
+index 5b04e01..1e2016a 100644
+--- a/src/mesa/main/blit.c
++++ b/src/mesa/main/blit.c
+@@ -549,7 +549,7 @@ do_blit_framebuffer(struct gl_context *ctx,
+          src_base_fmt = srcObj->Image[0][0]->_BaseFormat;
+ 
+          blit.src.resource = srcObj->pt;
+-         blit.src.level = srcAtt->TextureLevel;
++         blit.src.level = srcAtt->TextureLevel + srcObj->Attrib.MinLevel;
+          blit.src.box.z = srcAtt->Zoffset + srcAtt->CubeMapFace +
+                           srcAtt->Texture->Attrib.MinLayer;
+          blit.src.format = srcObj->surface_based ? srcObj->surface_format : srcObj->pt->format;
+diff --git a/src/mesa/state_tracker/st_interop.c b/src/mesa/state_tracker/st_interop.c
+index 555dba7..2987c64 100644
+--- a/src/mesa/state_tracker/st_interop.c
++++ b/src/mesa/state_tracker/st_interop.c
+@@ -32,6 +32,7 @@
+ #include "texobj.h"
+ #include "teximage.h"
+ #include "syncobj.h"
++#include "util/u_threaded_context.h"
+ 
+ int
+ st_interop_query_device_info(struct st_context *st,
+@@ -285,6 +286,8 @@ st_interop_export_object(struct st_context *st,
+    /* Wait for glthread to finish to get up-to-date GL object lookups. */
+    _mesa_glthread_finish(st->ctx);
+ 
++   threaded_context_unwrap_sync(st->pipe);
++
+    /* Validate the OpenGL object and get pipe_resource. */
+    simple_mtx_lock(&ctx->Shared->Mutex);
+ 
+diff --git a/src/gallium/drivers/zink/zink_metal_interop.h b/src/gallium/drivers/zink/zink_metal_interop.h
+new file mode 100644
+--- /dev/null
++++ b/src/gallium/drivers/zink/zink_metal_interop.h
+@@ -0,0 +1,39 @@
++#ifndef ZINK_METAL_INTEROP_H
++#define ZINK_METAL_INTEROP_H
++
++#include <stdint.h>
++
++#define ZINK_METAL_INTEROP_MAGIC UINT32_C(0x5a4d544c)
++#define ZINK_METAL_INTEROP_VERSION 1
++#define ZINK_METAL_INTEROP_SYNC_VERSION 2
++#define ZINK_METAL_INTEROP_TEXTURE_BORROWED 1
++
++enum zink_metal_interop_status {
++   ZINK_METAL_INTEROP_SUCCESS,
++   ZINK_METAL_INTEROP_UNSUPPORTED,
++   ZINK_METAL_INTEROP_INVALID_VERSION,
++   ZINK_METAL_INTEROP_NOT_READY,
++   ZINK_METAL_INTEROP_ALLOCATION_FAILED,
++   ZINK_METAL_INTEROP_EXPORT_FAILED,
++};
++
++struct zink_metal_interop_export {
++   uint32_t magic;
++   uint32_t version;
++   uint32_t status;
++   uint32_t flags;
++   uint64_t texture;
++   uint32_t width;
++   uint32_t height;
++   uint32_t format;
++   uint32_t reserved;
++};
++
++struct zink_metal_interop_export_sync {
++   struct zink_metal_interop_export base;
++   uint64_t device;
++   uint64_t semaphore;
++   uint64_t value;
++};
++
++#endif

@@ -34,7 +34,7 @@ struct RuntimeMigrationTests {
         let catalog = try Data(contentsOf: root.appendingPathComponent("workspaces.json"))
         try RuntimeMigrations.run(root: root, inputs: [:])
         #expect(try Data(contentsOf: root.appendingPathComponent("workspaces.json")) == catalog)
-        #expect(try RuntimeMigrations.completed(root: root) == ["001_worker_ownership"])
+        #expect(try RuntimeMigrations.completed(root: root) == ["001_worker_ownership", "002_virtual_desktop"])
     }
 
     @Test func legacyTransferPreservesDiskAndOriginalMetadataAndSkipsAfterCompletion() throws {
@@ -84,7 +84,8 @@ struct RuntimeMigrationTests {
         try RuntimeMigrations.run(root: root, inputs: [:])
         #expect(try Data(contentsOf: root.appendingPathComponent("workspaces.json")) == before)
         #expect(throws: RuntimeError.self) { try RuntimeMigrations.checkActivation(root: root, manifest: [:]) }
-        try RuntimeMigrations.checkActivation(root: root, manifest: ["runtimeMigrations": ["001_worker_ownership"]])
+        #expect(throws: RuntimeError.self) { try RuntimeMigrations.checkActivation(root: root, manifest: ["runtimeMigrations": ["001_worker_ownership"]]) }
+        try RuntimeMigrations.checkActivation(root: root, manifest: ["runtimeMigrations": ["001_worker_ownership", "002_virtual_desktop"]])
     }
 
     @Test func unknownMigrationHistoryCannotBeDowngraded() throws {
@@ -95,5 +96,32 @@ struct RuntimeMigrationTests {
         let before = try Data(contentsOf: file)
         #expect(throws: RuntimeError.self) { try RuntimeMigrations.run(root: root, inputs: [:]) }
         #expect(try Data(contentsOf: file) == before)
+    }
+
+    @Test func virtualDesktopMigrationConvertsLegacySelectionWithoutChangingWorkspaceIdentity() throws {
+        let root = try directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (id, inputs) = try legacy(root)
+        try WorkerOwnershipMigration().apply(root: root, input: inputs["001_worker_ownership"] as! [String: Any])
+        let file = root.appendingPathComponent("workspaces.json")
+        var catalog = try JSONDecoder().decode(WorkerCatalog.self, from: Data(contentsOf: file))
+        let owner = catalog.worker_id
+        catalog.workspaces[id]!.spec.tools = ["git", "desktop", "python"]
+        catalog.workspaces[id]!.revision = 7
+        let before = catalog.workspaces[id]!
+        try RuntimeUpdate.write(try JSONSerialization.jsonObject(with: JSONEncoder().encode(catalog)), to: file.path)
+        let migration = VirtualDesktopMigration()
+        try migration.validate(root: root, input: [:])
+        try migration.apply(root: root, input: [:])
+        try migration.verify(root: root)
+        let migrated = try JSONDecoder().decode(WorkerCatalog.self, from: Data(contentsOf: file))
+        #expect(migrated.worker_id == owner)
+        var expected = before
+        expected.spec.tools = ["git", "python"]
+        expected.spec.desktop = .xfce
+        #expect(migrated.workspaces[id] == expected)
+        let saved = try Data(contentsOf: file)
+        try migration.apply(root: root, input: [:])
+        #expect(try Data(contentsOf: file) == saved)
     }
 }

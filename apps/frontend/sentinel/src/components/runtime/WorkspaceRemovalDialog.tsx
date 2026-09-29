@@ -56,7 +56,9 @@ export function WorkspaceRemovalDialog({ workspace, onClose, onRemoved }: {
     className="m-auto w-[calc(100%-3rem)] max-w-md rounded-2xl border border-(--border-subtle) bg-(--surface-1) p-6 text-(--text-primary) backdrop:bg-black/50 backdrop:backdrop-blur-xs">
     <div className="space-y-5">
       <h2 id="workspace-removal-title" className="font-semibold">Remove {workspace.name}?</h2>
-      <p className="text-sm text-(--text-secondary)">This deletes its environment, installed tools, and private data, and stops its terminals. Your project folder and conversations are kept.</p>
+      <p className="text-sm text-(--text-secondary)">Permanently delete this workspace’s Linux disk, installed apps, settings, VM-only files, and all recovery backups. This cannot be undone.</p>
+      {workspace.recovery_available && <p className="text-sm text-(--text-secondary)">Recovery is not required to delete this workspace. Sentinel will safely power off the VM and any repair process first.</p>}
+      <p className="text-sm text-(--text-secondary)">Your mounted project folder and conversations are kept: <span className="break-all">{workspace.directory}</span>.</p>
       {!details && !checkError && <p role="status" className="flex items-center gap-2 text-sm"><Loader2 size={14} className="animate-spin" />Checking linked sessions…</p>}
       {linked && <div className="space-y-3">
         <p className="text-sm text-(--text-secondary)">Linked to {details.sessions.length} {details.sessions.length === 1 ? 'session' : 'sessions'}:</p>

@@ -128,7 +128,8 @@ def _parse_remote_checks(stdout: str) -> list[RuntimeStatusCheck]:
     checks: list[RuntimeStatusCheck] = []
     optional_ids = {
         "binary_chromium",
-        "binary_Xvnc",
+        "binary_Xorg",
+        "binary_weston",
         "binary_xfce4-session",
         "binary_dbus-run-session",
         "binary_xdpyinfo",

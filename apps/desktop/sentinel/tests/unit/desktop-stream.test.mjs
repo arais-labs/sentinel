@@ -8,12 +8,12 @@ import { LocalTransport } from '../../.test-dist/main/transport/localTransport.j
 
 test('desktop route resolves through authenticated backend then carries raw binary in both directions', { timeout: 5000 }, async t => {
   const dir = await mkdtemp('/tmp/desktop-stream-');
-  const path = dir + '/rfb.sock';
+  const path = dir + '/stream.sock';
   const server = createServer(socket => { socket.write('RFB 003.008\n'); socket.pipe(socket); });
   t.after(async () => { server.close(); await rm(dir, { recursive: true, force: true }); });
   server.listen(path); await once(server, 'listening');
   const transport = new LocalTransport('/unused', 'test');
-  const route = '/api/v1/instances/test/runtime/live-view/00000000-0000-0000-0000-000000000001/rfb';
+  const route = '/api/v1/instances/test/runtime/live-view/00000000-0000-0000-0000-000000000001/stream';
   transport.request = async request => {
     assert.equal(request.method, 'POST');
     assert.equal(new URL(request.url).pathname, route);
@@ -49,7 +49,7 @@ test('closing during backend resolution cancels setup and never opens a late str
 test('failed authorization never attempts a socket and produces a single close', async () => {
   const transport = new LocalTransport('/unused', 'test');
   transport.request = async () => new Response(null,{status:404});
-  const client = transport.connect('/api/v1/instances/test/runtime/live-view/00000000-0000-0000-0000-000000000001/rfb');
+  const client = transport.connect('/api/v1/instances/test/runtime/live-view/00000000-0000-0000-0000-000000000001/stream');
   let errors=0;client.on('error',()=>errors++);
   const closed = await new Promise(resolve=>client.once('close',(...args)=>resolve(args)));
   assert.equal(errors,1);assert.equal(closed[0],1006);assert.equal(client.readyState,3);

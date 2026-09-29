@@ -1,0 +1,297 @@
+--- a/drivers/gpu/drm/virtio/virtgpu_display.c
++++ b/drivers/gpu/drm/virtio/virtgpu_display.c
+@@ -32,6 +32,8 @@
+ #include <drm/drm_gem_framebuffer_helper.h>
+ #include <drm/drm_probe_helper.h>
+ #include <drm/drm_simple_kms_helper.h>
++#include <drm/drm_vblank.h>
++#include "sentinel_display_modes.h"
+ 
+ #include "virtgpu_drv.h"
+ 
+@@ -47,14 +49,75 @@
+ #define drm_connector_to_virtio_gpu_output(x) \
+ 	container_of(x, struct virtio_gpu_output, conn)
+ 
++/*
++ * Virtio GPU has no scanout interrupt. Give the virtual monitor the same
++ * mode-driven vblank clock used by VKMS, so all DRM/Present clients receive
++ * meaningful frame counters and timestamps instead of immediate zero events.
++ * DRM starts/stops this timer with its normal vblank reference lifecycle.
++ */
++static enum hrtimer_restart virtio_gpu_vblank(struct hrtimer *timer)
++{
++	struct virtio_gpu_output *output =
++		container_of(timer, struct virtio_gpu_output, vblank_timer);
++
++	hrtimer_forward_now(timer, output->vblank_period);
++	drm_crtc_handle_vblank(&output->crtc);
++	return HRTIMER_RESTART;
++}
++
++static int virtio_gpu_enable_vblank(struct drm_crtc *crtc)
++{
++	struct virtio_gpu_output *output = drm_crtc_to_virtio_gpu_output(crtc);
++	struct drm_vblank_crtc *vblank = drm_crtc_vblank_crtc(crtc);
++
++	if (vblank->framedur_ns <= 0)
++		return -EINVAL;
++	output->vblank_period = ns_to_ktime(vblank->framedur_ns);
++	hrtimer_start(&output->vblank_timer, output->vblank_period,
++		      HRTIMER_MODE_REL);
++	return 0;
++}
++
++static void virtio_gpu_disable_vblank(struct drm_crtc *crtc)
++{
++	struct virtio_gpu_output *output = drm_crtc_to_virtio_gpu_output(crtc);
++
++	hrtimer_cancel(&output->vblank_timer);
++}
++
++static bool virtio_gpu_get_vblank_timestamp(struct drm_crtc *crtc,
++					  int *max_error, ktime_t *time,
++					  bool in_vblank_irq)
++{
++	struct virtio_gpu_output *output = drm_crtc_to_virtio_gpu_output(crtc);
++	struct drm_vblank_crtc *vblank = drm_crtc_vblank_crtc(crtc);
++
++	if (!READ_ONCE(vblank->enabled)) {
++		*time = ktime_get();
++		return true;
++	}
++	/* The timer is advanced before notifying DRM, as with hardware vblank. */
++	*time = READ_ONCE(output->vblank_timer.node.expires) - output->vblank_period;
++	return true;
++}
++
++static void virtio_gpu_crtc_destroy(struct drm_crtc *crtc)
++{
++	virtio_gpu_disable_vblank(crtc);
++	drm_crtc_cleanup(crtc);
++}
++
+ static const struct drm_crtc_funcs virtio_gpu_crtc_funcs = {
+ 	.set_config             = drm_atomic_helper_set_config,
+-	.destroy                = drm_crtc_cleanup,
++	.destroy                = virtio_gpu_crtc_destroy,
+ 
+ 	.page_flip              = drm_atomic_helper_page_flip,
+ 	.reset                  = drm_atomic_helper_crtc_reset,
+ 	.atomic_duplicate_state = drm_atomic_helper_crtc_duplicate_state,
+ 	.atomic_destroy_state   = drm_atomic_helper_crtc_destroy_state,
++	.enable_vblank          = virtio_gpu_enable_vblank,
++	.disable_vblank         = virtio_gpu_disable_vblank,
++	.get_vblank_timestamp   = virtio_gpu_get_vblank_timestamp,
+ };
+ 
+ static const struct drm_framebuffer_funcs virtio_gpu_fb_funcs = {
+@@ -99,6 +162,7 @@
+ static void virtio_gpu_crtc_atomic_enable(struct drm_crtc *crtc,
+ 					  struct drm_atomic_state *state)
+ {
++	drm_crtc_vblank_on(crtc);
+ }
+ 
+ static void virtio_gpu_crtc_atomic_disable(struct drm_crtc *crtc,
+@@ -108,6 +172,7 @@
+ 	struct virtio_gpu_device *vgdev = dev->dev_private;
+ 	struct virtio_gpu_output *output = drm_crtc_to_virtio_gpu_output(crtc);
+ 
++	drm_crtc_vblank_off(crtc);
+ 	virtio_gpu_cmd_set_scanout(vgdev, output->index, 0, 0, 0, 0, 0);
+ 	virtio_gpu_notify(vgdev);
+ }
+@@ -116,6 +181,28 @@
+ 					struct drm_atomic_state *state)
+ {
+ 	return 0;
++}
++
++static bool virtio_gpu_crtc_needs_vblank(struct drm_crtc *crtc,
++				       struct drm_atomic_state *state)
++{
++	struct drm_crtc_state *crtc_state = drm_atomic_get_new_crtc_state(state, crtc);
++	struct drm_plane *plane;
++	struct drm_plane_state *old_plane, *new_plane;
++	int i;
++
++	/* Honor explicit userspace flip events and buffer lifetime changes. */
++	if (drm_atomic_crtc_needs_modeset(crtc_state) ||
++	    (crtc_state->event && crtc_state->event->base.file_priv))
++		return true;
++	for_each_oldnew_plane_in_state(state, plane, old_plane, new_plane, i) {
++		if ((old_plane->crtc == crtc || new_plane->crtc == crtc) &&
++		    (old_plane->fb != new_plane->fb || old_plane->crtc != new_plane->crtc))
++			return true;
++	}
++	/* Damage updates reuse the existing scanout; there is no old buffer
++	 * waiting to retire. Waiting here blocks Xorg for a second refresh. */
++	return false;
+ }
+ 
+ static void virtio_gpu_crtc_atomic_flush(struct drm_crtc *crtc,
+@@ -133,6 +220,17 @@
+ 	 */
+ 	if (drm_atomic_crtc_needs_modeset(crtc_state))
+ 		output->needs_modeset = true;
++
++	if (crtc_state->event) {
++		spin_lock_irq(&crtc->dev->event_lock);
++		if (!virtio_gpu_crtc_needs_vblank(crtc, state) ||
++		    drm_crtc_vblank_get(crtc))
++			drm_crtc_send_vblank_event(crtc, crtc_state->event);
++		else
++			drm_crtc_arm_vblank_event(crtc, crtc_state->event);
++		crtc_state->event = NULL;
++		spin_unlock_irq(&crtc->dev->event_lock);
++	}
+ }
+ 
+ static const struct drm_crtc_helper_funcs virtio_gpu_crtc_helper_funcs = {
+@@ -157,34 +255,60 @@
+ {
+ }
+ 
++static int virtio_gpu_add_display_mode(struct drm_connector *connector,
++				       int width, int height, bool preferred)
++{
++	struct drm_display_mode *mode, *existing;
++
++	mode = drm_cvt_mode(connector->dev, width, height,
++			    SENTINEL_DISPLAY_REFRESH_HZ, true, false, false);
++	if (!mode)
++		return 0;
++	list_for_each_entry(existing, &connector->probed_modes, head) {
++		if (drm_mode_equal(existing, mode)) {
++			if (preferred)
++				existing->type |= DRM_MODE_TYPE_PREFERRED;
++			drm_mode_destroy(connector->dev, mode);
++			return 0;
++		}
++	}
++	if (preferred)
++		mode->type |= DRM_MODE_TYPE_PREFERRED;
++	drm_mode_probed_add(connector, mode);
++	return 1;
++}
++
+ static int virtio_gpu_conn_get_modes(struct drm_connector *connector)
+ {
+ 	struct virtio_gpu_output *output =
+ 		drm_connector_to_virtio_gpu_output(connector);
+-	struct drm_display_mode *mode = NULL;
+ 	int count, width, height;
++	unsigned int i;
+ 
+ 	count = drm_edid_connector_add_modes(connector);
+ 	if (count)
+ 		return count;
+ 
+-	width  = le32_to_cpu(output->info.r.width);
++	width = le32_to_cpu(output->info.r.width);
+ 	height = le32_to_cpu(output->info.r.height);
+ 	count = drm_add_modes_noedid(connector, XRES_MAX, YRES_MAX);
+-
+ 	if (width == 0 || height == 0) {
+-		drm_set_preferred_mode(connector, XRES_DEF, YRES_DEF);
+-	} else {
+-		DRM_DEBUG("add mode: %dx%d\n", width, height);
+-		mode = drm_cvt_mode(connector->dev, width, height, 60,
+-				    false, false, false);
+-		if (!mode)
+-			return count;
+-		mode->type |= DRM_MODE_TYPE_PREFERRED;
+-		drm_mode_probed_add(connector, mode);
+-		count++;
++		width = XRES_DEF;
++		height = YRES_DEF;
+ 	}
+ 
++	/* Sentinel's finite virtual-monitor contract applies to every desktop.
++	 * Preserve host preference, including geometries outside the contract.
++	 * Real EDID modes above remain authoritative.
++	 */
++	count += virtio_gpu_add_display_mode(connector, width, height, true);
++	for (i = 0; i < ARRAY_SIZE(sentinel_display_modes); i++) {
++		int mode_width = sentinel_display_modes[i].width;
++		int mode_height = sentinel_display_modes[i].height;
++
++		count += virtio_gpu_add_display_mode(connector, mode_width, mode_height,
++						   width == mode_width && height == mode_height);
++	}
+ 	return count;
+ }
+ 
+@@ -259,6 +383,8 @@
+ 	struct drm_plane *primary, *cursor;
+ 
+ 	output->index = index;
++	hrtimer_setup(&output->vblank_timer, virtio_gpu_vblank,
++		      CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+ 	if (index == 0) {
+ 		output->info.enabled = cpu_to_le32(true);
+ 		output->info.r.width = cpu_to_le32(XRES_DEF);
+@@ -331,6 +457,24 @@
+ 	.atomic_commit = drm_atomic_helper_commit,
+ };
+ 
++static void virtio_gpu_atomic_commit_tail(struct drm_atomic_state *state)
++{
++	struct drm_device *dev = state->dev;
++
++	drm_atomic_helper_commit_modeset_disables(dev, state);
++	drm_atomic_helper_commit_planes(dev, state, 0);
++	drm_atomic_helper_commit_modeset_enables(dev, state);
++	drm_atomic_helper_fake_vblank(state);
++	drm_atomic_helper_commit_hw_done(state);
++	/* atomic_flush distinguishes damage from a real buffer flip. */
++	drm_atomic_helper_wait_for_flip_done(dev, state);
++	drm_atomic_helper_cleanup_planes(dev, state);
++}
++
++static const struct drm_mode_config_helper_funcs virtio_gpu_mode_helpers = {
++	.atomic_commit_tail = virtio_gpu_atomic_commit_tail,
++};
++
+ int virtio_gpu_modeset_init(struct virtio_gpu_device *vgdev)
+ {
+ 	int i, ret;
+@@ -344,6 +488,7 @@
+ 
+ 	vgdev->ddev->mode_config.quirk_addfb_prefer_host_byte_order = true;
+ 	vgdev->ddev->mode_config.funcs = &virtio_gpu_mode_funcs;
++	vgdev->ddev->mode_config.helper_private = &virtio_gpu_mode_helpers;
+ 
+ 	/* modes will be validated against the framebuffer size */
+ 	vgdev->ddev->mode_config.min_width = XRES_MIN;
+@@ -356,6 +501,10 @@
+ 	for (i = 0 ; i < vgdev->num_scanouts; ++i)
+ 		vgdev_output_init(vgdev, i);
+ 
++	ret = drm_vblank_init(vgdev->ddev, vgdev->num_scanouts);
++	if (ret)
++		return ret;
++
+ 	drm_mode_config_reset(vgdev->ddev);
+ 	return 0;
+ }
+--- a/drivers/gpu/drm/virtio/virtgpu_drv.h
++++ b/drivers/gpu/drm/virtio/virtgpu_drv.h
+@@ -27,6 +27,7 @@
+ #define VIRTIO_DRV_H
+ 
+ #include <linux/dma-direction.h>
++#include <linux/hrtimer.h>
+ #include <linux/virtio.h>
+ #include <linux/virtio_ids.h>
+ #include <linux/virtio_config.h>
+@@ -175,6 +176,8 @@
+ 
+ struct virtio_gpu_output {
+ 	int index;
++	struct hrtimer vblank_timer;
++	ktime_t vblank_period;
+ 	struct drm_crtc crtc;
+ 	struct drm_connector conn;
+ 	struct drm_encoder enc;

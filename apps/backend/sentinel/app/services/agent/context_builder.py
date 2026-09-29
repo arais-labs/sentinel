@@ -173,7 +173,7 @@ class ContextBuilder:
             distribution = manager.workspace_location.distribution
             os_name = {
                 "alpine": "Alpine",
-                "ubuntu": "Ubuntu 24.04 LTS",
+                "ubuntu": "Ubuntu",
                 "debian": "Debian 13",
             }.get(distribution, distribution)
             package_manager = "apk" if distribution == "alpine" else "apt-get"
