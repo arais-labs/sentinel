@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import ssl
+
 import httpx
 
 
@@ -23,6 +25,10 @@ def is_retryable(exc: Exception) -> bool:
     """Classify whether an exception is safe to retry automatically."""
     if isinstance(exc, TransientProviderError):
         return True
+    # Certificate verification failures are ssl.SSLError subclasses, but they are
+    # configuration or trust problems that repeat identically on every attempt.
+    if isinstance(exc, ssl.SSLCertVerificationError):
+        return False
     if isinstance(
         exc,
         (
@@ -31,6 +37,11 @@ def is_retryable(exc: Exception) -> bool:
             httpx.TimeoutException,
             httpx.ConnectError,
             httpx.NetworkError,
+            # A TLS record that fails integrity checks (for example
+            # SSLV3_ALERT_BAD_RECORD_MAC) kills its connection but says nothing
+            # about the request. Retrying performs a fresh handshake with new
+            # keys, so these must not be treated as permanent failures.
+            ssl.SSLError,
         ),
     ):
         return True
@@ -51,6 +62,10 @@ def error_tag(exc: Exception) -> str:
         return "rate_limited"
     if isinstance(exc, (TimeoutError, httpx.TimeoutException)):
         return "timeout"
+    if isinstance(exc, ssl.SSLCertVerificationError):
+        return "tls_certificate_error"
+    if isinstance(exc, ssl.SSLError):
+        return "tls_error"
     if isinstance(exc, (ConnectionError, httpx.ConnectError, httpx.NetworkError)):
         return "connection_error"
     if code is not None:
