@@ -303,7 +303,8 @@ class CodexProvider(OpenAIProvider):
         """
         items = payload["input"]
         boundary = next(
-            (i for i in range(len(items) - 1, -1, -1) if items[i].get("role") == "user"), len(items)
+            (i for i in range(len(items) - 1, -1, -1) if items[i].get("role") == "user"),
+            len(items),
         )
         history, tail = items[:boundary], copy.deepcopy(items[boundary:])
         if not history:
@@ -347,7 +348,11 @@ class CodexProvider(OpenAIProvider):
                         event = json.loads(line[5:].strip())
                     except ValueError:
                         continue
-                    if event.get("type") in {"error", "response.failed", "response.error"}:
+                    if event.get("type") in {
+                        "error",
+                        "response.failed",
+                        "response.error",
+                    }:
                         raise RuntimeError("Codex history summarization failed")
                     if event.get("type") == "response.output_item.done":
                         output[event.get("output_index", len(output))] = event.get("item") or {}
@@ -407,7 +412,11 @@ class CodexProvider(OpenAIProvider):
                                 overflow = True
                                 break
                             if kind.startswith(
-                                ("response.output", "response.function_call", "response.reasoning")
+                                (
+                                    "response.output",
+                                    "response.function_call",
+                                    "response.reasoning",
+                                )
                             ):
                                 emitted_output = True
                             if compacted and kind in {
@@ -521,7 +530,10 @@ class CodexProvider(OpenAIProvider):
 
     async def _stream_http_lines(self, client, payload, headers) -> AsyncIterator[str]:
         async with client.stream(
-            "POST", f"{self._base_url}{self._responses_endpoint}", json=payload, headers=headers
+            "POST",
+            f"{self._base_url}{self._responses_endpoint}",
+            json=payload,
+            headers=headers,
         ) as response:
             if response.is_error:
                 await response.aread()
@@ -550,7 +562,11 @@ class CodexProvider(OpenAIProvider):
             prefix: list[dict[str, Any]] = []
             if payload.get("tools"):
                 prefix.append(
-                    {"type": "additional_tools", "role": "developer", "tools": payload["tools"]}
+                    {
+                        "type": "additional_tools",
+                        "role": "developer",
+                        "tools": payload["tools"],
+                    }
                 )
             if payload.get("instructions"):
                 prefix.append(
@@ -604,6 +620,10 @@ class CodexProvider(OpenAIProvider):
         )
         fingerprint = hashlib.sha256(fingerprint_source.encode("utf-8")).hexdigest()
         return f"{self._prompt_cache_namespace}:{fingerprint[:20]}"
+
+    async def list_model_ids(self) -> list[str]:
+        async with self._client_factory() as client:
+            return list(await self._load_model_catalog(client))
 
     async def _load_model_catalog(
         self,

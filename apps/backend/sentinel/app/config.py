@@ -51,6 +51,9 @@ class Settings(TierDefaults, BaseSettings):
     ollama_base_url: str | None = Field(default=None, validation_alias="_db_only_ollama_base_url")
     ollama_api_key: str | None = Field(default=None, validation_alias="_db_only_ollama_api_key")
     ollama_model: str | None = Field(default=None, validation_alias="_db_only_ollama_model")
+    tier_fast_ollama_model: str | None = None
+    tier_normal_ollama_model: str | None = None
+    tier_hard_ollama_model: str | None = None
     gemini_api_key: str | None = Field(default=None, validation_alias="_db_only_gemini_api_key")
     gemini_oauth_credentials: str | None = Field(
         default=None, validation_alias="_db_only_gemini_oauth_credentials"
@@ -59,6 +62,9 @@ class Settings(TierDefaults, BaseSettings):
         default=None, validation_alias="_db_only_gemini_oauth_source"
     )
     primary_provider: ProviderChoice = ProviderChoice.ANTHROPIC
+    # None preserves the legacy primary-first chain until routing is customized.
+    provider_order: list[ProviderChoice] | None = None
+    automatic_providers: list[ProviderChoice] | None = None
     embedding_api_key: str | None = Field(
         default=None, validation_alias="_db_only_embedding_api_key"
     )

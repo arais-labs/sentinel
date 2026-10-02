@@ -89,6 +89,29 @@ class AnthropicProvider(LLMProvider):
         response.raise_for_status()
         return response.json()
 
+    async def list_model_ids(self) -> list[str]:
+        models, cursors = [], set()
+        params = {"limit": 1000}
+        async with self._client_factory() as client:
+            while True:
+                response = await client.get(
+                    f"{self._base_url}/v1/models",
+                    params=params,
+                    headers=self._headers(),
+                )
+                response.raise_for_status()
+                data = response.json()
+                models.extend(
+                    item["id"]
+                    for item in data.get("data", [])
+                    if isinstance(item, dict) and isinstance(item.get("id"), str)
+                )
+                cursor = data.get("last_id")
+                if not data.get("has_more") or not isinstance(cursor, str) or cursor in cursors:
+                    return models
+                cursors.add(cursor)
+                params["after_id"] = cursor
+
     async def _renew_credentials(self):
 
         self._api_key = await self._credential_renewer(self._api_key)
@@ -272,7 +295,11 @@ class AnthropicProvider(LLMProvider):
         usage = raw or {}
         input_total = sum(
             int(usage.get(key) or 0)
-            for key in ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
+            for key in (
+                "input_tokens",
+                "cache_read_input_tokens",
+                "cache_creation_input_tokens",
+            )
         )
         output_total = int(usage.get("output_tokens") or 0)
         snapshot = None
@@ -418,7 +445,9 @@ class AnthropicProvider(LLMProvider):
                             )
                         message = self._message(accumulated, model)
                         yield AgentEvent(
-                            type="done", stop_reason=message.stop_reason, message=message
+                            type="done",
+                            stop_reason=message.stop_reason,
+                            message=message,
                         )
                         return
                     for parsed in _parse_anthropic_stream_event(event):
@@ -466,7 +495,10 @@ class AnthropicProvider(LLMProvider):
                 raise ValueError(
                     "Claude thinking budget must be at least 1024 and less than max_tokens"
                 )
-            options["thinking"] = {"type": "enabled", "budget_tokens": rc.thinking_budget}
+            options["thinking"] = {
+                "type": "enabled",
+                "budget_tokens": rc.thinking_budget,
+            }
         return options
 
     def _headers(self, *, model: str = "", fast_mode: bool = False) -> dict[str, str]:
@@ -544,7 +576,10 @@ class AnthropicProvider(LLMProvider):
                     and message.responses_output
                 ):
                     output.append(
-                        {"role": "assistant", "content": deepcopy(message.responses_output)}
+                        {
+                            "role": "assistant",
+                            "content": deepcopy(message.responses_output),
+                        }
                     )
                     continue
                 blocks: list[dict[str, Any]] = []

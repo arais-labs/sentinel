@@ -57,6 +57,31 @@ class GeminiProvider(LLMProvider):
     def provider_id(self) -> ProviderId:
         return ProviderId.GEMINI
 
+    async def list_model_ids(self) -> list[str]:
+        models, cursors = [], set()
+        params = {"pageSize": 1000}
+        async with self._client_factory() as client:
+            while True:
+                response = await client.get(
+                    f"{self._base_url}/models",
+                    params=params,
+                    headers=await self._request_headers(),
+                )
+                response.raise_for_status()
+                data = response.json()
+                models.extend(
+                    item["name"].removeprefix("models/")
+                    for item in data.get("models", [])
+                    if isinstance(item, dict)
+                    and isinstance(item.get("name"), str)
+                    and "generateContent" in item.get("supportedGenerationMethods", [])
+                )
+                cursor = data.get("nextPageToken")
+                if not isinstance(cursor, str) or not cursor or cursor in cursors:
+                    return models
+                cursors.add(cursor)
+                params["pageToken"] = cursor
+
     # ------------------------------------------------------------------
     # chat (non-streaming)
     # ------------------------------------------------------------------

@@ -19,6 +19,7 @@ from sentral import (
 from sentral.llm.runtime_adapter import SentinelProviderAdapter
 from sentral.llm.generic.types import UserMessage, ToolResultMessage, ToolCallContent
 from sentral.llm.providers.ollama import OllamaProvider, normalize_endpoint
+from sentral.llm.ids import ProviderChoice
 from app.routers.ollama import EndpointRequest, endpoint_provider
 from app.services.llm.ollama_models import OllamaPulls, validate_model
 from app.routers import ollama as routes
@@ -399,6 +400,41 @@ async def test_removing_model_only_clears_matching_selection(monkeypatch, target
     assert config.ollama_base_url == "https://remote.example"
     assert config.ollama_api_key == "keep-key"
     assert rebuild.await_count == int(cleared)
+
+
+@pytest.mark.asyncio
+async def test_removing_an_ollama_tier_model_keeps_default_and_other_tiers(monkeypatch):
+    from app.models.system import SystemSetting
+
+    db, service = FakeDB(), SettingsService()
+    await service.set_ollama(
+        db, base_url="https://models.example", model="default:4b", api_key=None
+    )
+    db.add(SystemSetting(key="tier_fast_ollama_model", value="remove:4b"))
+    db.add(SystemSetting(key="tier_normal_ollama_model", value="keep:4b"))
+    llm = SimpleNamespace(delete_model=AsyncMock())
+    monkeypatch.setattr(routes, "endpoint_provider", AsyncMock(return_value=(llm, None)))
+    monkeypatch.setattr(
+        routes,
+        "get_request_instance_runtime_context",
+        lambda _: SimpleNamespace(database_name="test"),
+    )
+    rebuild = AsyncMock()
+    monkeypatch.setattr(routes, "_rebuild_current_instance_runtime_context", rebuild)
+    request = SimpleNamespace(
+        app=SimpleNamespace(state=SimpleNamespace(ollama_pulls=OllamaPulls()))
+    )
+    result = await routes.remove_model(
+        routes.SaveEndpoint(base_url="https://models.example", model="remove:4b"),
+        request,
+        db,
+        service,
+    )
+    assert result["cleared_tier_models"] is True
+    assert result["cleared_selection"] is False
+    models = await service.get_provider_models(db, ProviderChoice.OLLAMA)
+    assert models["effective"] == {"fast": "default:4b", "normal": "keep:4b", "hard": "default:4b"}
+    rebuild.assert_awaited_once_with(request)
 
 
 @pytest.mark.asyncio
