@@ -1,21 +1,16 @@
-import { Zap, Server, Sparkles, Brain } from 'lucide-react';
+import { Zap } from 'lucide-react';
+import { ModelTierIdentity } from '../ui/ModelTierIdentity';
+import { ProviderLogo } from '../ui/ProviderLogo';
 import { ReasoningFluid, reasoningColor } from './ReasoningFluid';
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode, type PointerEvent } from 'react';
 import type { ModelOption } from '../../types/api';
 import { resolveModelSelection, type ReasoningLevel, type SessionModelChoice } from '../../lib/model-selection';
-import claudeLogo from '../../assets/provider-logos/claude.svg?raw';
-import openaiLogo from '../../assets/provider-logos/openai.svg?raw';
-import geminiLogo from '../../assets/provider-logos/gemini.svg?raw';
 import './session-model-controls.css';
+
+export { ProviderLogo } from '../ui/ProviderLogo';
 
 export const providerLabel = (id?: string) => ({ anthropic: 'Claude', openai: 'OpenAI', 'openai-codex': 'Codex', gemini: 'Gemini', ollama: 'Ollama' }[id ?? ''] ?? 'Default provider');
 const levelLabel = (level: string) => level === 'xhigh' ? 'X-high' : level.charAt(0).toUpperCase() + level.slice(1);
-
-export function ProviderLogo({ id }: { id?: string }) {
-  if (id === 'ollama') return <Server size={16} aria-hidden="true" />;
-  const source = id === 'anthropic' ? claudeLogo : id === 'gemini' ? geminiLogo : openaiLogo;
-  return <span aria-hidden="true" className="session-provider-logo" dangerouslySetInnerHTML={{ __html: source }} />;
-}
 
 function useFluidPosition(target: number) {
   const [position, setPosition] = useState(target);
@@ -145,19 +140,14 @@ export function SessionTierOptions({ models, tier, choice, disabled, onSelect, c
   return models.map(model => {
     const active = tier === model.tier;
     const { provider } = resolveModelSelection(model, choice);
-    const Icon = { fast: Zap, normal: Sparkles, hard: Brain }[model.tier];
-    const color = { fast:'text-emerald-500', normal:'text-sky-500', hard:'text-rose-500' }[model.tier];
     return <button key={model.tier} disabled={disabled} aria-pressed={active} onClick={() => onSelect(model.tier)}
       className={`w-full flex items-start gap-3.5 px-4 py-3 transition-all text-left group ${active ? 'bg-(--accent-solid) text-(--app-bg)' : 'hover:bg-(--surface-1)'}`}>
-      <div className={`mt-0.5 shrink-0 transition-transform group-hover:scale-110 duration-200 ${active ? 'text-(--app-bg) opacity-90' : color}`}><Icon size={14} /></div>
-      <div className="flex flex-col gap-0.5 min-w-0">
-        <div className={`text-[10px] font-bold uppercase tracking-widest ${active ? 'text-(--app-bg)' : 'text-(--text-primary)'}`}>{model.label}</div>
-        {!compact && <div className={`text-[9px] font-medium leading-tight ${active ? 'text-(--app-bg) opacity-70' : 'text-(--text-muted)'}`}>{model.description}</div>}
+      <ModelTierIdentity tier={model.tier} label={model.label} description={model.description} compact={compact} active={active}>
         {compact ? <div className={`text-[10px] truncate ${active ? 'text-(--app-bg) opacity-80' : 'text-(--text-muted)'}`}>{provider?.model ?? 'Provider unavailable'}</div> : <div className="mt-2 flex items-center gap-1.5">
           <span className={`text-[8px] font-mono px-1 rounded uppercase tracking-wider ${active ? 'bg-(--app-bg)/10 text-(--app-bg) border border-(--app-bg)/20' : 'bg-(--surface-2) text-(--text-secondary) border border-(--border-subtle)'}`}>{provider?.provider_id ?? choice.provider_id ?? 'None'}</span>
           <span className={`text-[8px] font-mono truncate tracking-tight ${active ? 'text-(--app-bg) opacity-80' : 'text-(--text-secondary)'}`}>{provider?.model ?? 'Provider unavailable'}</span>
         </div>}
-      </div>
+      </ModelTierIdentity>
       {active && <div className="ml-auto w-1 h-6 rounded-full bg-(--app-bg)/20 my-auto" />}
     </button>;
   });

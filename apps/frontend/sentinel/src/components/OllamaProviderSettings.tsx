@@ -2,7 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react';
 import { Check, ChevronDown, Download, Plus, RefreshCw, Trash2 } from 'lucide-react';
 import { api } from '../lib/api';
 import { notificationPublisher } from '../lib/notifications';
-import { StatusChip } from './ui/StatusChip';
+import { ProviderModelSettings } from './ProviderModelSettings';
 
 const notify = notificationPublisher('Ollama');
 type Endpoint = { base_url: string; api_key?: string };
@@ -12,10 +12,9 @@ type Pull = { phase: string; model: string; detail: string; completed: number; t
 const idle: Pull = { phase: 'idle', model: '', detail: '', completed: 0, total: 0 };
 const sizeLabel = (bytes: number) => bytes >= 1e9 ? `${(bytes / 1e9).toFixed(1)} GB` : `${Math.round(bytes / 1e6)} MB`;
 
-export function OllamaProviderSettings({ isPrimary, onChanged, onSetPrimary }: {
-  isPrimary: boolean; onChanged: () => Promise<void>; onSetPrimary: () => Promise<void>;
-}) {
+export function OllamaProviderSettings({ onChanged }: { onChanged: () => Promise<void> }) {
   const [saved, setSaved] = useState<Config>();
+  const [modelSettingsRevision, setModelSettingsRevision] = useState(0);
   const [url, setUrl] = useState('http://127.0.0.1:11434');
   const [key, setKey] = useState('');
   const [clearKey, setClearKey] = useState(false);
@@ -27,8 +26,6 @@ export function OllamaProviderSettings({ isPrimary, onChanged, onSetPrimary }: {
   const [adding, setAdding] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const [editing, setEditing] = useState(false);
-  const [confirmDisconnect, setConfirmDisconnect] = useState(false);
   const [removing, setRemoving] = useState<string | null>(null);
   const epoch = useRef(0);
   const formId = useId();
@@ -37,11 +34,21 @@ export function OllamaProviderSettings({ isPrimary, onChanged, onSetPrimary }: {
 
   useEffect(() => {
     let active = true;
-    void api.get<Config>('/settings/ollama').then(data => {
+    const version = ++epoch.current;
+    void api.get<Config>('/settings/ollama').then(async data => {
       if (!active) return;
       // A malformed response must not take down the page that hosts this card.
       if (typeof data?.base_url !== 'string') throw new Error('Ollama settings are unavailable.');
       setSaved(data); setUrl(data.base_url); setModel(data.model ?? '');
+      if (data.configured) {
+        const endpoint = { base_url: data.base_url };
+        const [discovered, progress] = await Promise.all([
+          api.post<{ models: Model[] }>('/settings/ollama/discover', endpoint),
+          api.post<Pull>('/settings/ollama/pull/status', endpoint),
+        ]);
+        if (!active || epoch.current !== version) return;
+        setConnection(endpoint); setModels(discovered.models); setPull(progress);
+      }
     }).catch(err => { if (active) setError(err.message); });
     return () => { active = false; epoch.current++; };
   }, []);
@@ -96,34 +103,9 @@ export function OllamaProviderSettings({ isPrimary, onChanged, onSetPrimary }: {
   };
   const percent = pull.total ? Math.min(100, Math.floor(100 * pull.completed / pull.total)) : undefined;
 
-  return <section className="settings-provider rounded-xl border border-(--border-subtle) overflow-hidden" aria-label="Ollama provider">
-    <div className="settings-provider-summary">
-      <div className="settings-provider-heading flex items-center gap-2">
-        <div className="h-2.5 w-2.5 rounded-full shrink-0" style={{ backgroundColor: configured ? '#10B981' : '#F59E0B' }} />
-        <span>Ollama</span>
-      </div>
-      <div className="settings-provider-badges">
-        {configured && <span className={`text-[9px] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded ${isPrimary ? 'bg-emerald-500/15 text-emerald-400' : 'bg-(--surface-2) text-(--text-muted)'}`}>{isPrimary ? 'Primary' : 'Fallback'}</span>}
-        <StatusChip label={configured ? 'Endpoint' : 'Not configured'} tone={configured ? 'info' : 'warn'} />
-      </div>
-      <p className="text-[10px] font-mono text-(--text-muted) truncate" title={configured ? `${saved?.base_url} · ${saved?.model}` : undefined}>{configured ? saved?.model : 'Local or remote server'}</p>
-      <div className="settings-provider-actions flex items-center gap-2">
-        {configured && !isPrimary && <button disabled={busy} onClick={() => void run(onSetPrimary)} className="text-(--text-primary)">Set primary</button>}
-        <button disabled={!saved} aria-expanded={editing} aria-controls={formId} onClick={() => {
-          setEditing(!editing); setConfirmDisconnect(false);
-          if (!editing && !busy) void run(connect);
-        }} className="text-(--accent-solid)">{editing ? 'Close' : configured ? 'Update' : 'Configure'}</button>
-        {configured && (confirmDisconnect ? <>
-          <button disabled={busy} className="text-rose-500" onClick={() => void run(async () => {
-            await api.delete('/settings/api-keys', { provider: 'ollama' });
-            setSaved({ base_url: url, model: '', configured: false, has_api_key: false });
-            setKey(''); setClearKey(false); invalidate(); setConfirmDisconnect(false); await onChanged();
-            notify.success('Ollama disconnected. Models were kept.');
-          })}>Confirm disconnect</button><button onClick={() => setConfirmDisconnect(false)}>Cancel</button>
-        </> : <button disabled={busy} className="text-rose-500/70" onClick={() => setConfirmDisconnect(true)}>Remove</button>)}
-      </div>
-    </div>
-    {editing && <div id={formId} className="settings-provider-editor ollama-manager" role="region" aria-label="Ollama settings">
+  return <section className="provider-connection-editor" aria-label="Ollama provider settings">
+    <h3>Connection</h3>
+    <div id={formId} className="settings-provider-editor ollama-manager" role="region" aria-label="Ollama settings">
       <label htmlFor={`${formId}-url`}>Server URL</label>
       <div className="ollama-server-row">
         <input id={`${formId}-url`} disabled={busy || !!removing} value={url} onChange={event => { invalidate(); setUrl(event.target.value); }} placeholder="http://localhost:11434" />
@@ -154,11 +136,15 @@ export function OllamaProviderSettings({ isPrimary, onChanged, onSetPrimary }: {
           <p>This deletes the model from <span>{connection.base_url}</span>.</p>
           {saved?.model === removing && saved.base_url === connection.base_url && <p>You’ll need to select another model for this provider.</p>}
           <div className="ollama-actions"><button className="btn-secondary ollama-danger" disabled={busy} onClick={() => void run(async () => {
-            const result = await api.delete<{ cleared_selection: boolean }>('/settings/ollama/models', { ...connection, model: removing }, { timeoutMs: 45000 });
+            const result = await api.delete<{ cleared_selection: boolean; cleared_tier_models?: boolean }>('/settings/ollama/models', { ...connection, model: removing }, { timeoutMs: 45000 });
             setModels(current => current.filter(item => item.name !== removing));
             if (model === removing) setModel('');
             if (result.cleared_selection) {
               setSaved(current => current ? { ...current, model: '', configured: false } : current);
+            }
+            if (result.cleared_selection || result.cleared_tier_models) {
+              // Refresh Advanced after deleting a tier override, even if the default remains.
+              setModelSettingsRevision(value => value + 1);
               await onChanged();
             }
             notify.success(`${removing} removed.`); setRemoving(null);
@@ -184,11 +170,13 @@ export function OllamaProviderSettings({ isPrimary, onChanged, onSetPrimary }: {
           const result = await api.post<{ has_api_key: boolean }>('/settings/ollama', { ...connection, model });
           setSaved({ base_url: connection.base_url, model, configured: true, has_api_key: result.has_api_key });
           setKey(''); setClearKey(false); setConnection({ base_url: connection.base_url });
-          await onChanged(); setEditing(false); notify.success('Ollama provider saved.');
+          setModelSettingsRevision(value => value + 1);
+          await onChanged(); notify.success('Ollama provider saved.');
         })}>Save provider</button><span className="ollama-muted">Used by chats and Voice</span></div>
       </>}
       {busy && <p className="ollama-muted" role="status">Working…</p>}
-    </div>}
+    </div>
     {error && <p role="alert" className="px-4 pb-3 text-xs text-(--status-error)">{error}</p>}
+    {configured && <ProviderModelSettings key={`${saved?.base_url}:${saved?.model}:${modelSettingsRevision}`} provider="ollama" onSaved={() => void onChanged()} />}
   </section>;
 }

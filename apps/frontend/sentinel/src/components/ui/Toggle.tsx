@@ -5,17 +5,25 @@ interface ToggleProps {
   onChange: (enabled: boolean) => void;
   className?: string;
   label?: string;
+  ariaLabel?: string;
+  disabled?: boolean;
+  title?: string;
 }
 
-export function Toggle({ enabled, onChange, className = '', label }: ToggleProps) {
+export function Toggle({ enabled, onChange, className = '', label, ariaLabel, disabled, title }: ToggleProps) {
   return (
     <div className={clsx("flex items-center gap-3", className)}>
       {label && <span className="text-[10px] font-bold uppercase tracking-widest text-(--text-muted)">{label}</span>}
       <button
         type="button"
+        role="switch"
+        aria-checked={enabled}
+        aria-label={ariaLabel ?? label}
+        disabled={disabled}
+        title={title}
         onClick={() => onChange(!enabled)}
         className={clsx(
-          "relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-hidden",
+          "relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out disabled:opacity-50 disabled:cursor-not-allowed",
           enabled ? "bg-emerald-500" : "bg-(--surface-3)"
         )}
       >

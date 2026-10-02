@@ -2,13 +2,13 @@ import { useEffect, useRef, useState } from 'react';
 import { invalidateModelCatalog, loadModelCatalog } from '../lib/model-catalog';
 import type { ModelsResponse } from '../types/api';
 
-const changedEvent = 'sentinel:providers-changed';
+export const changedEvent = 'sentinel:providers-changed';
 const empty: ModelsResponse = { models: [], default_tier: null };
 
-export function providersChanged(instance: string | null | undefined) {
+export function providersChanged(instance: string | null | undefined, kind: 'connection' | 'routing' = 'connection') {
   if (!instance) return;
   invalidateModelCatalog(instance);
-  window.dispatchEvent(new CustomEvent(changedEvent, { detail: { instance } }));
+  window.dispatchEvent(new CustomEvent(changedEvent, { detail: { instance, kind } }));
 }
 
 /** Refresh the runtime catalog, not a second list inferred from credential status. */

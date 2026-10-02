@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
 import { api } from '../lib/api';
 import { useInstanceName } from '../lib/workspace-context';
+import { changedEvent } from '../hooks/useModelCatalog';
 
 interface AccountUsage {
   status: 'available' | 'unavailable' | 'not_connected';
@@ -14,12 +15,29 @@ export function ProviderUsage({ provider, name, active, connection }: {
   provider: 'anthropic' | 'openai' | 'gemini';
   name: string;
   active: boolean;
-  connection: object;
+  connection: {
+    auth_method: string | null;
+    auth_source: string | null;
+    masked_key: string | null;
+    models: Record<'fast' | 'normal' | 'hard', string>;
+  };
 }) {
   const instance = useInstanceName();
   const [usage, setUsage] = useState<AccountUsage | null>(null);
   const [loading, setLoading] = useState(false);
   const [refresh, setRefresh] = useState(0);
+  // A refreshed status object is not a new connection or a new set of models.
+  const connectionKey = JSON.stringify([connection.auth_method, connection.auth_source, connection.masked_key,
+    connection.models.fast, connection.models.normal, connection.models.hard]);
+
+  useEffect(() => {
+    const changed = (event: Event) => {
+      const detail = (event as CustomEvent<{ instance: string; kind?: string }>).detail;
+      if (detail.instance === instance && detail.kind !== 'routing') setRefresh(value => value + 1);
+    };
+    window.addEventListener(changedEvent, changed);
+    return () => window.removeEventListener(changedEvent, changed);
+  }, [instance]);
 
   useEffect(() => {
     if (!active) return;
@@ -40,9 +58,9 @@ export function ProviderUsage({ provider, name, active, connection }: {
     void load();
     const timer = window.setInterval(() => { void load(); }, 5 * 60_000);
     return () => { cancelled = true; window.clearInterval(timer); };
-  }, [provider, instance, active, connection, refresh]);
+  }, [provider, instance, active, connectionKey, refresh]);
 
-  return <section aria-label={`${name} account usage`} className="mx-3.5 mb-3 border-t border-(--border-subtle) pt-3 space-y-2">
+  return <section aria-label={`${name} account usage`} className="provider-usage">
     <div className="flex items-center justify-between gap-2 text-[10px] text-(--text-muted)">
       <span>Remaining usage</span>
       <button type="button" aria-label={`Refresh ${name} usage`} disabled={loading}
@@ -58,7 +76,7 @@ export function ProviderUsage({ provider, name, active, connection }: {
           const remaining = window.remaining_percent;
           const reset = window.resets_at ? new Date(window.resets_at) : null;
           const percent = new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(remaining);
-          return <div key={window.key} className="space-y-1">
+          return <div key={window.key} className="provider-usage-window">
             <div className="flex justify-between gap-2 text-[10px]">
               <span className="text-(--text-muted) truncate" title={window.label}>{window.label}</span>
               <span className="shrink-0 tabular-nums">{percent}% left</span>

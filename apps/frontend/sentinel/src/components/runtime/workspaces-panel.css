@@ -271,14 +271,10 @@ html.dark .workspace-library:not(.workspace-library--onboarding) {
 }
 
 .workspace-library--page .workspace-library-navigation { margin-bottom:18px; }
-.workspace-library-switch { position:relative; display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); width:280px; max-width:100%; padding:3px; border:1px solid var(--border-subtle); border-radius:999px; background:var(--surface-2); }
-.workspace-library-switch-indicator { position:absolute; left:3px; top:3px; bottom:3px; width:calc((100% - 6px) / 2); border-radius:999px; background:var(--surface-0); transition:transform 280ms cubic-bezier(.22,1,.36,1); }
-.workspace-library-switch button { position:relative; display:flex; align-items:center; justify-content:center; gap:8px; height:30px; font-size:10px; font-weight:600; letter-spacing:.05em; text-transform:uppercase; color:var(--text-muted); }
-.workspace-library-switch button[aria-pressed=true] { color:var(--text-primary); }
 .workspace-library-create-local { display:inline-flex; align-items:center; gap:8px; padding:8px 14px; border-radius:999px; border:1px solid var(--border-subtle); background:var(--surface-1); color:var(--text-secondary); font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:.065em; box-shadow:2px 3px 8px #0000001a,inset 0 1px 0 #ffffff06; transition:background-color 180ms; }
 .workspace-library-create-local:hover { background:var(--surface-2); }
 .workspace-library--page .workspace-library-card-actions button { text-transform:uppercase; font-size:10px; letter-spacing:.05em; }
-@media (prefers-reduced-motion:reduce) { .workspace-library-switch-indicator,.workspace-library-create-local { transition:none; } }
+@media (prefers-reduced-motion:reduce) { .workspace-library-create-local { transition:none; } }
 
 .workspace-library--page .machines-panel { padding:0; border:0; background:transparent; box-shadow:none; }
 .workspace-library--page .machines-heading { border:0; padding:4px 0 12px; }
@@ -290,6 +286,3 @@ html.dark .workspace-library:not(.workspace-library--onboarding) {
 .workspace-library--page .machines-add:hover { background:var(--surface-2); border-color:var(--border-subtle); color:var(--text-primary); }
 .workspace-library--page .machines-note { background:transparent; border:0; padding:8px 0; }
 .workspace-library--page .machines-note svg { color:var(--text-muted); }
-.workspace-library-switch button { border-radius:999px; }
-.workspace-library-switch button:focus { outline:none; }
-.workspace-library-switch button:focus-visible { outline:1px solid var(--border-strong); outline-offset:-2px; }
