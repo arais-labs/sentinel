@@ -170,7 +170,6 @@ test('guide recognizes real edge drops, moving existing panes, slow drags, and a
     await page.mouse.up();
     await page.getByRole('heading', { name: 'Room to concentrate.' }).waitFor();
     assert.equal(await count(), 2, 'A slow edge drop still adds and verifies a pane');
-    await page.screenshot({ path: '/tmp/sentinel-tour-edge-drop.png' });
 
     // Real focus shortcut also advances between actions, then into the next lesson.
     await page.keyboard.press('Meta+f');
@@ -184,9 +183,6 @@ test('guide recognizes real edge drops, moving existing panes, slow drags, and a
     await page.getByRole('heading', { name: 'Room to concentrate.' }).waitFor();
     assert.equal(await count(), 2, 'The split menu also verifies and advances');
     assert.deepEqual(errors, []);
-  } catch (error) {
-    await page?.screenshot({ path: '/tmp/sentinel-tour-layout-failure.png' });
-    throw error;
   } finally {
     await browser?.close();
     await server.close();

@@ -95,7 +95,6 @@ test('session approval controls grant, persist, revoke and stay usable in both t
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
       const button = page.getByRole('button', {name:'Allow for this session',exact:true});
       assert.notEqual(await button.evaluate(el => getComputedStyle(el).backgroundColor), 'rgba(0, 0, 0, 0)');
-      if (process.env.SENTINEL_SCREENSHOT_DIR) await page.screenshot({path:`${process.env.SENTINEL_SCREENSHOT_DIR}/session-permissions-${dark ? 'dark' : 'light'}.png`,fullPage:true});
     }
     await page.getByRole('button', {name:'Revoke git.write',exact:true}).click();
     await page.getByRole('alert').filter({hasText:'Could not revoke'}).waitFor();

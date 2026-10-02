@@ -33,7 +33,7 @@ test('remote bridge discovers worker configuration and disconnect never changes 
       const value = JSON.parse(line); calls.push(value);
       if (value.action === 'workspace_configure') workspaces[value.workspace] = { spec: value.spec, revision: 1 };
       if (value.action === 'workspace_start') states[value.workspace] = 'running';
-      socket.write(JSON.stringify({ id: value.id, states, workspaces, worker_id: machine, exitCode: 0 }) + '\n');
+      socket.write(JSON.stringify({ id: value.id, states, workspaces, worker_id: machine, capabilities: ['workspace-browser-v1'], exitCode: 0 }) + '\n');
     });
   });
   let bridge;

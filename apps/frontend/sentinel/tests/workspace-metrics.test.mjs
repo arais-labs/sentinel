@@ -70,7 +70,6 @@ test('workspace metrics collect before hover, share history, and retain it acros
     assert.equal(style.fill, 'none');
     assert.equal(style.stroke, 'rgb(99, 184, 239)');
     assert.equal(await page.locator('.workspace-stat-axis').first().evaluate(node => getComputedStyle(node).display), 'flex');
-    await page.locator('.session-telemetry-panel').screenshot({ path: '/tmp/sentinel-workspace-metrics.png' });
     await page.keyboard.press('Escape');
     await page.locator('.workspace-performance-chip').first().click();
     assert.equal(await cpu.getAttribute('d'), path, 'Popover reopen must preserve history');

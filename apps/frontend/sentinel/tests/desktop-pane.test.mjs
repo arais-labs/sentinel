@@ -79,7 +79,6 @@ test('desktop uses shared overflow rows and pane focus mode', async () => {
     const rows=await menu.locator('button').evaluateAll(buttons=>buttons.map(b=>({text:b.textContent?.trim(),width:b.getBoundingClientRect().width,height:b.getBoundingClientRect().height,font:getComputedStyle(b).fontSize})));
     assert.ok(rows.every(row=>row.text && row.width>180 && row.height>=34 && row.font==='12px'),JSON.stringify(rows));
     assert.equal(await page.getByRole('button',{name:'Fullscreen',exact:true}).count(),0);
-    await page.screenshot({path:'/tmp/sentinel-desktop-overflow.png'});
     await page.keyboard.press('Escape');
     await header.getByRole('button',{name:'Enter focus mode',exact:true}).click();
     await page.locator('.workspace-focused').waitFor();

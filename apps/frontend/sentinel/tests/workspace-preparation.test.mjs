@@ -56,7 +56,6 @@ test('preparation displays download progress, failure, retry and optional diagno
       });
       assert.deepEqual(style, {radius:'999px', fontSize:'10px', color:dark ? 'rgb(244, 244, 245)' : 'rgb(15, 23, 42)'});
       await page.waitForFunction(dark => getComputedStyle(document.querySelector('.workspace-preparation-action')).backgroundColor === (dark ? 'rgb(17, 17, 19)' : 'rgb(248, 250, 252)'), dark);
-      if (process.env.PREPARATION_SCREENSHOTS) await page.screenshot({path:`${process.env.PREPARATION_SCREENSHOTS}/preparation-${dark ? 'dark' : 'light'}.png`});
     }
     await page.evaluate(() => window.showPreparation({preparing:true,error:'Connection unavailable'}));
     await page.getByRole('alert').waitFor();
