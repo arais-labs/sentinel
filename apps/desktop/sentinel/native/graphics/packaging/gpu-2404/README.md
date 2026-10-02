@@ -33,7 +33,9 @@ Prebuilt CI handoff verifies the same pair after the glibc Mesa handoff.
 
 `dependencies.lock.json` preserves the exact Noble ARM64 closure from the
 live-tested provider. It was resolved using Ubuntu's signed main/universe,
-updates and security APT indexes. Every URL, size and SHA256 is fixed; ordinary
+updates and security APT indexes. Downloads use Ubuntu's dated snapshot archive,
+not the live package pool where superseded versions can disappear. Every URL,
+size and SHA256 is fixed; ordinary
 builds never resolve packages or substitute missing historical versions. A
 dependency/security refresh is an explicit reviewed lock update, not deletion
 of a local cache. Downloaded DEBs are hash-checked and reused.
