@@ -11,22 +11,35 @@ from sentral.llm.providers.codex import CodexProvider
 from sentral.llm.providers.gemini import GeminiProvider
 from sentral.llm.providers.openai import OpenAIProvider
 from app.services.llm.session_selection import selection_model
-from app.services.messages.ingress import build_generation_metadata, normalize_generation_metadata
+from app.services.messages.ingress import (
+    build_generation_metadata,
+    normalize_generation_metadata,
+)
 from app.services.ws.ws_stream_parser import parse_ws_message
-from tests.test_llm_providers import _FakeAsyncClient, _FakeResponse, _FakeStreamResponse
+from tests.test_llm_providers import (
+    _FakeAsyncClient,
+    _FakeResponse,
+    _FakeStreamResponse,
+)
 
 
 @pytest.mark.parametrize(
     "provider,model,supported",
     [
         (OpenAIProvider("test"), "gpt-6-astra", True),
+        (OpenAIProvider("test"), "gpt-6.1-sol", True),
+        (OpenAIProvider("test"), "gpt-6-luna", True),
         (OpenAIProvider("test"), "gpt-5.6-sol-2026-06-30", True),
         (OpenAIProvider("test"), "gpt-5.4-pro", False),
         (OpenAIProvider("test"), "gpt-5.6-unknown", False),
         (OpenAIProvider("test", base_url="https://example.test/v1"), "gpt-6-astra", False),
         (CodexProvider("test"), "gpt-5.5", True),
+        (CodexProvider("test"), "gpt-6.1-sol", True),
+        (CodexProvider("test"), "gpt-6-luna", True),
         (CodexProvider("test"), "gpt-5.3-codex-spark", False),
         (AnthropicProvider("test"), "claude-opus-5", True),
+        (AnthropicProvider("test"), "claude-opus-5-5", True),
+        (AnthropicProvider("test"), "claude-sonnet-5-5", False),
         (AnthropicProvider("test"), "claude-opus-4-8", True),
         (AnthropicProvider("test"), "claude-opus-4-7", False),
         (AnthropicProvider("test"), "claude-opus-4-6", False),

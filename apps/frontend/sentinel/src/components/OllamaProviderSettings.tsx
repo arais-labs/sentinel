@@ -108,7 +108,7 @@ export function OllamaProviderSettings({ isPrimary, onChanged, onSetPrimary }: {
       </div>
       <p className="text-[10px] font-mono text-(--text-muted) truncate" title={configured ? `${saved?.base_url} · ${saved?.model}` : undefined}>{configured ? saved?.model : 'Local or remote server'}</p>
       <div className="settings-provider-actions flex items-center gap-2">
-        {configured && !isPrimary && <button disabled={busy} onClick={() => void run(onSetPrimary)} className="text-(--text-muted)">Set primary</button>}
+        {configured && !isPrimary && <button disabled={busy} onClick={() => void run(onSetPrimary)} className="text-(--text-primary)">Set primary</button>}
         <button disabled={!saved} aria-expanded={editing} aria-controls={formId} onClick={() => {
           setEditing(!editing); setConfirmDisconnect(false);
           if (!editing && !busy) void run(connect);

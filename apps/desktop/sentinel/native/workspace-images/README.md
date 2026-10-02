@@ -36,7 +36,18 @@ protocol through stock `pam_env` before including the distribution's `greetd`
 session stack. Authentication and account policy remain distribution-owned;
 the runtime selects the service matching the requested graphical session.
 
-Build locally with an explicitly configured Docker/buildx daemon:
+The existing `scripts/dev/workspace-runtime-dev.mjs` entry point calls the image
+builder directly with `--cache`; no separate dev-image helper is needed.
+`make dev` verifies the selected local image cache and automatically rebuilds
+missing or stale roots using the persistent Sentinel builder below. The helper
+and kernel are prepared first, so this also works without an existing runtime
+manifest. Completed images are cached by source identity, and `current.json`
+is updated only after all three roots pass verification. Unchanged runs reuse
+the images, builder disk and BuildKit layers. Failed builds preserve the previous
+cache selection and retain their logs. An explicit `SENTINEL_WORKSPACE_IMAGES_DIR`
+is verified as supplied rather than replaced automatically.
+
+To build an artifact separately with an explicitly configured Docker/buildx daemon:
 
 ```sh
 python3 scripts/packaging/workspace-images/build.py /tmp/sentinel-workspace-images

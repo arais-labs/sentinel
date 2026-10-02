@@ -67,7 +67,7 @@ class Settings(TierDefaults, BaseSettings):
     memory_embedding_backfill_on_start: bool = True
     memory_embedding_backfill_batch_size: int = 100
     memory_embedding_backfill_max_rows: int = 0
-    default_model: str = "claude-opus-5"
+    default_model: str = "claude-opus-5-5"
 
     default_system_prompt: str = DEFAULT_SYSTEM_PROMPT
     agent_loop_timeout: float = 1080.0

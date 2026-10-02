@@ -49,7 +49,13 @@ import Testing
         #expect(WorkspaceDistribution.ubuntu.command == ["/sbin/init"])
         #expect(WorkspaceDistribution.debian.command == ["/sbin/init"])
         #expect(WorkspaceDistribution.alpine.command == ["/sbin/openrc-init"])
-        #expect(WorkspaceDistribution.ubuntu.buildCommand == ["/bin/sleep", "infinity"])
+        for entrypoint: [String]? in [nil, [], ["/bin/sh"], ["/sbin/init"]] {
+            #expect(WorkspaceDistribution.buildCommand(entrypoint: entrypoint) == ["/bin/sleep", "infinity"])
+        }
+        for executable in ["dockerd-entrypoint.sh", "/usr/local/bin/dockerd-entrypoint.sh"] {
+            #expect(WorkspaceDistribution.buildCommand(entrypoint: [executable]) ==
+                [executable, "dockerd", "--host=unix:///var/run/docker.sock"])
+        }
         for invalid in ["ubuntu:24.04", "ubuntu@sha256:123", "ubuntu @sha256:" + String(repeating: "a", count: 64)] {
             #expect(throws: RuntimeError.self) {
                 try WorkspaceDistribution.validateImageReference(invalid)

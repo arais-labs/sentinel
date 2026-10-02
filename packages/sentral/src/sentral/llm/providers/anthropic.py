@@ -40,6 +40,8 @@ _OAUTH_BASE_BETAS = [
 ]
 _CLAUDE_CODE_VERSION = "2.1.263"
 _CLAUDE_CODE_SYSTEM_PREFIX = "You are Claude Code, Anthropic's official CLI for Claude."
+_BOUND_THINKING_MODELS = ("claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-1")
+_THINKING_BINDING_BETA = "thinking-binding-controls-2026-08-01"
 
 
 class AnthropicProvider(LLMProvider):
@@ -94,7 +96,7 @@ class AnthropicProvider(LLMProvider):
     async def chat(
         self,
         messages,
-        model="claude-opus-5",
+        model="claude-opus-5-5",
         tools=None,
         temperature=0.7,
         reasoning_config=None,
@@ -118,7 +120,7 @@ class AnthropicProvider(LLMProvider):
     async def stream(
         self,
         messages,
-        model="claude-opus-5",
+        model="claude-opus-5-5",
         tools=None,
         temperature=0.7,
         reasoning_config=None,
@@ -147,7 +149,7 @@ class AnthropicProvider(LLMProvider):
     async def _chat_once(
         self,
         messages: Sequence[AgentMessage | dict],
-        model: str = "claude-opus-5",
+        model: str = "claude-opus-5-5",
         tools: Sequence[ToolSchema] | None = None,
         temperature: float = 0.7,
         reasoning_config: ReasoningConfig | None = None,
@@ -169,14 +171,15 @@ class AnthropicProvider(LLMProvider):
 
         # https://platform.claude.com/docs/en/build-with-claude/fast-mode
         return self._base_url == "https://api.anthropic.com" and matches_model(
-            model, ("claude-opus-5", "claude-opus-4-8")
+            model, ("claude-opus-5-5", "claude-opus-5", "claude-opus-4-8")
         )
 
     def _payload(self, messages, model, tools, reasoning_config, tool_choice=None):
+        model = model or "claude-opus-5-5"
         payload = {
-            "model": model or "claude-opus-5",
+            "model": model,
             "messages": self._to_anthropic_messages(messages),
-            **self._generation_options(reasoning_config, model or "claude-opus-5"),
+            **self._generation_options(reasoning_config, model),
             "cache_control": {"type": "ephemeral"},
         }
         system_prompt = self._extract_system_prompt(messages)
@@ -222,6 +225,10 @@ class AnthropicProvider(LLMProvider):
             payload["tool_choice"] = choice
             # Forced selection cannot be combined with extended thinking.
             if choice["type"] in {"any", "tool"}:
+                if matches_model(model, _BOUND_THINKING_MODELS):
+                    raise ValueError(
+                        f"{model} does not support forced tool selection; use auto or none"
+                    )
                 payload.pop("thinking", None)
                 payload.pop("output_config", None)
 
@@ -302,6 +309,8 @@ class AnthropicProvider(LLMProvider):
                     else None
                 ),
             }
+            if "input_transformations" in data:
+                snapshot["input_transformations"] = deepcopy(data["input_transformations"])
         return AssistantMessage(
             content=self._parse_content_blocks(data.get("content") or []),
             model=data.get("model") or model,
@@ -315,7 +324,7 @@ class AnthropicProvider(LLMProvider):
     async def _stream_once(
         self,
         messages: Sequence[AgentMessage | dict],
-        model: str = "claude-opus-5",
+        model: str = "claude-opus-5-5",
         tools: Sequence[ToolSchema] | None = None,
         temperature: float = 0.7,
         reasoning_config: ReasoningConfig | None = None,
@@ -422,7 +431,7 @@ class AnthropicProvider(LLMProvider):
 
     @staticmethod
     def _generation_options(
-        reasoning_config: ReasoningConfig | None, model: str = "claude-opus-5"
+        reasoning_config: ReasoningConfig | None, model: str = "claude-opus-5-5"
     ) -> dict[str, Any]:
         rc = reasoning_config or ReasoningConfig()
         options = {"max_tokens": rc.max_tokens}
@@ -443,6 +452,15 @@ class AnthropicProvider(LLMProvider):
                 thinking={"type": "adaptive"},
                 output_config={"effort": rc.reasoning_effort or "high"},
             )
+            if matches_model(model, _BOUND_THINKING_MODELS):
+                # Sentinel rebuilds dynamic context and compacts history. Let
+                # Claude discard only reasoning invalidated by those edits;
+                # keep signed blocks intact during unchanged tool continuations.
+                # https://platform.claude.com/docs/en/build-with-claude/preserved-thinking
+                options["thinking"].update(
+                    display="summarized",
+                    block_binding={"prefix_mismatch_behavior": "drop_block"},
+                )
         elif rc.thinking_budget:
             if not 1024 <= rc.thinking_budget < rc.max_tokens:
                 raise ValueError(
@@ -467,10 +485,13 @@ class AnthropicProvider(LLMProvider):
             headers["anthropic-beta"] = ",".join(betas)
         else:
             headers["x-api-key"] = self._api_key
+        betas = list(filter(None, [headers.get("anthropic-beta")]))
+        if matches_model(model, _BOUND_THINKING_MODELS):
+            betas.append(_THINKING_BINDING_BETA)
         if fast_mode:
-            headers["anthropic-beta"] = ",".join(
-                filter(None, [headers.get("anthropic-beta"), "fast-mode-2026-02-01"])
-            )
+            betas.append("fast-mode-2026-02-01")
+        if betas:
+            headers["anthropic-beta"] = ",".join(betas)
         return headers
 
     def _ensure_claude_code_system_prompt(self, system_prompt: str | None) -> list[dict[str, str]]:

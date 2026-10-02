@@ -63,6 +63,8 @@ class OpenAIProvider(LLMProvider):
             model,
             (
                 "gpt-6-astra",
+                "gpt-6.1-sol",
+                "gpt-6-luna",
                 "gpt-5.6-sol",
                 "gpt-5.6-terra",
                 "gpt-5.6-luna",
@@ -547,12 +549,12 @@ class OpenAIProvider(LLMProvider):
     async def _prepare_response(self, payload, client, headers):
         """Enable hosted orchestration only on the documented public model family."""
         if self._base_url != "https://api.openai.com/v1" or not payload["model"].startswith(
-            ("gpt-6-", "gpt-5.6")
+            ("gpt-6-", "gpt-6.1-", "gpt-5.6")
         ):
             return
         # Slow HTTP requests may overlap independent model work. Interactive and
         # delegated tools retain the normal approval/interception flow.
-        if payload["model"].startswith("gpt-6-"):
+        if payload["model"].startswith(("gpt-6-", "gpt-6.1-")):
             for tool in payload["tools"]:
                 if tool.get("name") == "http_request":
                     tool["async"] = True
@@ -606,7 +608,9 @@ class OpenAIProvider(LLMProvider):
         }
         if rc.reasoning_effort:
             effort = rc.reasoning_effort
-            if effort == "minimal" or (model.startswith("gpt-6") and effort == "none"):
+            if effort == "minimal" or (
+                model.startswith(("gpt-6-astra", "gpt-6.1-sol")) and effort == "none"
+            ):
                 effort = "low"
             payload["reasoning"] = {"effort": effort}
         output, text, arguments, item_indices = {}, {}, {}, {}

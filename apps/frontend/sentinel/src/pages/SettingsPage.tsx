@@ -183,7 +183,7 @@ function ProviderRow({
         <div className="settings-provider-actions flex items-center gap-3 pt-1">
           {configured && !isPrimary && (
             <button onClick={onSetPrimary}
-              className="text-[9px] font-bold uppercase tracking-widest text-(--text-muted) hover:text-(--accent-solid) transition-colors">
+              className="text-[9px] font-bold uppercase tracking-widest text-(--text-primary) hover:text-(--accent-solid) transition-colors">
               Set primary
             </button>
           )}

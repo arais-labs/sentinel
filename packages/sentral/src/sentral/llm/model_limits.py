@@ -1,4 +1,4 @@
-"""Context windows for the supported models, verified against provider docs 2026-09-07."""
+"""Context windows for supported models; current defaults verified 2026-09-30."""
 
 MODEL_CONTEXT_WINDOWS = {
     "gemini-pro-agent": 1_048_576,
@@ -12,12 +12,16 @@ MODEL_CONTEXT_WINDOWS = {
     "gemini-3-flash-preview": 1_048_576,
     "gemini-3.1-pro-preview": 1_048_576,
     "gpt-6-astra": 1_050_000,
+    "gpt-6.1-sol": 1_050_000,
+    "gpt-6-luna": 1_050_000,
     "gpt-5.6-sol": 1_050_000,
     "gpt-5.6": 1_050_000,
     "gpt-5.6-terra": 1_050_000,
     "gpt-5.6-luna": 1_050_000,
     "claude-sonnet-5": 1_000_000,
     "claude-opus-5": 1_000_000,
+    "claude-sonnet-5-5": 1_000_000,
+    "claude-opus-5-5": 1_000_000,
     "claude-fable-5-1": 1_000_000,
 }
 

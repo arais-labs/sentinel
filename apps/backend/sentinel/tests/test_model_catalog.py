@@ -81,8 +81,8 @@ def test_openai_catalog_offers_current_models_with_api_key_or_codex_login():
 
         assert payload.default_tier == TierName.NORMAL
         assert [model.primary_model_id for model in payload.models] == [
-            "gpt-5.6-luna",
-            "gpt-5.6-sol",
+            "gpt-6-luna",
+            "gpt-6.1-sol",
             "gpt-6-astra",
         ]
 
@@ -99,7 +99,7 @@ def test_claude_catalog_offers_current_tiers_with_api_key_or_oauth():
         payload = build_models_response(provider)
         assert payload.default_tier == TierName.NORMAL
         assert [model.primary_model_id for model in payload.models] == [
-            "claude-sonnet-5",
-            "claude-opus-5",
+            "claude-sonnet-5-5",
+            "claude-opus-5-5",
             "claude-fable-5-1",
         ]

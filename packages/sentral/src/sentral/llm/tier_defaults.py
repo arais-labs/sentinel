@@ -14,9 +14,9 @@ TIER_LABELS = {
 
 class TierDefaults(BaseModel):
     # --- Tier: Fast ---
-    tier_fast_anthropic_model: str = "claude-sonnet-5"
-    tier_fast_openai_model: str = "gpt-5.6-luna"
-    tier_fast_codex_model: str = "gpt-5.6-luna"
+    tier_fast_anthropic_model: str = "claude-sonnet-5-5"
+    tier_fast_openai_model: str = "gpt-6-luna"
+    tier_fast_codex_model: str = "gpt-6-luna"
     tier_fast_gemini_model: str = "gemini-3.5-flash-lite"
     tier_fast_max_tokens: int = 4096
     tier_fast_temperature: float = 0.3
@@ -25,9 +25,9 @@ class TierDefaults(BaseModel):
     tier_fast_gemini_thinking_budget: int = 0
 
     # --- Tier: Normal ---
-    tier_normal_anthropic_model: str = "claude-opus-5"
-    tier_normal_openai_model: str = "gpt-5.6-sol"
-    tier_normal_codex_model: str = "gpt-5.6-sol"
+    tier_normal_anthropic_model: str = "claude-opus-5-5"
+    tier_normal_openai_model: str = "gpt-6.1-sol"
+    tier_normal_codex_model: str = "gpt-6.1-sol"
     tier_normal_gemini_model: str = "gemini-3.8-flash"
     tier_normal_max_tokens: int = 8192
     tier_normal_temperature: float = 0.7

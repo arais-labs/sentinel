@@ -5,6 +5,7 @@ import importlib.util
 import json
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -15,6 +16,20 @@ spec = importlib.util.spec_from_file_location(
 )
 builder = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(builder)
+
+spec = importlib.util.spec_from_file_location(
+    "workspace_image_stage", DESKTOP / "scripts/packaging/workspace-images/stage.py"
+)
+stager = importlib.util.module_from_spec(spec)
+with patch.dict(sys.modules, {"build": builder}):
+    spec.loader.exec_module(stager)
+
+spec = importlib.util.spec_from_file_location(
+    "workspace_image_vm", DESKTOP / "scripts/packaging/workspace-images/build-vm.py"
+)
+vm_builder = importlib.util.module_from_spec(spec)
+with patch.dict(sys.modules, {"build": builder, "stage": stager}):
+    spec.loader.exec_module(vm_builder)
 
 
 def put_blob(layout, value, media_type):
@@ -49,6 +64,21 @@ def image_fixture(layout, entrypoint=None, architecture="arm64"):
 
 
 class WorkspaceImageTests(unittest.TestCase):
+    def test_dev_builder_bootstraps_before_runtime_manifest_exists(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = Path(directory)
+            lock = json.loads((DESKTOP / "runtime.lock.json").read_bytes())["platforms"][
+                "macos-arm64"
+            ]["workspaceRuntime"]
+            config = vm_builder.build_config(runtime, lock["initImage"])
+            self.assertEqual(
+                config,
+                {"buildImage": lock["buildImage"], "initImage": lock["initImage"]},
+            )
+            self.assertFalse((runtime / "manifest.json").exists())
+            (runtime / "manifest.json").write_text('{"initImage":"packaged-init"}')
+            self.assertEqual(vm_builder.build_config(runtime)["initImage"], "packaged-init")
+
     def test_source_identity_tracks_recipes_not_documentation(self):
         with (
             tempfile.TemporaryDirectory() as directory,

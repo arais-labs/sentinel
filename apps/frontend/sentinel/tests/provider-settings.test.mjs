@@ -100,6 +100,15 @@ test('provider cards are equal, ordered, and expand with styled Ollama controls'
     assert.deepEqual(await cards.locator('.settings-provider-heading > span:first-of-type').allTextContents(), ['Anthropic','OpenAI','Ollama','Google Gemini']);
     assert.equal(await cards.locator('.settings-provider-heading .status-chip').count(), 0);
     assert.equal(await cards.locator('.settings-provider-badges').count(), 4);
+    for (const index of [0, 2, 3]) {
+      const card = cards.nth(index);
+      const primary = card.getByRole('button', {name:'Set primary', exact:true});
+      assert.equal(await primary.isEnabled(), true);
+      assert.equal(await primary.evaluate(node => getComputedStyle(node).opacity), '1');
+      assert.equal(await primary.evaluate(node => getComputedStyle(node).color),
+        await card.locator('.settings-provider-heading').evaluate(node => getComputedStyle(node).color),
+        'Enabled Set primary must use readable primary text, not muted text');
+    }
     for (let index = 0; index < 4; index++) {
       const heading = await cards.nth(index).locator('.settings-provider-heading').boundingBox();
       const badges = await cards.nth(index).locator('.settings-provider-badges').boundingBox();
