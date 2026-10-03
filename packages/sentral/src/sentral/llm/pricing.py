@@ -7,6 +7,9 @@ from typing import Any
 # Verified 2026-09-07. Sol promotional pricing runs at least through 2026-11-21.
 OPENAI_RATES = {
     "gpt-6-astra": ("10", "1", "12.5", "50"),
+    # Current defaults verified against their official model pages 2026-09-30.
+    "gpt-6.1-sol": ("2", ".1", "2.5", "10"),
+    "gpt-6-luna": (".1", ".01", ".125", ".5"),
     "gpt-5.6-sol": ("4", ".4", "5", "20"),
     "gpt-5.6-terra": ("2", ".2", "2.5", "12"),
     "gpt-5.6-luna": (".2", ".02", ".25", "1.2"),
@@ -14,6 +17,9 @@ OPENAI_RATES = {
 
 # Base input, cache read, 5m write, 1h write, output; verified 2026-09-07.
 CLAUDE_RATES = {
+    # Current defaults verified against their official model pages 2026-09-30.
+    "claude-sonnet-5-5": ("2", ".2", "2.5", "4", "10"),
+    "claude-opus-5-5": ("4", ".2", "5", "8", "20"),
     "claude-sonnet-5": ("2", ".2", "2.5", "4", "10"),
     "claude-opus-5": ("5", ".5", "6.25", "10", "25"),
     "claude-fable-5-1": ("10", ".25", "12.5", "20", "50"),
@@ -50,7 +56,9 @@ def claude_token_price(model, usage):
             zip(("input", "cached_input", "cache_write_5m", "cache_write_1h", "output"), rates)
         ),
         "source": "https://platform.claude.com/docs/en/about-claude/pricing",
-        "rates_as_of": "2026-09-07",
+        "rates_as_of": (
+            "2026-09-30" if model in {"claude-sonnet-5-5", "claude-opus-5-5"} else "2026-09-07"
+        ),
     }
 
 
@@ -83,5 +91,5 @@ def openai_token_price(model: str, usage: dict[str, Any], service_tier: str) -> 
             zip(("input", "cached_input", "cache_write", "output"), map(str, applied))
         ),
         "source": "https://developers.openai.com/api/docs/pricing",
-        "rates_as_of": "2026-09-07",
+        "rates_as_of": ("2026-09-30" if model in {"gpt-6.1-sol", "gpt-6-luna"} else "2026-09-07"),
     }

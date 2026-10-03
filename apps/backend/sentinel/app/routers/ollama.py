@@ -3,12 +3,14 @@ from __future__ import annotations
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies import get_db, get_settings_service, get_request_instance_runtime_context
 from app.routers.settings import _rebuild_current_instance_runtime_context
 from app.services.settings.settings_service import SettingsService
 from app.services.llm.ollama_models import validate_model, endpoint_error
+from app.models.system import SystemSetting
 from sentral.llm.providers.ollama import OllamaProvider, normalize_endpoint
 
 router = APIRouter()
@@ -142,5 +144,24 @@ async def remove_model(
         await service.set_ollama(
             db, base_url=current.ollama_base_url, model="", api_key=current.ollama_api_key
         )
+    cleared_tier_models = False
+    if current.ollama_base_url == payload.base_url:
+        keys = [f"tier_{tier}_ollama_model" for tier in ("fast", "normal", "hard")]
+        rows = (
+            (await db.execute(select(SystemSetting).where(SystemSetting.key.in_(keys))))
+            .scalars()
+            .all()
+        )
+        for row in rows:
+            if row.value == payload.model:
+                await db.delete(row)
+                cleared_tier_models = True
+        if cleared_tier_models:
+            await db.commit()
+    if cleared_selection or cleared_tier_models:
         await _rebuild_current_instance_runtime_context(request)
-    return {"success": True, "cleared_selection": cleared_selection}
+    return {
+        "success": True,
+        "cleared_selection": cleared_selection,
+        "cleared_tier_models": cleared_tier_models,
+    }

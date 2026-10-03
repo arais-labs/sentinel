@@ -143,20 +143,10 @@ test('workspace creation separates OS, desktop and tools and submits each choice
     });
     const previewBounds = await page.getByRole('figure', { name: 'LXQt · Wayland preview', exact: true }).boundingBox();
     assert.ok(previewBounds && previewBounds.x >= 0 && previewBounds.x + previewBounds.width <= 390);
-    if (process.env.SENTINEL_PREVIEW_SCREENSHOTS) {
-      await page.screenshot({ path: `${process.env.SENTINEL_PREVIEW_SCREENSHOTS}-narrow.png` });
-    }
     await page.setViewportSize({ width: 1280, height: 720 });
     await page.keyboard.press('Tab');
     await page.getByRole('radio', { name: /LXQt · Wayland/ }).focus();
     await waitForPreview(page, 'LXQt · Wayland');
-    if (process.env.SENTINEL_PREVIEW_SCREENSHOTS) {
-      await page.waitForFunction(() => {
-        const bounds = document.querySelector('figure[aria-label="LXQt · Wayland preview"]')?.getBoundingClientRect();
-        return bounds && bounds.width > 400;
-      });
-      await page.screenshot({ path: `${process.env.SENTINEL_PREVIEW_SCREENSHOTS}-desktop.png` });
-    }
     await page.getByRole('button', { name: 'Next: Browser' }).click();
     assert.equal(await page.getByRole('radio', { name: /^Chromium/ }).isChecked(), true);
     assert.equal(await page.getByRole('radio', { name: /^Google Chrome/ }).isEnabled(), true);

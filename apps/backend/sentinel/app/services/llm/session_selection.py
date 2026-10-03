@@ -67,6 +67,7 @@ def reasoning_levels(model):
     if model.startswith(
         (
             "gpt-6-astra",
+            "gpt-6.1-sol",
             "claude-opus-5",
             "claude-sonnet-5",
             "claude-fable-5",
@@ -76,7 +77,7 @@ def reasoning_levels(model):
         )
     ):
         return [*base, "xhigh", "max"]
-    if model.startswith("gpt-5.6"):
+    if model.startswith(("gpt-5.6", "gpt-6-sol", "gpt-6-luna")):
         return ["none", *base, "xhigh", "max"]
     if model.startswith("claude-opus-4-6"):
         return [*base, "max"]

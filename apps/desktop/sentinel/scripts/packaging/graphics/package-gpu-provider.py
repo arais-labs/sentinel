@@ -120,6 +120,10 @@ def build(args, root, cache):
     locked = json.loads(dependency_lock.read_text())
     if locked.get("schema") != 1 or locked.get("architecture") != "arm64":
         raise RuntimeError("Unsupported provider dependency lock")
+    snapshot = locked.get("snapshot", "")
+    if not isinstance(snapshot, str) or not re.fullmatch(r"[0-9]{8}T[0-9]{6}Z", snapshot):
+        raise RuntimeError("Invalid provider dependency snapshot")
+    package_prefix = f"https://snapshot.ubuntu.com/ubuntu/{snapshot}/pool/"
     if not locked.get("packages"):
         raise RuntimeError("Empty provider dependency lock")
     names = set()
@@ -129,7 +133,7 @@ def build(args, root, cache):
             not name
             or Path(name).name != name
             or name in names
-            or not item["url"].startswith("https://ports.ubuntu.com/ubuntu-ports/pool/")
+            or not item["url"].startswith(package_prefix)
             or not re.fullmatch("[a-f0-9]{64}", item["sha256"])
             or not isinstance(item["size"], int)
             or item["size"] <= 0

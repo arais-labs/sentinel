@@ -2,7 +2,7 @@ from decimal import Decimal
 
 import pytest
 
-from sentral.llm.pricing import openai_token_price
+from sentral.llm.pricing import claude_token_price, openai_token_price
 from sentral.llm.providers.codex import CodexProvider
 from sentral.llm.providers.openai import OpenAIProvider
 
@@ -81,3 +81,32 @@ def test_custom_endpoint_is_not_priced_as_openai():
     )
     assert message.provider_usage["usage"] == usage()
     assert message.provider_usage["price"] is None
+
+
+@pytest.mark.parametrize("model,cost", [("gpt-6.1-sol", ".00267"), ("gpt-6-luna", ".0001345")])
+def test_current_openai_prices_cover_cache_reads_and_writes(model, cost):
+    price = openai_token_price(model, usage(), "default")
+    assert Decimal(price["usd"]) == Decimal(cost)
+    assert price["rates_as_of"] == "2026-09-30"
+    assert Decimal(openai_token_price(model, usage(), "fast")["usd"]) == Decimal(cost) * 2
+
+
+@pytest.mark.parametrize(
+    "model,cost", [("claude-opus-5-5", ".00694"), ("claude-sonnet-5-5", ".00349")]
+)
+def test_current_claude_prices_cover_both_cache_write_durations(model, cost):
+    price = claude_token_price(
+        model,
+        {
+            "input_tokens": 1000,
+            "cache_read_input_tokens": 200,
+            "cache_creation_input_tokens": 150,
+            "cache_creation": {
+                "ephemeral_5m_input_tokens": 100,
+                "ephemeral_1h_input_tokens": 50,
+            },
+            "output_tokens": 100,
+        },
+    )
+    assert Decimal(price["usd"]) == Decimal(cost)
+    assert price["rates_as_of"] == "2026-09-30"

@@ -10,7 +10,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { notificationPublisher } from '../lib/notifications';
 import {
   ShieldAlert, Info, KeyRound, GitBranch, Send,
-  Bot, Eye, EyeOff, Check, Loader2, HelpCircle, X,
+  Bot, Eye, EyeOff, Check, Loader2, HelpCircle, X, KeySquare,
   Trash2, AudioLines,
   Archive, Download, Upload, Lock, Server, Type, Plug,
 } from 'lucide-react';
@@ -19,31 +19,16 @@ import { DesktopManagement } from '../components/DesktopManagement';
 import { AppShell } from '../components/AppShell';
 import { Panel } from '../components/ui/Panel';
 import { StatusChip } from '../components/ui/StatusChip';
+import { PillSwitch } from '../components/ui/PillSwitch';
 import { api, requestBlob } from '../lib/api';
 import './settings-page.css';
 import { OllamaProviderSettings } from '../components/OllamaProviderSettings';
-import { ProviderUsage } from '../components/ProviderUsage';
+import { ProvidersSettings, type Provider, type ProviderStatus, type ProvidersStatusResponse } from '../components/ProvidersSettings';
 
 const notify = notificationPublisher('Settings');
 
 
 // ── types ───────────────────────────────────────────────────────────────────
-
-interface ProviderStatus {
-  configured: boolean;
-  auth_method: 'oauth' | 'api_key' | null;
-  auth_source: 'manual' | 'cli' | null;
-  masked_key: string | null;
-}
-
-interface ProvidersStatusResponse {
-  primary_provider: string;
-  providers: {
-    anthropic: ProviderStatus;
-    openai: ProviderStatus;
-    gemini: ProviderStatus;
-  };
-}
 
 interface DesktopCodexOauthStatus {
   enabled: boolean;
@@ -112,34 +97,24 @@ const OAUTH_HELP: Record<string, { title: string; steps: string[]; command: stri
 
 // ── provider editor ─────────────────────────────────────────────────────────
 
-function ProviderRow({
-  name, status, onSave, saving, providerId, isPrimary, onSetPrimary, onRemove,
+function ProviderConnectionSettings({
+  status, onSave, saving, providerId,
   canSyncOauth = false, syncingOauth = false, onSyncOauth,
-  usageActive,
 }: {
-  name: string;
   status: ProviderStatus | null;
   onSave: (data: { apiKey?: string; oauthToken?: string }) => void;
   saving: boolean;
   providerId: 'anthropic' | 'openai' | 'gemini';
-  isPrimary: boolean;
-  onSetPrimary: () => void;
-  onRemove: () => void;
   canSyncOauth?: boolean;
   syncingOauth?: boolean;
   onSyncOauth?: () => void;
-  usageActive: boolean;
 }) {
-  const [editing, setEditing] = useState(false);
   const help = OAUTH_HELP[providerId];
-  const [mode, setMode] = useState<'oauth' | 'api'>('api');
-  const [oauthSource, setOauthSource] = useState<'cli' | 'manual'>('cli');
+  const [mode, setMode] = useState<'oauth' | 'api'>(status?.auth_method === 'oauth' ? 'oauth' : 'api');
+  const [oauthSource, setOauthSource] = useState<'cli' | 'manual'>(status?.auth_source === 'manual' ? 'manual' : 'cli');
   const [value, setValue] = useState('');
   const [showValue, setShowValue] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
-  const [confirmRemove, setConfirmRemove] = useState(false);
-
-  const configured = status?.configured ?? false;
   const isGeminiOauth = providerId === 'gemini' && mode === 'oauth' && oauthSource === 'manual';
   const oauthLabel = 'OAuth';
   const cliName = providerId === 'anthropic' ? 'Claude' : providerId === 'gemini' ? 'Antigravity' : 'Codex';
@@ -148,101 +123,21 @@ function ProviderRow({
     if (!value.trim()) return;
     onSave(mode === 'oauth' ? { oauthToken: value.trim() } : { apiKey: value.trim() });
     setValue('');
-    setEditing(false);
   }
 
   return (
-    <div className="settings-provider rounded-xl border border-(--border-subtle) bg-(--surface-0) overflow-hidden relative">
-      <div className="settings-provider-summary">
-        {/* Row 1: name + status badge */}
-        <div className="settings-provider-heading flex items-center gap-2">
-          <div className="h-2.5 w-2.5 rounded-full shrink-0" style={{ backgroundColor: configured ? '#10B981' : '#F59E0B' }} />
-          <span className="text-xs font-bold uppercase tracking-widest">{name}</span>
-        </div>
-        <div className="settings-provider-badges">
-          {configured && isPrimary && (
-            <span className="text-[9px] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400">Primary</span>
-          )}
-          {configured && !isPrimary && (
-            <span className="text-[9px] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded bg-(--surface-2) text-(--text-muted)">Fallback</span>
-          )}
-          {configured && (
-            <StatusChip label={status?.auth_method === 'oauth' ? status.auth_source === 'cli' ? 'OAuth · Auto-sync' : 'OAuth' : 'API Key'} tone="info" />
-          )}
-          {!configured && (
-            <StatusChip label="Not configured" tone="warn" />
-          )}
-        </div>
-
-        {/* Row 2: masked key */}
-        {configured && status?.masked_key && (
-          <div className="text-[10px] font-mono text-(--text-muted) truncate">{status.masked_key}</div>
-        )}
-
-        {/* Row 3: action buttons */}
-        <div className="settings-provider-actions flex items-center gap-3 pt-1">
-          {configured && !isPrimary && (
-            <button onClick={onSetPrimary}
-              className="text-[9px] font-bold uppercase tracking-widest text-(--text-muted) hover:text-(--accent-solid) transition-colors">
-              Set primary
-            </button>
-          )}
-          <button onClick={() => {
-              if (!editing) {
-                setMode(status?.auth_method === 'oauth' ? 'oauth' : 'api');
-                setOauthSource(status?.auth_method === 'oauth' && status.auth_source !== 'cli' ? 'manual' : 'cli');
-              }
-              setEditing(v => !v);
-              setConfirmRemove(false);
-            }}
-            className="text-[10px] font-bold uppercase tracking-widest text-(--accent-solid) hover:opacity-70 transition-opacity">
-            {editing ? 'Cancel' : configured ? 'Update' : 'Configure'}
-          </button>
-          {configured && (
-            !confirmRemove ? (
-              <button onClick={() => setConfirmRemove(true)}
-                className="text-[10px] font-bold uppercase tracking-widest text-rose-500/60 hover:text-rose-500 transition-colors">
-                Remove
-              </button>
-            ) : (
-              <div className="flex items-center gap-1">
-                <button onClick={() => { onRemove(); setConfirmRemove(false); }}
-                  className="text-[10px] font-bold uppercase tracking-widest text-rose-500 hover:opacity-70 transition-opacity">
-                  Confirm
-                </button>
-                <button onClick={() => setConfirmRemove(false)}
-                  className="text-[10px] font-bold uppercase tracking-widest text-(--text-muted) hover:text-(--text-primary) transition-colors">
-                  No
-                </button>
-              </div>
-            )
-          )}
-        </div>
-      </div>
-
-      {configured && status?.auth_method === 'oauth' && (
-        <ProviderUsage provider={providerId} name={name} active={usageActive} connection={status} />
-      )}
-
-      {editing && (
-        <div className="settings-provider-editor space-y-3 animate-in fade-in duration-200">
+    <section className="provider-connection-editor" aria-label="Connection settings">
+      <h3>Connection</h3>
+      <div className="settings-provider-editor space-y-3">
           {help ? (
-            <div className="flex items-center gap-2">
-              <div className="flex rounded-lg bg-(--surface-2) p-0.5 w-fit">
-                {([
-                  { id: 'oauth', label: oauthLabel },
-                  { id: 'api',   label: 'API Key' },
-                ] as const).map(m => (
-                  <button key={m.id} onClick={() => { setMode(m.id); setShowHelp(false); }}
-                    className={`px-3 py-1 rounded-md text-[10px] font-bold uppercase tracking-widest transition-all ${mode === m.id ? 'bg-(--accent-solid) text-(--app-bg)' : 'text-(--text-muted) hover:text-(--text-primary)'}`}>
-                    {m.label}
-                  </button>
-                ))}
-              </div>
+            <div className="provider-auth-mode">
+              <PillSwitch label="Connection method" className="provider-connection-switch" value={mode}
+                onChange={next => { setMode(next); setShowHelp(false); }}
+                options={[{ value: 'oauth', label: oauthLabel, icon: <KeyRound size={14} /> }, { value: 'api', label: 'API Key', icon: <KeySquare size={14} /> }]} />
               {mode === 'oauth' && (
                 <button onClick={() => setShowHelp(v => !v)}
                   className={`p-1 rounded-md transition-colors ${showHelp ? 'text-(--accent-solid)' : 'text-(--text-muted) hover:text-(--text-primary)'}`}
-                  title="How to get an OAuth token">
+                  aria-label="OAuth connection help" title="How to get an OAuth token">
                   <HelpCircle size={14} />
                 </button>
               )}
@@ -322,7 +217,7 @@ function ProviderRow({
               type="button"
               onClick={onSyncOauth}
               disabled={syncingOauth}
-              className="btn-secondary h-10 w-full justify-center gap-2 text-[10px] font-bold uppercase tracking-widest"
+              className="btn-secondary h-9 gap-2 text-[10px] font-bold uppercase tracking-widest"
             >
               {syncingOauth ? <Loader2 size={14} className="animate-spin" /> : <KeyRound size={14} />}
               {status?.auth_source === 'cli' ? `Reconnect ${cliName} auto-sync` : `Use ${cliName} CLI automatically`}
@@ -330,7 +225,7 @@ function ProviderRow({
           )}
           {mode === 'oauth' && oauthSource === 'cli' && (
             <p className="text-[10px] text-(--text-muted)">
-              Sentinel reads the latest credential from {cliName} before each model request. The credential is not copied into Sentinel.
+              Uses your current {cliName} CLI login.
             </p>
           )}
           {isGeminiOauth && (
@@ -338,9 +233,8 @@ function ProviderRow({
               Import your Antigravity login from macOS Keychain, or paste an exported Antigravity OAuth credential bundle. Sign in with <span className="font-mono text-(--text-primary)">agy</span> first.
             </p>
           )}
-        </div>
-      )}
-    </div>
+      </div>
+    </section>
   );
 }
 
@@ -382,8 +276,9 @@ export function SettingsPage({ initialSection = 'providers' }: { initialSection?
     try {
       const providers = await api.get<ProvidersStatusResponse>('/settings/api-keys/status');
       setProviderStatus(providers);
+      return true;
     } catch {
-      // silent — panel will show loading state
+      return false;
     } finally {
       setLoadingProviders(false);
     }
@@ -582,25 +477,15 @@ export function SettingsPage({ initialSection = 'providers' }: { initialSection?
     }
   }
 
-  async function handleRemoveProvider(provider: 'anthropic' | 'openai' | 'gemini') {
+  async function handleRemoveProvider(provider: Provider) {
     try {
       await api.delete('/settings/api-keys', { provider });
-      const labels = { anthropic: 'Anthropic', openai: 'OpenAI', gemini: 'Gemini' };
+      const labels = { anthropic: 'Anthropic', openai: 'OpenAI', gemini: 'Gemini', ollama: 'Ollama' };
       notify.success(`${labels[provider]} provider removed`);
       await providerUpdated();
-    } catch {
+    } catch (error) {
       notify.error('Failed to remove provider');
-    }
-  }
-
-  async function handleSetPrimary(provider: 'anthropic' | 'openai' | 'gemini' | 'ollama') {
-    try {
-      await api.post('/settings/primary-provider', { provider });
-      const labels = { anthropic: 'Anthropic', openai: 'OpenAI', gemini: 'Gemini', ollama: 'Ollama' };
-      notify.success(`${labels[provider]} set as primary`);
-      await providerUpdated();
-    } catch {
-      notify.error('Failed to set primary provider');
+      throw error;
     }
   }
 
@@ -643,7 +528,6 @@ export function SettingsPage({ initialSection = 'providers' }: { initialSection?
     }
   }
 
-  const primaryProvider = providerStatus?.primary_provider ?? 'anthropic';
   return (
     <AppShell
       title="Settings"
@@ -668,78 +552,19 @@ export function SettingsPage({ initialSection = 'providers' }: { initialSection?
         {section === 'voice' && <VoiceSettings />}
         {section === 'telegram' && <TelegramPage embedded />}
         <div hidden={section !== 'appearance'}><AppearanceSettings /></div>
-        {/* Providers Panel — full width */}
-        <Panel hidden={section !== 'providers'} className="settings-section p-6 space-y-6">
-          <div className="settings-section-heading flex items-center gap-3 pb-4">
-            <div className="p-2 rounded-lg bg-(--surface-2) text-(--accent-solid)">
-              <Bot size={20} />
-            </div>
-            <div className="flex-1">
-              <h2 className="text-sm font-bold uppercase tracking-widest">LLM Providers</h2>
-              <p className="text-[10px] text-(--text-muted) font-medium uppercase tracking-tighter">Configure &amp; manage LLM providers</p>
-            </div>
-
-          </div>
-
-          {loadingProviders && !providerStatus ? (
-            <div className="flex items-center justify-center py-8 text-(--text-muted)">
-              <Loader2 size={20} className="animate-spin" />
-            </div>
-          ) : (
-            <div className="settings-provider-grid">
-              <ProviderRow
-                name="Anthropic"
-                providerId="anthropic"
-                usageActive={section === 'providers'}
-                canSyncOauth
-                syncingOauth={importingClaudeOauth}
-                onSyncOauth={handleSyncClaudeOauth}
-                status={providerStatus?.providers.anthropic ?? null}
-                onSave={(data) => handleSaveProvider('anthropic', data)}
-                saving={savingProvider === 'anthropic'}
-                isPrimary={primaryProvider === 'anthropic'}
-                onSetPrimary={() => handleSetPrimary('anthropic')}
-                onRemove={() => handleRemoveProvider('anthropic')}
-              />
-              <ProviderRow
-                name="OpenAI"
-                providerId="openai"
-                usageActive={section === 'providers'}
-                status={providerStatus?.providers.openai ?? null}
-                onSave={(data) => handleSaveProvider('openai', data)}
-                saving={savingProvider === 'openai'}
-                isPrimary={primaryProvider === 'openai'}
-                onSetPrimary={() => handleSetPrimary('openai')}
-                onRemove={() => handleRemoveProvider('openai')}
-                canSyncOauth={codexOauthImportAvailable}
-                syncingOauth={importingCodexOauth}
-                onSyncOauth={handleSyncCodexOauth}
-              />
-              <OllamaProviderSettings isPrimary={primaryProvider === 'ollama'} onChanged={providerUpdated} onSetPrimary={() => handleSetPrimary('ollama')} />
-              <ProviderRow
-                name="Google Gemini"
-                providerId="gemini"
-                usageActive={section === 'providers'}
-                canSyncOauth
-                syncingOauth={importingGeminiOauth}
-                onSyncOauth={handleSyncGeminiOauth}
-                status={providerStatus?.providers.gemini ?? null}
-                onSave={(data) => handleSaveProvider('gemini', data)}
-                saving={savingProvider === 'gemini'}
-                isPrimary={primaryProvider === 'gemini'}
-                onSetPrimary={() => handleSetPrimary('gemini')}
-                onRemove={() => handleRemoveProvider('gemini')}
-              />
-            </div>
-          )}
-
-          <div className="bg-(--surface-1) p-4 rounded-xl border border-(--border-subtle) flex items-start gap-3">
-            <Info size={16} className="text-(--accent-solid) shrink-0 mt-0.5" />
-            <p className="text-[11px] text-(--text-secondary) leading-relaxed font-medium">
-              Changes take effect immediately. Each effort level (Fast / Normal / Deep Think) routes to the appropriate model per provider. The primary provider handles requests first; the other is used as fallback.
-            </p>
-          </div>
-        </Panel>
+        <ProvidersSettings key={instance} status={providerStatus} loading={loadingProviders} active={section === 'providers'}
+          onChanged={providerUpdated} onRoutingChanged={fetchStatus} onRetry={() => void fetchStatus()} onRemove={handleRemoveProvider}
+          renderConnection={provider => provider === 'ollama'
+            ? <OllamaProviderSettings onChanged={providerUpdated} />
+            : <ProviderConnectionSettings providerId={provider}
+                status={providerStatus?.providers[provider] ?? null}
+                onSave={data => void handleSaveProvider(provider, data)}
+                saving={savingProvider === provider}
+                canSyncOauth={provider !== 'openai' || codexOauthImportAvailable}
+                syncingOauth={provider === 'anthropic' ? importingClaudeOauth : provider === 'openai' ? importingCodexOauth : importingGeminiOauth}
+                onSyncOauth={provider === 'anthropic' ? handleSyncClaudeOauth : provider === 'openai' ? handleSyncCodexOauth : handleSyncGeminiOauth}
+              />}
+        />
 
         {/* Backup & Restore Panel — full width */}
         <Panel hidden={section !== 'backup'} className="settings-section p-6 space-y-6">

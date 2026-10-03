@@ -121,14 +121,15 @@ export function runtimeComponents({ config, paths }) {
   ];
 }
 
-export async function buildWorkspaceRuntime({ config, paths, configuration = "release", workspaceImages }) {
+export async function buildWorkspaceRuntime({ config, paths, configuration = "release", workspaceImages, prepareWorkspaceImages }) {
   const cfg = config.workspaceRuntime;
   if (!cfg?.kernelFileSha256 || !cfg?.kernelSha256 || !cfg?.initImage) {
     throw new Error('runtime.lock.json must pin the workspace runtime assets.');
   }
-  // Fail before compilation if the native Linux image bundle is missing/stale.
+  // Packaging requires prebuilt, verified images. Development can prepare them
+  // after the helper and kernel exist, including on a fresh checkout.
   const dest = path.join(paths.runtimeDir, 'workspace-runtime');
-  const images = stageWorkspaceImages(paths.desktopDir, dest, workspaceImages);
+  let images = prepareWorkspaceImages ? undefined : stageWorkspaceImages(paths.desktopDir, dest, workspaceImages);
   const source = path.join(paths.desktopDir, 'native/macos');
   const manifest = await readFile(path.join(source, 'Package.swift'), 'utf8');
   if (!manifest.includes(`exact: "${cfg.containerizationVersion}"`)) {
@@ -147,6 +148,10 @@ export async function buildWorkspaceRuntime({ config, paths, configuration = "re
   // A running VM keeps the previous signed executable until its owner exits.
   await rename(staging, binary);
   run('python3', [path.join(paths.desktopDir, 'scripts/packaging/graphics/build.py'), path.join(dest, 'graphics')]);
+  if (prepareWorkspaceImages) {
+    const source = await prepareWorkspaceImages(dest);
+    images = stageWorkspaceImages(paths.desktopDir, dest, source);
+  }
   const kernel = JSON.parse(await readFile(path.join(dest, 'kernel-manifest.json'), 'utf8'));
   await writeFile(path.join(dest, 'manifest.json'), JSON.stringify(workspaceRuntimeManifest(cfg, kernel, images), null, 2) + '\n');
   assertNoExternalDylibs(dest, 'Workspace runtime');

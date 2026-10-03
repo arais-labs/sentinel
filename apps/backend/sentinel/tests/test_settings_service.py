@@ -42,6 +42,278 @@ class _FakeSettingsDb:
 
 
 @pytest.mark.asyncio
+async def test_provider_routing_persists_per_instance_and_keeps_enabled_cards_first():
+    service, db, other = SettingsService(), FakeDB(), FakeDB()
+    for provider in ("anthropic", "openai", "gemini"):
+        db.add(SystemSetting(key=f"{provider}_api_key", value="test-key"))
+    before = await service.build_instance_settings(db)
+    assert service.get_provider_routing(before) == {
+        "order": ["anthropic", "openai", "gemini", "ollama"],
+        "automatic": ["anthropic", "openai", "gemini"],
+    }
+    await service.set_provider_routing(
+        db, order=list(ProviderChoice), automatic=[ProviderChoice.GEMINI, ProviderChoice.OPENAI]
+    )
+    saved = await service.build_instance_settings(db)
+    assert service.get_provider_routing(saved) == {
+        "order": ["openai", "gemini", "ollama", "anthropic"],
+        "automatic": ["openai", "gemini"],
+    }
+    assert saved.primary_provider == "openai"
+    assert (await service.build_instance_settings(other)).provider_order is None
+    await service.set_primary_provider(db, provider=ProviderChoice.ANTHROPIC)
+    assert service.get_provider_routing(await service.build_instance_settings(db))["automatic"] == [
+        "anthropic",
+        "openai",
+        "gemini",
+    ]
+    with pytest.raises(HTTPException, match="Configure providers"):
+        await service.set_provider_routing(
+            db, order=list(ProviderChoice), automatic=[ProviderChoice.OLLAMA]
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "provider", [ProviderChoice.ANTHROPIC, ProviderChoice.OPENAI, ProviderChoice.GEMINI]
+)
+async def test_tier_overrides_are_instance_scoped_and_reset_to_defaults(provider):
+    service, db, other_db = SettingsService(), FakeDB(), FakeDB()
+    before = await service.get_provider_models(db, provider)
+    selected = {"fast": "custom-fast", "normal": "custom-normal", "hard": None}
+    await service.set_provider_models(db, provider, namespace=provider.value, models=selected)
+    saved = await service.get_provider_models(db, provider)
+    assert saved["overrides"] == selected
+    assert saved["effective"] == {
+        **before["defaults"],
+        "fast": "custom-fast",
+        "normal": "custom-normal",
+    }
+    assert await service.get_provider_models(other_db, provider) == before
+    await service.set_provider_models(
+        db, provider, namespace=provider.value, models={tier: None for tier in selected}
+    )
+    assert await service.get_provider_models(db, provider) == before
+
+
+@pytest.mark.asyncio
+async def test_openai_api_and_codex_overrides_do_not_overwrite_each_other():
+    service, db = SettingsService(), FakeDB()
+    await service.set_provider_models(
+        db,
+        ProviderChoice.OPENAI,
+        namespace="openai",
+        models={"fast": "api-model", "normal": None, "hard": None},
+    )
+    token = SystemSetting(key="openai_oauth_token", value="test-token")
+    db.add(token)
+    with pytest.raises(HTTPException) as error:
+        await service.set_provider_models(
+            db,
+            ProviderChoice.OPENAI,
+            namespace="openai",
+            models={"fast": "wrong-model", "normal": None, "hard": None},
+        )
+    assert error.value.status_code == 409
+    await service.set_provider_models(
+        db,
+        ProviderChoice.OPENAI,
+        namespace="codex",
+        models={"fast": "oauth-model", "normal": None, "hard": None},
+    )
+    assert (await service.get_provider_models(db, ProviderChoice.OPENAI))["effective"][
+        "fast"
+    ] == "oauth-model"
+    await db.delete(token)
+    assert (await service.get_provider_models(db, ProviderChoice.OPENAI))["effective"][
+        "fast"
+    ] == "api-model"
+
+
+@pytest.mark.asyncio
+async def test_ollama_overrides_validate_tools_before_any_write_and_reset_on_server_change(
+    monkeypatch,
+):
+    from unittest.mock import AsyncMock
+    from sentral.llm.providers.ollama import OllamaProvider
+
+    service, db = SettingsService(), FakeDB()
+    await service.set_ollama(
+        db, base_url="https://models.example", model="default:4b", api_key=None
+    )
+    inspect = AsyncMock(return_value={"capabilities": ["tools"]})
+    monkeypatch.setattr(OllamaProvider, "model_info", inspect)
+    selected = {"fast": "custom:4b", "normal": "custom:4b", "hard": None}
+    await service.set_provider_models(
+        db, ProviderChoice.OLLAMA, namespace="ollama", models=selected
+    )
+    inspect.assert_awaited_once_with("custom:4b")
+    saved = await service.get_provider_models(db, ProviderChoice.OLLAMA)
+    assert saved["effective"] == {"fast": "custom:4b", "normal": "custom:4b", "hard": "default:4b"}
+    inspect.return_value = {"capabilities": []}
+    with pytest.raises(HTTPException, match="support tools"):
+        await service.set_provider_models(
+            db,
+            ProviderChoice.OLLAMA,
+            namespace="ollama",
+            models={**selected, "hard": "unsupported:4b"},
+        )
+    assert await service.get_provider_models(db, ProviderChoice.OLLAMA) == saved
+    await service.set_ollama(
+        db, base_url="https://other-models.example", model="other:4b", api_key=None
+    )
+    after = await service.get_provider_models(db, ProviderChoice.OLLAMA)
+    assert after["overrides"] == {tier: None for tier in selected}
+    assert set(after["effective"].values()) == {"other:4b"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("namespace", ["openai", "codex", "anthropic", "gemini"])
+async def test_model_catalog_requests_use_connection_specific_auth_and_pagination(
+    namespace, monkeypatch
+):
+    import httpx
+    from sentral.llm.providers.anthropic import AnthropicProvider
+    from sentral.llm.providers.codex import CodexProvider
+    from sentral.llm.providers.gemini import GeminiProvider
+    from sentral.llm.providers.openai import OpenAIProvider
+
+    requests = []
+
+    def handle(request):
+        requests.append(request)
+        assert request.method == "GET"
+        if namespace == "codex":
+            assert request.url.path == "/backend-api/codex/models"
+            assert "client_version" in request.url.params
+            assert request.headers["Authorization"] == "Bearer test-token"
+            return httpx.Response(200, json={"models": [{"slug": "gpt-6-luna"}]})
+        if namespace == "openai":
+            assert request.url.path == "/v1/models"
+            assert request.headers["Authorization"] == "Bearer test-token"
+            return httpx.Response(200, json={"data": [{"id": "gpt-6-luna"}]})
+        if namespace == "anthropic":
+            assert request.headers["x-api-key"] == "test-token"
+            if "after_id" not in request.url.params:
+                return httpx.Response(
+                    200,
+                    json={
+                        "data": [{"id": "claude-sonnet-5-5"}],
+                        "has_more": True,
+                        "last_id": "cursor",
+                    },
+                )
+            assert request.url.params["after_id"] == "cursor"
+            return httpx.Response(
+                200, json={"data": [{"id": "claude-opus-5-5"}], "has_more": False}
+            )
+        assert request.headers["x-goog-api-key"] == "test-token"
+        if "pageToken" not in request.url.params:
+            return httpx.Response(
+                200,
+                json={
+                    "models": [
+                        {
+                            "name": "models/gemini-3.8-flash",
+                            "supportedGenerationMethods": ["generateContent"],
+                        },
+                        {
+                            "name": "models/embedding",
+                            "supportedGenerationMethods": ["embedContent"],
+                        },
+                    ],
+                    "nextPageToken": "next",
+                },
+            )
+        assert request.url.params["pageToken"] == "next"
+        return httpx.Response(
+            200,
+            json={
+                "models": [
+                    {
+                        "name": "models/gemini-3.5-flash-lite",
+                        "supportedGenerationMethods": ["generateContent"],
+                    }
+                ]
+            },
+        )
+
+    adapters = {
+        "openai": OpenAIProvider,
+        "codex": CodexProvider,
+        "anthropic": AnthropicProvider,
+        "gemini": GeminiProvider,
+    }
+    adapter = adapters[namespace](
+        "test-token",
+        client_factory=lambda: httpx.AsyncClient(transport=httpx.MockTransport(handle)),
+    )
+    models = await adapter.list_model_ids()
+    assert len(models) == (2 if namespace in ("anthropic", "gemini") else 1)
+    assert len(requests) == len(models)
+    assert "embedding" not in models
+
+
+@pytest.mark.asyncio
+async def test_model_suggestions_failure_keeps_saved_configuration_usable(monkeypatch):
+    from unittest.mock import AsyncMock
+    import httpx
+    from sentral.llm.providers.openai import OpenAIProvider
+
+    service, db = SettingsService(), FakeDB()
+    db.add(SystemSetting(key="openai_api_key", value="test-key"))
+    await service.set_provider_models(
+        db,
+        ProviderChoice.OPENAI,
+        namespace="openai",
+        models={"fast": "gpt-6-luna", "normal": None, "hard": None},
+    )
+    before = await service.get_provider_models(db, ProviderChoice.OPENAI)
+    monkeypatch.setattr(
+        OpenAIProvider,
+        "list_model_ids",
+        AsyncMock(side_effect=httpx.ConnectError("private upstream body")),
+    )
+    result = await service.provider_model_options(db, ProviderChoice.OPENAI)
+    assert result["models"] == []
+    assert "private upstream body" not in result["message"]
+    assert await service.get_provider_models(db, ProviderChoice.OPENAI) == before
+
+
+@pytest.mark.asyncio
+async def test_gemini_oauth_suggestions_use_reported_quota_ids_not_the_api_key_catalog(monkeypatch):
+    from unittest.mock import AsyncMock
+    from app.services.settings.provider_usage import (
+        ProviderUsage,
+        normalize_usage,
+        provider_usage_service,
+    )
+    from sentral.llm.providers.gemini import GeminiProvider
+
+    service, db = SettingsService(), FakeDB()
+    db.add(SystemSetting(key="gemini_oauth_credentials", value="test-oauth-bundle"))
+    usage = ProviderUsage(
+        status="available",
+        windows=normalize_usage(
+            "gemini",
+            {
+                "buckets": [
+                    {"modelId": "gemini-3.8-flash-tiered", "remainingFraction": 1},
+                    {"modelId": "claude-sonnet-4-6", "remainingFraction": 1},
+                ]
+            },
+        ),
+    )
+    monkeypatch.setattr(provider_usage_service, "get_usage", AsyncMock(return_value=usage))
+    catalog = AsyncMock(side_effect=AssertionError("OAuth must not use the API-key catalog"))
+    monkeypatch.setattr(GeminiProvider, "list_model_ids", catalog)
+    result = await service.provider_model_options(db, ProviderChoice.GEMINI)
+    assert result["models"] == ["gemini-3.8-flash-tiered"]
+    assert "quotas" in result["message"]
+    catalog.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_build_instance_settings_restores_provider_keys_without_global_mutation() -> None:
     service = SettingsService()
     old_values = (

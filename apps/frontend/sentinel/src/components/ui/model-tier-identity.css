@@ -1,0 +1,11 @@
+.model-tier-identity { display: flex; align-items: flex-start; gap: 14px; min-width: 0; }
+.model-tier-icon { flex-shrink: 0; margin-top: 2px; color: var(--color-emerald-500); }
+.model-tier-identity[data-tier=normal] .model-tier-icon { color: var(--color-sky-500); }
+.model-tier-identity[data-tier=hard] .model-tier-icon { color: var(--color-rose-500); }
+.model-tier-copy { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.model-tier-name { color: var(--text-primary); font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .1em; }
+.model-tier-description { color: var(--text-secondary); font-size: 9px; font-weight: 500; line-height: 1.4; }
+.model-tier-identity.is-compact { align-items: center; gap: 7px; }
+.model-tier-identity.is-compact .model-tier-icon { width: 12px; height: 12px; margin: 0; }
+.model-tier-identity.is-active :is(.model-tier-icon,.model-tier-name,.model-tier-description) { color: var(--app-bg); }
+.model-tier-identity.is-active .model-tier-description { opacity: .7; }

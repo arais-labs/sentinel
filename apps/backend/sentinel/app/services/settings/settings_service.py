@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import asyncio
+import json
+import httpx
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -12,13 +15,38 @@ import sentral.llm.claude_credentials as claude_credentials_module
 from app.config import Settings, settings
 from app.models.system import SystemSetting
 import sentral.llm.antigravity_credentials as antigravity_credentials_module
-from sentral.llm.codex_credentials import extract_codex_access_token, read_codex_access_token
+from sentral.llm.codex_credentials import (
+    extract_codex_access_token,
+    read_codex_access_token,
+)
 from sentral.llm.ids import ProviderChoice, parse_provider_choice
+from app.services.llm.routing import automatic_provider_order, provider_order
 from sentral.llm.providers.gemini_oauth import GeminiOAuthCredentials
 from app.services.settings.system_settings import (
     delete_system_setting,
     upsert_system_setting,
 )
+
+MODEL_TIERS = ("fast", "normal", "hard")
+MODEL_NAMESPACES = ("anthropic", "openai", "codex", "gemini", "ollama")
+
+
+def provider_model_namespace(config: Settings, provider: ProviderChoice) -> str:
+    if provider == ProviderChoice.OPENAI and (
+        config.openai_oauth_token or config.openai_oauth_source == "cli"
+    ):
+        return "codex"
+    return provider.value
+
+
+def selected_provider_models(config: Settings, provider: ProviderChoice) -> dict[str, str]:
+    namespace = provider_model_namespace(config, provider)
+    return {
+        tier: getattr(config, f"tier_{tier}_{namespace}_model")
+        or (config.ollama_model if provider == ProviderChoice.OLLAMA else "")
+        or ""
+        for tier in MODEL_TIERS
+    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,7 +75,9 @@ class DesktopOauthConnectionResult:
 
 
 class SettingsService:
-    PERSISTED_SETTINGS: tuple[str, ...] = (
+    PERSISTED_SETTINGS: tuple[str, ...] = tuple(
+        f"tier_{tier}_{provider}_model" for provider in MODEL_NAMESPACES for tier in MODEL_TIERS
+    ) + (
         "ollama_base_url",
         "ollama_api_key",
         "ollama_model",
@@ -61,6 +91,8 @@ class SettingsService:
         "gemini_oauth_credentials",
         "gemini_oauth_source",
         "primary_provider",
+        "provider_order",
+        "automatic_providers",
         "default_system_prompt",
         "telegram_bot_token",
         "telegram_owner_user_id",
@@ -75,9 +107,224 @@ class SettingsService:
         )
         for row in result.scalars().all():
             if hasattr(instance_settings, row.key):
-                setattr(instance_settings, row.key, row.value)
+                value = row.value
+                if row.key in ("provider_order", "automatic_providers"):
+                    value = [ProviderChoice(item) for item in json.loads(value)]
+                setattr(instance_settings, row.key, value)
         await self._hydrate_cli_oauth(instance_settings)
         return instance_settings
+
+    def get_provider_routing(self, config: Settings) -> dict:
+        status = self.get_api_keys_status(config)
+        order = provider_order(config)
+        automatic = [
+            provider
+            for provider in automatic_provider_order(config)
+            if status.providers[provider].configured
+        ]
+        return {
+            "order": [
+                provider.value
+                for provider in [*automatic, *(item for item in order if item not in automatic)]
+            ],
+            "automatic": [provider.value for provider in automatic],
+        }
+
+    async def set_provider_routing(
+        self, db: AsyncSession, *, order: list[ProviderChoice], automatic: list[ProviderChoice]
+    ) -> None:
+        config = await self.build_instance_settings(db)
+        status = self.get_api_keys_status(config)
+        if any(not status.providers[provider].configured for provider in automatic):
+            raise HTTPException(
+                status_code=409, detail="Configure providers before enabling automatic routing."
+            )
+        order = [
+            *(provider for provider in order if provider in automatic),
+            *(provider for provider in order if provider not in automatic),
+        ]
+        values = {
+            "provider_order": json.dumps([provider.value for provider in order]),
+            "automatic_providers": json.dumps([provider.value for provider in automatic]),
+            "primary_provider": next(provider.value for provider in order if provider in automatic),
+        }
+        rows = (
+            (await db.execute(select(SystemSetting).where(SystemSetting.key.in_(values))))
+            .scalars()
+            .all()
+        )
+        existing = {row.key: row for row in rows}
+        for key, value in values.items():
+            if key in existing:
+                existing[key].value = value
+            else:
+                db.add(SystemSetting(key=key, value=value))
+        await db.commit()
+
+    async def get_provider_models(self, db: AsyncSession, provider: ProviderChoice) -> dict:
+        config = await self.build_instance_settings(db)
+        namespace = provider_model_namespace(config, provider)
+        keys = {tier: f"tier_{tier}_{namespace}_model" for tier in MODEL_TIERS}
+        rows = (
+            (await db.execute(select(SystemSetting).where(SystemSetting.key.in_(keys.values()))))
+            .scalars()
+            .all()
+        )
+        saved = {row.key: row.value for row in rows}
+        defaults = {
+            tier: (
+                (config.ollama_model or "")
+                if provider == ProviderChoice.OLLAMA
+                else getattr(settings, key)
+            )
+            for tier, key in keys.items()
+        }
+        return {
+            "namespace": namespace,
+            "defaults": defaults,
+            "overrides": {tier: saved.get(key) for tier, key in keys.items()},
+            "effective": selected_provider_models(config, provider),
+        }
+
+    async def set_provider_models(
+        self,
+        db: AsyncSession,
+        provider: ProviderChoice,
+        *,
+        namespace: str,
+        models: dict[str, str | None],
+    ) -> None:
+        config = await self.build_instance_settings(db)
+        if namespace != provider_model_namespace(config, provider):
+            raise HTTPException(
+                409,
+                "Provider connection changed. Reopen provider settings and try again.",
+            )
+        if provider == ProviderChoice.OLLAMA:
+            from sentral.llm.providers.ollama import OllamaProvider
+            from app.services.llm.ollama_models import endpoint_error
+
+            if not config.ollama_base_url or not config.ollama_model:
+                raise HTTPException(409, "Configure an Ollama server and default model first.")
+            adapter = OllamaProvider(config.ollama_base_url, api_key=config.ollama_api_key)
+            for model in dict.fromkeys(value for value in models.values() if value):
+                try:
+                    info = await adapter.model_info(model)
+                except (httpx.HTTPError, ValueError) as exc:
+                    raise HTTPException(502, endpoint_error(exc, "inspect")) from exc
+                if "tools" not in info.get("capabilities", []):
+                    raise HTTPException(422, "Selected Ollama models must support tools.")
+        values = {f"tier_{tier}_{namespace}_model": value for tier, value in models.items()}
+        rows = (
+            (await db.execute(select(SystemSetting).where(SystemSetting.key.in_(values))))
+            .scalars()
+            .all()
+        )
+        existing = {row.key: row for row in rows}
+        for key, value in values.items():
+            if value is None:
+                if key in existing:
+                    await db.delete(existing[key])
+            elif key in existing:
+                existing[key].value = value
+            else:
+                db.add(SystemSetting(key=key, value=value))
+        await db.commit()
+
+    async def provider_model_options(self, db: AsyncSession, provider: ProviderChoice) -> dict:
+        from sentral.llm.providers.anthropic import AnthropicProvider
+        from sentral.llm.providers.openai import OpenAIProvider
+        from sentral.llm.providers.codex import CodexProvider
+        from sentral.llm.providers.gemini import GeminiProvider
+        from sentral.llm.providers.ollama import OllamaProvider
+
+        config = await self.build_instance_settings(db)
+        namespace = provider_model_namespace(config, provider)
+        message = None
+        try:
+            async with asyncio.timeout(10):
+                if provider == ProviderChoice.OLLAMA:
+                    if not config.ollama_base_url:
+                        raise ValueError("Not connected")
+                    models = await OllamaProvider(
+                        config.ollama_base_url, api_key=config.ollama_api_key
+                    ).discover_models()
+                    choices = [
+                        model["name"] for model in models if isinstance(model.get("name"), str)
+                    ]
+                elif provider == ProviderChoice.GEMINI and config.gemini_oauth_credentials:
+                    # Code Assist quota identities are suggestions, not an API-key model catalog.
+                    from app.services.settings.provider_usage import (
+                        provider_usage_service,
+                    )
+
+                    usage = await provider_usage_service.get_usage("gemini", config)
+                    choices = [
+                        window.model_scope
+                        for window in usage.windows
+                        if window.model_scope and window.model_scope.startswith("gemini-")
+                    ]
+                    message = "Suggestions from reported model quotas; availability may vary."
+                else:
+                    adapters = {
+                        ProviderChoice.ANTHROPIC: lambda token: AnthropicProvider(token),
+                        ProviderChoice.OPENAI: lambda token: (
+                            CodexProvider(token)
+                            if namespace == "codex"
+                            else OpenAIProvider(token, base_url=config.openai_base_url)
+                        ),
+                        ProviderChoice.GEMINI: lambda token: GeminiProvider(token),
+                    }
+                    credential = getattr(config, f"{provider.value}_oauth_token", None) or getattr(
+                        config, f"{provider.value}_api_key", None
+                    )
+                    if not credential:
+                        raise ValueError("Not connected")
+                    choices = await adapters[provider](credential).list_model_ids()
+                    if provider == ProviderChoice.OPENAI:
+                        choices = [
+                            model
+                            for model in choices
+                            if model.startswith(("gpt-", "o3", "o4"))
+                            and not any(
+                                kind in model
+                                for kind in (
+                                    "audio",
+                                    "realtime",
+                                    "image",
+                                    "transcribe",
+                                    "search",
+                                )
+                            )
+                        ]
+                    elif provider == ProviderChoice.GEMINI:
+                        choices = [
+                            model
+                            for model in choices
+                            if model.startswith("gemini-")
+                            and not any(kind in model for kind in ("image", "tts"))
+                        ]
+            if not choices and message is None:
+                message = "No model suggestions reported. You can still enter a model ID."
+            return {
+                "namespace": namespace,
+                "models": sorted(set(choices)),
+                "message": message,
+            }
+        except (
+            httpx.HTTPError,
+            TimeoutError,
+            ValueError,
+            RuntimeError,
+            TypeError,
+            AttributeError,
+        ):
+            # Never expose credential-bearing upstream error bodies in Settings.
+            return {
+                "namespace": namespace,
+                "models": [],
+                "message": "Model suggestions are unavailable. You can still enter a model ID.",
+            }
 
     async def set_api_keys(
         self,
@@ -147,12 +394,23 @@ class SettingsService:
             "ollama_model": model,
             "ollama_api_key": api_key or "",
         }
+        tier_keys = [f"tier_{tier}_ollama_model" for tier in MODEL_TIERS]
         rows = (
-            (await db.execute(select(SystemSetting).where(SystemSetting.key.in_(values))))
+            (
+                await db.execute(
+                    select(SystemSetting).where(SystemSetting.key.in_([*values, *tier_keys]))
+                )
+            )
             .scalars()
             .all()
         )
         existing = {row.key: row for row in rows}
+        old_endpoint = existing.get("ollama_base_url")
+        if old_endpoint is not None and old_endpoint.value != base_url:
+            # An installed model name on one server is not a selection on another.
+            for key in tier_keys:
+                if key in existing:
+                    await db.delete(existing[key])
         for key, value in values.items():
             if key in existing:
                 existing[key].value = value
@@ -221,7 +479,8 @@ class SettingsService:
 
         if not token:
             raise HTTPException(
-                status_code=404, detail="Codex auth file was not found at ~/.codex/auth.json."
+                status_code=404,
+                detail="Codex auth file was not found at ~/.codex/auth.json.",
             )
         await self._enable_cli_oauth(db, provider="openai")
         return DesktopOauthConnectionResult(masked_key=self._mask_secret(token) or "****")
@@ -311,7 +570,12 @@ class SettingsService:
 
     async def delete_api_keys(self, db: AsyncSession, *, provider: ProviderChoice) -> None:
         if provider == ProviderChoice.OLLAMA:
-            for key in ("ollama_base_url", "ollama_api_key", "ollama_model"):
+            for key in (
+                "ollama_base_url",
+                "ollama_api_key",
+                "ollama_model",
+                *(f"tier_{tier}_ollama_model" for tier in MODEL_TIERS),
+            ):
                 await delete_system_setting(db, key=key)
             return
         if provider == ProviderChoice.ANTHROPIC:
@@ -380,7 +644,15 @@ class SettingsService:
         *,
         provider: ProviderChoice,
     ) -> None:
-        await upsert_system_setting(db, key="primary_provider", value=provider.value)
+        config = await self.build_instance_settings(db)
+        if config.provider_order is not None:
+            order = [provider, *(item for item in provider_order(config) if item != provider)]
+            automatic = automatic_provider_order(config)
+            if provider not in automatic:
+                automatic.append(provider)
+            await self.set_provider_routing(db, order=order, automatic=automatic)
+        else:
+            await upsert_system_setting(db, key="primary_provider", value=provider.value)
 
     @staticmethod
     async def _persist_if_present(

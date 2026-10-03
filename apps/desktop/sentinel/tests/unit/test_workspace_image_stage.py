@@ -1,6 +1,5 @@
 """Verify native-image staging entirely with tiny local OCI fixture blobs."""
 
-import importlib.util
 import json
 import subprocess
 import sys
@@ -9,15 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from test_workspace_images import builder, image_fixture
-
-spec = importlib.util.spec_from_file_location(
-    "workspace_image_stage",
-    builder.DESKTOP / "scripts/packaging/workspace-images/stage.py",
-)
-stager = importlib.util.module_from_spec(spec)
-with patch.dict(sys.modules, {"build": builder}):
-    spec.loader.exec_module(stager)
+from test_workspace_images import builder, image_fixture, stager, vm_builder
 
 
 def fixture(source, split=False):
@@ -51,6 +42,89 @@ def fixture(source, split=False):
 
 
 class WorkspaceImageStageTests(unittest.TestCase):
+    def test_dev_rebuilds_stale_cache_and_reuses_completed_result(self):
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.object(builder, "DESKTOP", Path(directory)),
+        ):
+            cache = Path(directory) / "build/workspace-images"
+            source = cache / "previous"
+            fixture(source)
+            data = json.loads((source / "manifest.json").read_bytes())
+            data["source_key"] = "stale"
+            (source / "manifest.json").write_bytes(builder.encoded(data))
+            vm_builder.publish_current(cache, source)
+            previous = (source / "manifest.json").read_bytes()
+
+            def build_vm(runtime, init_image, output):
+                self.assertEqual(runtime, Path(directory) / "runtime")
+                self.assertEqual(init_image, "pinned-init")
+                fixture(output / "shared/artifacts", split=True)
+
+            with patch.object(vm_builder, "build_images", side_effect=build_vm) as run:
+                result = vm_builder.ensure_cached(cache, Path(directory) / "runtime", "pinned-init")
+                self.assertEqual(
+                    vm_builder.ensure_cached(cache, Path(directory) / "runtime", "pinned-init"),
+                    result,
+                )
+                self.assertEqual(run.call_count, 1)
+            stager.verify_catalog(result)
+            self.assertEqual((source / "manifest.json").read_bytes(), previous)
+            record = json.loads((cache / "current.json").read_bytes())
+            self.assertEqual((cache / record["directory"]).resolve(), result.resolve())
+
+    def test_dev_failed_build_keeps_current_and_does_not_publish_partial_images(self):
+        for failure in ("build", "verification"):
+            with (
+                self.subTest(failure=failure),
+                tempfile.TemporaryDirectory() as directory,
+                patch.object(builder, "DESKTOP", Path(directory)),
+            ):
+                cache = Path(directory) / "build/workspace-images"
+                cache.mkdir(parents=True)
+                current = cache / "current.json"
+                current.write_text('{"schema":1,"directory":"previous"}')
+                previous = current.read_bytes()
+
+                def fail(runtime, init_image, output):
+                    if failure == "build":
+                        raise subprocess.CalledProcessError(1, "build-vm")
+                    fixture(output / "shared/artifacts", split=True)
+                    (output / "shared/artifacts/alpine/alpine/index.json").write_text("{}")
+
+                with patch.object(vm_builder, "build_images", side_effect=fail):
+                    with self.assertRaises((subprocess.CalledProcessError, ValueError)):
+                        vm_builder.ensure_cached(cache, Path(directory) / "runtime", "pinned-init")
+                self.assertEqual(current.read_bytes(), previous)
+                self.assertFalse((cache / builder.source_key()).exists())
+
+    def test_dev_recovers_cache_selection_without_rebuilding(self):
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.object(builder, "DESKTOP", Path(directory)),
+        ):
+            cache = Path(directory) / "build/workspace-images"
+            source = cache / builder.source_key() / "shared/artifacts"
+            fixture(source, split=True)
+            (cache / "current.json").write_text("invalid json")
+            with patch.object(vm_builder, "build_images") as run:
+                self.assertEqual(
+                    vm_builder.ensure_cached(cache, Path(directory) / "runtime", "pinned-init"),
+                    source.resolve(),
+                )
+                run.assert_not_called()
+
+    def test_explicit_artifact_is_verified_without_replacement(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "explicit"
+            fixture(source)
+            with patch.object(vm_builder, "build_images") as run:
+                stager.verify_catalog(source)
+                (source / "manifest.json").write_text("{}")
+                with self.assertRaises(ValueError):
+                    stager.verify_catalog(source)
+                run.assert_not_called()
+
     def test_verify_only_cli_does_not_publish_or_modify(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "input"

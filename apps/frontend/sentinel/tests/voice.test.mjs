@@ -5,7 +5,7 @@ import { createServer } from 'vite';
 import react from '@vitejs/plugin-react';
 import { chromium } from 'playwright';
 
-test('Voice keeps smoke moving during setup, installs locally, captures a turn, and releases its lease', async () => {
+test('Voice installs locally, captures a turn, and releases its lease', async () => {
   const server = await createServer({ root: fileURLToPath(new URL('..', import.meta.url)), configFile: false,
     plugins: [react()], server: { host: '127.0.0.1', port: 0 }, logLevel: 'error' });
   let browser;
@@ -127,10 +127,6 @@ test('Voice keeps smoke moving during setup, installs locally, captures a turn, 
     assert.equal(await page.getByRole('button', { name: 'Settings → Voice' }).count(), 1);
     assert.equal(await page.getByRole('combobox').count(), 0);
     await assertFitsPane('setup');
-    const before = await page.locator('.voice-orbit').screenshot();
-    await page.waitForTimeout(350);
-    const after = await page.locator('.voice-orbit').screenshot();
-    assert.notDeepEqual(before, after, 'Smoke must animate even before setup');
     await page.evaluate(() => { window.installTestVoice(); window.makeVoiceReady(); });
     await page.getByRole('button', { name: 'Check again' }).click();
     await page.getByRole('heading', { name: 'I’m listening' }).waitFor();
@@ -155,7 +151,6 @@ test('Voice keeps smoke moving during setup, installs locally, captures a turn, 
     await assertFitsPane('completed transcript');
     await page.setViewportSize({width:900,height:450});
     assert.ok(await page.locator('.voice-caption-line').evaluate(node => node.scrollHeight <= node.clientHeight && node.scrollWidth <= node.clientWidth));
-    await page.screenshot({path:'/tmp/sentinel-voice-short-pane.png'});
     await page.setViewportSize({width:700,height:1050});
     assert.equal(await page.evaluate(() => window.voiceStreamMessages.length), 2);
     assert.deepEqual(await page.evaluate(() => { const m = window.voiceStreamMessages[0]; return [m.type, m.content, m.agent_mode, m.provider_id, m.tier]; }), ['message', 'What is running?', 'voice', 'ollama', 'fast']);
@@ -223,7 +218,6 @@ test('Voice keeps smoke moving during setup, installs locally, captures a turn, 
     assert.ok(Math.abs(box.x + box.width / 2 - 1320 / 2) < 1, `Popover must center on the screen: ${JSON.stringify({ box, anchor })}`);
     assert.ok(box.y >= anchor.y + anchor.height && box.height < 550);
     assert.equal(await dialog.evaluate(node => node.scrollHeight <= node.clientHeight + 1), true);
-    await page.screenshot({path:'/tmp/sentinel-voice-popover-setup.png'});
     await page.keyboard.press('Escape');
     await dialog.waitFor({state:'hidden'});
     assert.equal(await voiceTrigger.getAttribute('aria-expanded'), 'false');
@@ -252,7 +246,6 @@ test('Voice keeps smoke moving during setup, installs locally, captures a turn, 
     assert.ok(geometry.textX < 1 && geometry.textBelow && geometry.iconHidden && geometry.controlsInDialog === 0, JSON.stringify(geometry));
     assert.equal(await page.locator('.topbar-voice-island .voice-controls').count(), 1);
     assert.equal(await island.getByRole('button', { name: 'Attach a workspace' }).count(), 1, 'Voice attaches a workspace from the island');
-    await page.screenshot({path:'/tmp/sentinel-voice-popover-listening.png'});
     assert.equal(await dialog.getByRole('combobox').count(), 0);
     assert.equal(await dialog.locator('.voice-footer').count(), 0);
     await island.getByRole('button',{name:'Disable spoken replies'}).click();

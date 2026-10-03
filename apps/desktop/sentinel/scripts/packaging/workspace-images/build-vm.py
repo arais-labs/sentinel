@@ -16,9 +16,13 @@ import queue
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
+
+import build
+import stage
 
 DESKTOP = Path(__file__).resolve().parents[3]
 CACHE = DESKTOP / "build/workspace-image-builders"
@@ -41,25 +45,81 @@ def builder_identity(config, kernel):
     return str(uuid.uuid5(uuid.NAMESPACE_URL, "sentinel-workspace-images:" + identity))
 
 
-def build_config(runtime):
+def build_config(runtime, init_image=None):
     # Private compiler images belong to the source lock, not the shipped
     # workspace catalog. Use the init image paired with the packaged helper.
     source = json.loads((DESKTOP / "runtime.lock.json").read_bytes())["platforms"]["macos-arm64"][
         "workspaceRuntime"
     ]
-    packaged = json.loads((runtime / "manifest.json").read_bytes())
-    return {"buildImage": source["buildImage"], "initImage": packaged["initImage"]}
+    if init_image is None:
+        init_image = json.loads((runtime / "manifest.json").read_bytes())["initImage"]
+    return {"buildImage": source["buildImage"], "initImage": init_image}
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("output", type=Path)
-    parser.add_argument(
-        "--runtime", type=Path, default=DESKTOP / "build/macos-arm64/runtime/workspace-runtime"
-    )
-    parser.add_argument("--distribution", action="append", choices=["ubuntu", "debian", "alpine"])
-    args = parser.parse_args()
-    root = args.output.resolve()
+def publish_current(cache, directory):
+    record = {"schema": 1, "directory": os.path.relpath(directory, cache)}
+    with tempfile.NamedTemporaryFile(dir=cache, prefix=".current-", delete=False) as stream:
+        temporary = Path(stream.name)
+        stream.write(build.encoded(record))
+    try:
+        temporary.replace(cache / "current.json")
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def verified(directory):
+    try:
+        stage.verify_catalog(directory)
+        return True
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+
+
+def ensure_cached(cache, runtime, init_image):
+    cache = cache.resolve()
+    cache.mkdir(parents=True, exist_ok=True)
+    with (cache / "dev.lock").open("a") as lock:
+        print(f"Waiting for workspace image cache: {cache}", flush=True)
+        # Recheck under the lock so concurrent runs reuse the first result.
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            record = json.loads((cache / "current.json").read_bytes())
+            if (
+                record.get("schema") == 1
+                and isinstance(record.get("directory"), str)
+                and record["directory"].strip()
+            ):
+                directory = (cache / record["directory"]).resolve()
+                if verified(directory):
+                    print(f"Using cached workspace images: {directory}", flush=True)
+                    return directory
+        except (OSError, ValueError, AttributeError):
+            pass
+
+        key = build.source_key()
+        root = cache / key
+        directory = root / "shared/artifacts"
+        if not verified(directory):
+            # Preserve old bundles and failed build logs. Publish only after
+            # all roots verify; a failed run must not replace current.json.
+            attempt = cache / f".build-{key}-{uuid.uuid4().hex}"
+            print(
+                "Workspace images are missing or stale; rebuilding in the persistent VM.",
+                flush=True,
+            )
+            print(f"Build output and logs: {attempt}", flush=True)
+            build_images(runtime, init_image, attempt)
+            stage.verify_catalog(attempt / "shared/artifacts")
+            if root.exists():
+                root = cache / f"{key}-{uuid.uuid4().hex}"
+            attempt.rename(root)
+            directory = root / "shared/artifacts"
+        publish_current(cache, directory)
+        print(f"Workspace images ready: {directory}", flush=True)
+        return directory
+
+
+def build_images(runtime, init_image, root, distributions=None):
     root.mkdir(parents=True, exist_ok=False)
     shared = root / "shared"
     shutil.copytree(DESKTOP / "native/workspace-images", shared / "native/workspace-images")
@@ -67,11 +127,14 @@ def main():
     scripts.mkdir(parents=True)
     shutil.copy2(Path(__file__).with_name("build.py"), scripts / "build.py")
     helper = root / "sentinel-workspace-runtime"
-    shutil.copy2(args.runtime / helper.name, helper)
+    shutil.copy2(runtime / helper.name, helper)
     kernel = root / "kernel"
-    shutil.copy2(args.runtime / "kernel", kernel)
-    shutil.copy2(args.runtime / "manifest.json", root / "manifest.json")
-    config = build_config(args.runtime)
+    shutil.copy2(runtime / "kernel", kernel)
+    config = build_config(runtime, init_image)
+    if (runtime / "manifest.json").is_file():
+        shutil.copy2(runtime / "manifest.json", root / "manifest.json")
+    else:
+        (root / "manifest.json").write_text(json.dumps(config) + "\n")
     bases = json.loads((shared / "native/workspace-images/bases.json").read_bytes())
     workspace = builder_identity(config, kernel)
     # BuildKit revisions get their own builder without discarding the VM's
@@ -178,7 +241,7 @@ def main():
                     builder,
                 ]
             )
-            for distribution in args.distribution or ["ubuntu", "debian", "alpine"]:
+            for distribution in distributions or ["ubuntu", "debian", "alpine"]:
                 destination = shared / "artifacts" / distribution
                 command(
                     [
@@ -209,6 +272,33 @@ def main():
                 f"Owned build VM stopped; persistent cache retained at {CACHE}; artifacts and logs at {root}",
                 flush=True,
             )
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("output", type=Path)
+    parser.add_argument(
+        "--runtime", type=Path, default=DESKTOP / "build/macos-arm64/runtime/workspace-runtime"
+    )
+    parser.add_argument("--distribution", action="append", choices=["ubuntu", "debian", "alpine"])
+    parser.add_argument(
+        "--init-image",
+        help="Pinned init image for a freshly built helper before runtime publication",
+    )
+    parser.add_argument(
+        "--cache",
+        action="store_true",
+        help="Treat output as a source-keyed cache and reuse verified images",
+    )
+    args = parser.parse_args()
+    if args.cache:
+        if args.distribution:
+            parser.error("--cache requires the complete image catalog; omit --distribution")
+        ensure_cached(args.output.resolve(), args.runtime.resolve(), args.init_image)
+    else:
+        build_images(
+            args.runtime.resolve(), args.init_image, args.output.resolve(), args.distribution
+        )
 
 
 if __name__ == "__main__":

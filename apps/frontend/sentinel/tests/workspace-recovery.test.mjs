@@ -57,7 +57,6 @@ test('only the affected workspace offers recovery, with themed confirmation and 
     await recover.click(); await page.keyboard.press('Escape'); await dialog.waitFor({state:'hidden'});
     await recover.click();
     assert.notEqual(await dialog.evaluate(el=>getComputedStyle(el).backgroundColor),'rgba(0, 0, 0, 0)');
-    await page.screenshot({path:'/tmp/sentinel-workspace-recovery-dialog.png'});
     fail=true; await dialog.getByRole('button',{name:'Recover and restart'}).click();
     await dialog.getByRole('alert').waitFor(); assert.equal(await dialog.isVisible(),true);
     assert.equal(await dialog.getByRole('button',{name:'Recover and restart'}).isEnabled(),true);

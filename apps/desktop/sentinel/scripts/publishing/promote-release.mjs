@@ -4,7 +4,7 @@
 // DMG remains byte-for-byte identical. Only payload channel/commit metadata is
 // rewritten before the archive is repacked and hashed for its target index.
 import { createHash } from 'node:crypto';
-import { cp, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { appendFile, cp, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -95,6 +95,7 @@ async function main() {
     await mkdir(downloaded, { recursive: true });
     await mkdir(staging, { recursive: true });
     let sourceLabel;
+    let candidateRunId;
     let sourceMetadataCommit = sourceCommit;
     if (targetChannel === 'beta') {
       const runId = process.env.PROMOTION_RUN_ID || output('gh', [
@@ -110,6 +111,7 @@ async function main() {
       if (!isSuccessfulCandidateRun({ headSha, event, status, conclusion }, sourceCommit)) {
         throw new Error(`PR workflow run ${runId} is not the successful candidate being promoted.`);
       }
+      candidateRunId = runId;
       for (const artifact of ['desktop-installer', 'desktop-payload']) {
         run('gh', [
           'run', 'download', runId,
@@ -184,6 +186,9 @@ async function main() {
     await writeFile(path.join(distRoot, 'TESTING.txt'),
       `Promoted from ${sourceLabel}.\nDMG reused byte-for-byte; payload code reused with ${targetChannel} metadata.\n`);
     console.log(`Promoted ${sourceLabel} assets to ${targetChannel} commit ${targetCommit.slice(0, 7)}.`);
+    if (candidateRunId && process.env.GITHUB_OUTPUT) {
+      await appendFile(process.env.GITHUB_OUTPUT, `candidate-run-id=${candidateRunId}\n`);
+    }
   } finally {
     await rm(temporary, { recursive: true, force: true });
   }

@@ -51,6 +51,8 @@ class TierConfig:
 
     primary: TierModelConfig
     fallbacks: list[TierModelConfig] = field(default_factory=list)
+    manual_options: list[TierModelConfig] = field(default_factory=list)
+    automatic_enabled: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -194,20 +196,24 @@ class TierProvider(LLMProvider):
                 )
                 for fb in tier_cfg.fallbacks
             ]
+            primary_context = self._session_option(tier_cfg.primary)
 
             result.append(
                 ModelOptionResponse(
                     provider_options=[
-                        self._session_option(c) for c in [tier_cfg.primary, *tier_cfg.fallbacks]
+                        self._session_option(c)
+                        for c in (
+                            tier_cfg.manual_options or [tier_cfg.primary, *tier_cfg.fallbacks]
+                        )
                     ],
                     label=label,
                     description=description,
                     tier=tier_name,
                     primary_provider_id=self._required_provider_id(tier_cfg.primary.provider),
                     primary_model_id=tier_cfg.primary.model,
-                    context_window_tokens=self.model_context(tier_name)["context_window_tokens"],
-                    context_token_budget=self.model_context(tier_name)["context_token_budget"],
-                    output_reserve_tokens=self.model_context(tier_name)["output_reserve_tokens"],
+                    context_window_tokens=primary_context["context_window_tokens"],
+                    context_token_budget=primary_context["context_token_budget"],
+                    output_reserve_tokens=primary_context["output_reserve_tokens"],
                     fallback_providers=fallback_providers,
                     thinking_budget=thinking_budget,
                     reasoning_effort=rc.reasoning_effort or None,
@@ -267,9 +273,14 @@ class TierProvider(LLMProvider):
             cfg = self._tiers[TierName(tier)]
             candidates = [cfg.primary, *cfg.fallbacks]
             if provider != "auto":
+                candidates = cfg.manual_options or candidates
                 candidates = [c for c in candidates if c.provider.provider_id == provider]
                 if not candidates:
                     raise ValueError("Selected provider is not configured")
+            elif not cfg.automatic_enabled:
+                raise ValueError(
+                    "No automatic provider is configured. Enable one in provider settings."
+                )
             if fast_mode:
                 if not candidates[0].provider.supports_fast_mode(candidates[0].model):
                     raise ValueError("Fast mode is not supported by this provider and model")
@@ -285,7 +296,12 @@ class TierProvider(LLMProvider):
             return TierConfig(primary=candidates[0], fallbacks=candidates[1:])
         tier_name = parse_tier_name(model)
         if tier_name is not None:
-            return self._tiers.get(tier_name) or self._tiers[self._default_tier]
+            config = self._tiers.get(tier_name) or self._tiers[self._default_tier]
+            if not config.automatic_enabled:
+                raise ValueError(
+                    "No automatic provider is configured. Enable one in provider settings."
+                )
+            return config
         return self._resolve_non_tier_model(model)
 
     def _resolve_non_tier_model(self, model: str) -> TierConfig:
@@ -309,7 +325,7 @@ class TierProvider(LLMProvider):
 
     @staticmethod
     def _find_model_config(tier: TierConfig, model: str) -> TierModelConfig | None:
-        configs = [tier.primary, *tier.fallbacks]
+        configs = tier.manual_options or [tier.primary, *tier.fallbacks]
         for cfg in configs:
             if cfg.model == model:
                 return cfg

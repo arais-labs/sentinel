@@ -165,3 +165,30 @@ def test_current_gemini_models_support_reasoning_and_context(model):
     assert reasoning_kind(model) == "effort"
     assert reasoning_levels(model) == ["low", "medium", "high"]
     assert model_context(model)["context_window_tokens"] == 1_048_576
+
+
+@pytest.mark.parametrize(
+    "model,none_supported,window",
+    [
+        ("gpt-6-luna", True, 1_050_000),
+        ("gpt-6.1-sol", False, 1_050_000),
+        ("gpt-6-astra", False, 1_050_000),
+        ("claude-sonnet-5-5", False, 1_000_000),
+        ("claude-opus-5-5", False, 1_000_000),
+        ("claude-fable-5-1", False, 1_000_000),
+    ],
+)
+def test_current_defaults_expose_supported_efforts_and_context(model, none_supported, window):
+    from app.services.llm.session_selection import reasoning_levels
+    from sentral.llm.model_limits import model_context
+
+    assert reasoning_levels(model) == (
+        (["none"] if none_supported else []) + ["low", "medium", "high", "xhigh", "max"]
+    )
+    assert model_context(model)["context_window_tokens"] == window
+    config = TierModelConfig(OpenAIProvider("test"), model, ReasoningConfig())
+    if none_supported:
+        assert with_reasoning(config, "none").reasoning_config.reasoning_effort == "none"
+    else:
+        with pytest.raises(ValueError, match="not supported"):
+            with_reasoning(config, "none")

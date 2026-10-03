@@ -357,7 +357,10 @@ class GeminiOAuthProvider(GeminiProvider):
                 rc.reasoning_effort or "", rc.thinking_budget or 10001
             )
             budget = min(max(128, budget), 32768)
-            config["thinkingConfig"] = {"thinkingBudget": budget, "includeThoughts": True}
+            config["thinkingConfig"] = {
+                "thinkingBudget": budget,
+                "includeThoughts": True,
+            }
             config["maxOutputTokens"] = min(max(config["maxOutputTokens"], budget + 4096), limit)
 
     async def _stream_once(
@@ -736,8 +739,13 @@ class GeminiOAuthProvider(GeminiProvider):
     def _record_model_capacity(self, model: str) -> None:
         self._model_cooldowns[model] = time.monotonic() + _MODEL_CAPACITY_COOLDOWN_SECONDS
 
+    @staticmethod
+    def resolve_model_id(model: str) -> str:
+        """Canonical requested model, independent of temporary capacity fallbacks."""
+        return _CODE_ASSIST_MODEL_RESOLUTIONS.get(model, model)
+
     def _iter_candidate_models(self, model: str) -> list[str]:
-        resolved_model = _CODE_ASSIST_MODEL_RESOLUTIONS.get(model, model)
+        resolved_model = self.resolve_model_id(model)
         candidates = [resolved_model]
         for fallback_model in _CODE_ASSIST_MODEL_FALLBACKS.get(resolved_model, ()):
             if fallback_model not in candidates:

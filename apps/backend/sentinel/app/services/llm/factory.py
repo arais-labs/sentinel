@@ -8,13 +8,15 @@ from sentral.llm.providers.openai import OpenAIProvider
 from sentral.llm.generic.base import LLMProvider
 from app.services.llm.tier import TierConfig, TierModelConfig, TierProvider
 from sentral.llm.generic.types import ReasoningConfig
-from sentral.llm.ids import ProviderChoice, TierName, parse_provider_choice
+from sentral.llm.ids import ProviderChoice, TierName
+from app.services.llm.routing import automatic_provider_order, provider_order
 from sentral.llm.providers.gemini_oauth import GeminiOAuthProvider
 from app.config import Settings
 from sentral.llm.antigravity_credentials import read_antigravity_credentials
 from sentral.llm.claude_credentials import read_claude_access_token, renew_claude_access_token
 from sentral.llm.codex_credentials import read_codex_access_token
 from app.services.llm.live_credentials import LiveCredentialProvider
+from app.services.llm.session_selection import reasoning_kind
 from sentral.llm.providers.ollama import OllamaProvider
 
 DEFAULT_TIER_NAME = TierName.NORMAL
@@ -67,7 +69,11 @@ def build_tier_provider_from_settings(
                 model=anthropic_model,
                 reasoning_config=ReasoningConfig(
                     max_tokens=max_tokens,
-                    reasoning_effort=anthropic_reasoning_effort or None,
+                    reasoning_effort=(
+                        (anthropic_reasoning_effort or None)
+                        if reasoning_kind(anthropic_model) == "effort"
+                        else None
+                    ),
                 ),
                 temperature=temperature,
             )
@@ -79,7 +85,12 @@ def build_tier_provider_from_settings(
                 model=codex_model if openai_uses_codex else openai_model,
                 reasoning_config=ReasoningConfig(
                     max_tokens=max_tokens,
-                    reasoning_effort=openai_reasoning_effort or None,
+                    reasoning_effort=(
+                        (openai_reasoning_effort or None)
+                        if reasoning_kind(codex_model if openai_uses_codex else openai_model)
+                        == "effort"
+                        else None
+                    ),
                 ),
                 temperature=temperature,
             )
@@ -91,7 +102,11 @@ def build_tier_provider_from_settings(
                 model=gemini_model,
                 reasoning_config=ReasoningConfig(
                     max_tokens=max_tokens,
-                    thinking_budget=gemini_thinking_budget if gemini_thinking_budget > 0 else None,
+                    thinking_budget=(
+                        gemini_thinking_budget
+                        if gemini_thinking_budget > 0 and reasoning_kind(gemini_model)
+                        else None
+                    ),
                 ),
                 temperature=temperature,
             )
@@ -100,25 +115,24 @@ def build_tier_provider_from_settings(
         if ollama is not None:
             candidates[ProviderChoice.OLLAMA] = TierModelConfig(
                 provider=ollama,
-                model=settings.ollama_model,
+                model=getattr(settings, f"tier_{tier_name.value}_ollama_model")
+                or settings.ollama_model,
                 reasoning_config=ReasoningConfig(max_tokens=min(max_tokens, 8192)),
                 temperature=temperature,
             )
         if not candidates:
             continue
 
-        primary_name = parse_provider_choice(settings.primary_provider)
-        if primary_name in candidates:
-            primary = candidates[primary_name]
-            fallbacks = [
-                cfg for provider_name, cfg in candidates.items() if provider_name != primary_name
-            ]
-        else:
-            ordered = list(candidates.values())
-            primary = ordered[0]
-            fallbacks = ordered[1:]
-
-        tiers[tier_name] = TierConfig(primary=primary, fallbacks=fallbacks)
+        automatic = [
+            candidates[name] for name in automatic_provider_order(settings) if name in candidates
+        ]
+        manual = [candidates[name] for name in provider_order(settings) if name in candidates]
+        tiers[tier_name] = TierConfig(
+            primary=automatic[0] if automatic else manual[0],
+            fallbacks=automatic[1:],
+            manual_options=manual,
+            automatic_enabled=bool(automatic),
+        )
 
     if not tiers:
         return None

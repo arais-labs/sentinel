@@ -101,7 +101,6 @@ test('machine runtime actions match state and preserve both Sentinel themes', { 
       await page.waitForTimeout(250); // Allow existing theme/button transitions to finish.
       const color = await page.locator('.machine-card').first().evaluate(el => getComputedStyle(el).backgroundColor);
       assert.notEqual(color, 'rgba(0, 0, 0, 0)');
-      if (process.env.SENTINEL_SCREENSHOT_DIR) await page.screenshot({ path: process.env.SENTINEL_SCREENSHOT_DIR + '/runtime-' + theme + '.png', fullPage: true });
     }
     await page.setViewportSize({ width: 360, height: 1000 });
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
@@ -128,7 +127,6 @@ test('machine runtime actions match state and preserve both Sentinel themes', { 
       await page.waitForTimeout(250);
       const bounds = await dialog.boundingBox();
       assert.ok(bounds.y >= 0 && bounds.y + bounds.height <= 760);
-      if (process.env.SENTINEL_SCREENSHOT_DIR) await page.screenshot({path: process.env.SENTINEL_SCREENSHOT_DIR + '/runtime-dialog-' + theme + '.png'});
     }
     await page.setViewportSize({width: 360, height: 640});
     const footer = await dialog.getByRole('button', {name: 'Repair & restart'}).boundingBox();

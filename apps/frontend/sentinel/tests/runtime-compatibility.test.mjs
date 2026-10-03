@@ -50,7 +50,6 @@ test('desktop centers failures and only remote runtime upgrades offer an updater
     const button = await update.boundingBox();
     assert.ok(Math.abs((message.y + button.y + button.height) / 2 - (panel.y + panel.height / 2)) < panel.height * .18);
     assert.ok(Math.abs(button.x + button.width / 2 - (panel.x + panel.width / 2)) < 2);
-    await page.screenshot({ path: '/tmp/sentinel-runtime-centered.png' });
     await update.click();
     const dialog = page.getByRole('dialog', { name: 'Update runtime', exact: true });
     await dialog.getByRole('button', { name: 'Update runtime', exact: true }).waitFor();

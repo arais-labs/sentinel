@@ -2609,7 +2609,7 @@ def provider_for(events, captured):
 
 
 def test_current_models_use_responses_without_temperature():
-    for model in ("gpt-5.6-sol", "gpt-5.6", "gpt-6-astra"):
+    for model in ("gpt-5.6-sol", "gpt-5.6", "gpt-6-astra", "gpt-6.1-sol", "gpt-6-luna"):
         captured = []
         item = {
             "type": "message",
@@ -2649,7 +2649,9 @@ def test_current_models_use_responses_without_temperature():
         path, payload = captured[0]
         assert path == "/v1/responses"
         assert "temperature" not in payload
-        assert payload["reasoning"]["effort"] == ("low" if model == "gpt-6-astra" else "none")
+        assert payload["reasoning"]["effort"] == (
+            "low" if model in {"gpt-6-astra", "gpt-6.1-sol"} else "none"
+        )
         assert payload["store"] is False
         assert payload["include"] == ["reasoning.encrypted_content"]
 
@@ -2794,7 +2796,15 @@ def test_lite_format_preserves_history():
 
 
 @pytest.mark.asyncio
-async def test_websocket_default_yields_before_completion_and_closes(monkeypatch):
+@pytest.mark.parametrize(
+    "model,effort",
+    [
+        ("gpt-6-astra", "low"),
+        ("gpt-6.1-sol", "low"),
+        ("gpt-6-luna", "none"),
+    ],
+)
+async def test_websocket_default_yields_before_completion_and_closes(monkeypatch, model, effort):
     sent = []
     closed = []
     output = [
@@ -2812,7 +2822,7 @@ async def test_websocket_default_yields_before_completion_and_closes(monkeypatch
             "type": "response.completed",
             "response": {
                 "status": "completed",
-                "model": "gpt-6-astra",
+                "model": model,
                 "output": output,
                 "usage": {"input_tokens": 12, "output_tokens": 3},
             },
@@ -2839,12 +2849,19 @@ async def test_websocket_default_yields_before_completion_and_closes(monkeypatch
         return Socket()
 
     monkeypatch.setattr("sentral.llm.providers.codex.connect", connect)
+
+    def current_catalog(request):
+        data = catalog(request).json()
+        data["models"][0]["slug"] = model
+        return httpx.Response(200, json=data)
+
     provider = CodexProvider(
-        "test", client_factory=lambda: httpx.AsyncClient(transport=httpx.MockTransport(catalog))
+        "test",
+        client_factory=lambda: httpx.AsyncClient(transport=httpx.MockTransport(current_catalog)),
     )
     stream = provider.stream(
         [UserMessage(content="Hello")],
-        "gpt-6-astra",
+        model,
         reasoning_config=ReasoningConfig(reasoning_effort="none"),
     )
     assert (await anext(stream)).type == "start"
@@ -2855,7 +2872,8 @@ async def test_websocket_default_yields_before_completion_and_closes(monkeypatch
     assert events[-1].message.responses_output == output
     assert events[-1].message.usage.input_tokens == 12
     assert sent[0]["type"] == "response.create"
-    assert sent[0]["reasoning"]["effort"] == "low"
+    assert sent[0]["model"] == model
+    assert sent[0]["reasoning"]["effort"] == effort
     assert closed == []
     await provider.aclose()
     assert closed == [True]
@@ -2958,7 +2976,16 @@ async def test_responses_cancellation_closes_transport(oauth):
     assert closed == [True]
 
 
-@pytest.mark.parametrize("model", ["claude-sonnet-5", "claude-opus-5", "claude-fable-5-1"])
+@pytest.mark.parametrize(
+    "model",
+    [
+        "claude-sonnet-5",
+        "claude-opus-5",
+        "claude-fable-5-1",
+        "claude-sonnet-5-5",
+        "claude-opus-5-5",
+    ],
+)
 @pytest.mark.parametrize("streaming", [False, True])
 def test_current_claude_uses_adaptive_thinking(model, streaming):
     client = _FakeAsyncClient(
@@ -2982,7 +3009,14 @@ def test_current_claude_uses_adaptive_thinking(model, streaming):
     _run(request())
     payload = (client.stream_calls if streaming else client.post_calls)[0]["json"]
     assert payload["max_tokens"] == 8192
-    assert payload["thinking"] == {"type": "adaptive"}
+    assert payload["thinking"]["type"] == "adaptive"
+    if model in {"claude-fable-5-1", "claude-sonnet-5-5", "claude-opus-5-5"}:
+        assert payload["thinking"]["display"] == "summarized"
+        assert payload["thinking"]["block_binding"] == {"prefix_mismatch_behavior": "drop_block"}
+        request = (client.stream_calls if streaming else client.post_calls)[0]
+        assert "thinking-binding-controls-2026-08-01" in request["headers"]["anthropic-beta"]
+    else:
+        assert payload["thinking"] == {"type": "adaptive"}
     assert payload["output_config"] == {"effort": "high"}
     assert "temperature" not in payload
 

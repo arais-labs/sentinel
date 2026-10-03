@@ -18,9 +18,13 @@ enum WorkspaceDistribution: String {
     var shutdownSignal: Signal { self == .alpine ? .term : Signal.Linux.rtmin(offset: 3) }
 
     // Build VMs are explicit raw-start tooling, never a workspace boot fallback.
-    // Compiler images need only a live process; the Alpine build image is DinD.
-    var buildCommand: [String] {
-        if self == .alpine { return ["dockerd-entrypoint.sh", "dockerd", "--host=unix:///var/run/docker.sock"] }
+    // Only an image declaring the Docker entrypoint needs DinD. Plain Alpine
+    // compiler roots, like Debian/Ubuntu roots, need only a live process.
+    static func buildCommand(entrypoint: [String]?) -> [String] {
+        if let entrypoint, let executable = entrypoint.first,
+           URL(fileURLWithPath: executable).lastPathComponent == "dockerd-entrypoint.sh" {
+            return entrypoint + ["dockerd", "--host=unix:///var/run/docker.sock"]
+        }
         return ["/bin/sleep", "infinity"]
     }
 }

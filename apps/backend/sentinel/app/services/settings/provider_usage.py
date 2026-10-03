@@ -14,6 +14,8 @@ import httpx
 from pydantic import BaseModel, Field
 
 from app.config import Settings
+from app.services.settings.settings_service import selected_provider_models
+from sentral.llm.ids import ProviderChoice
 from sentral.llm.providers.anthropic import AnthropicProvider
 from sentral.llm.providers.codex import CodexProvider
 from sentral.llm.providers.gemini_oauth import GeminiCodeAssistHTTPError, GeminiOAuthProvider
@@ -27,6 +29,7 @@ class UsageWindow(BaseModel):
     label: str
     remaining_percent: float
     resets_at: datetime | None = None
+    model_scope: str | None = None
 
 
 class ProviderUsage(BaseModel):
@@ -57,12 +60,16 @@ def _reset(value) -> datetime | None:
     return None
 
 
-def _window(key, label, remaining, reset) -> UsageWindow | None:
+def _window(key, label, remaining, reset, model_scope=None) -> UsageWindow | None:
     percent = _number(remaining)
     if percent is None or not 0 <= percent <= 100:
         return None
     return UsageWindow(
-        key=key, label=label, remaining_percent=round(percent, 2), resets_at=_reset(reset)
+        key=key,
+        label=label,
+        remaining_percent=round(percent, 2),
+        resets_at=_reset(reset),
+        model_scope=model_scope,
     )
 
 
@@ -79,7 +86,8 @@ def normalize_usage(provider: OAuthProvider, data: dict) -> list[UsageWindow]:
         ):
             value = data.get(key)
             if isinstance(value, dict) and (used := _number(value.get("utilization"))) is not None:
-                windows.append(_window(key, label, 100 - used, value.get("resets_at")))
+                scope = {"seven_day_sonnet": "sonnet", "seven_day_opus": "opus"}.get(key)
+                windows.append(_window(key, label, 100 - used, value.get("resets_at"), scope))
         # Newer Claude responses name model-specific limits (including Fable)
         # in `limits`; opaque top-level rollout fields are not reliable labels.
         limits = data.get("limits")
@@ -90,21 +98,28 @@ def normalize_usage(provider: OAuthProvider, data: dict) -> list[UsageWindow]:
             if not isinstance(kind, str):
                 continue
             label = {"session": "5 hours", "weekly_all": "Weekly"}.get(kind)
+            model_scope = None
             if kind == "weekly_scoped":
                 scope = limit.get("scope")
                 model = scope.get("model") if isinstance(scope, dict) else None
                 name = model.get("display_name") if isinstance(model, dict) else None
                 if isinstance(name, str) and name:
                     label = f"{name} · Weekly"
+                    identifier = model.get("id")
+                    model_scope = (
+                        identifier if isinstance(identifier, str) and identifier else name.lower()
+                    )
             if not label:
                 continue
-            window = _window(f"limit_{index}", label, 100 - used, limit.get("resets_at"))
+            window = _window(
+                f"limit_{index}", label, 100 - used, limit.get("resets_at"), model_scope
+            )
             if window:
                 windows = [item for item in windows if item is not None and item.label != label]
                 windows.append(window)
         windows.sort(key=lambda item: {"Weekly": 0, "5 hours": 1}.get(item.label, 2) if item else 3)
     elif provider == "openai":
-        buckets = [("codex", "", data.get("rate_limit"))]
+        buckets = [("codex", "", data.get("rate_limit"), None)]
         additional = data.get("additional_rate_limits")
         if isinstance(additional, list):
             for index, bucket in enumerate(additional):
@@ -122,9 +137,14 @@ def normalize_usage(provider: OAuthProvider, data: dict) -> list[UsageWindow]:
                             f"extra_{index}",
                             label if isinstance(label, str) else "",
                             bucket.get("rate_limit"),
+                            (
+                                bucket.get("normal_model_slug")
+                                if isinstance(bucket.get("normal_model_slug"), str)
+                                else None
+                            ),
                         )
                     )
-        for key, prefix, bucket in buckets:
+        for key, prefix, bucket, model_scope in buckets:
             if not isinstance(bucket, dict):
                 continue
             for window_name in ("primary_window", "secondary_window"):
@@ -141,7 +161,13 @@ def normalize_usage(provider: OAuthProvider, data: dict) -> list[UsageWindow]:
                 if prefix:
                     label = f"{prefix} · {label}"
                 windows.append(
-                    _window(f"{key}_{window_name}", label, 100 - used, value.get("reset_at"))
+                    _window(
+                        f"{key}_{window_name}",
+                        label,
+                        100 - used,
+                        value.get("reset_at"),
+                        model_scope,
+                    )
                 )
     else:
         # Google reports per-model buckets, not a guaranteed weekly window.
@@ -158,9 +184,73 @@ def normalize_usage(provider: OAuthProvider, data: dict) -> list[UsageWindow]:
             if isinstance(token_type, str) and token_type:
                 label = f"{label} · {token_type.lower()}"
             windows.append(
-                _window(f"bucket_{index}", label, fraction * 100, bucket.get("resetTime"))
+                _window(
+                    f"bucket_{index}",
+                    label,
+                    fraction * 100,
+                    bucket.get("resetTime"),
+                    model if isinstance(model, str) and model else "unknown",
+                )
             )
     return [window for window in windows if window is not None]
+
+
+def select_model_usage(
+    usage: ProviderUsage, provider: OAuthProvider, config: Settings
+) -> ProviderUsage:
+    """Project an account snapshot without modifying the credential-scoped cache.
+
+    Match only explicit identities or the adapter's existing alias resolution;
+    equal percentages do not establish that two models share a quota.
+    """
+    selected = list(
+        dict.fromkeys(selected_provider_models(config, ProviderChoice(provider)).values())
+    )
+
+    def matches(model: str, scope: str) -> bool:
+        if provider == "gemini":
+            return GeminiOAuthProvider.resolve_model_id(
+                model
+            ) == GeminiOAuthProvider.resolve_model_id(scope)
+        if provider == "anthropic" and scope in ("sonnet", "opus", "haiku", "fable", "mythos"):
+            return (
+                model.startswith(f"claude-{scope}-")
+                or model.startswith(f"claude-3-5-{scope}-")
+                or model.startswith(f"claude-3-7-{scope}-")
+            )
+        return model == scope
+
+    result = usage.model_copy(deep=True)
+    result.windows = [
+        window
+        for window in result.windows
+        if window.model_scope is None
+        or any(matches(model, window.model_scope) for model in selected)
+    ]
+    if provider == "gemini":
+        # Prefer the exact ID sent by the adapter. Aliases are only a fallback,
+        # not additional limits for the same selected model (e.g. pro-agent).
+        scopes = list(dict.fromkeys(window.model_scope for window in result.windows))
+        preferred = set()
+        for model in selected:
+            resolved = GeminiOAuthProvider.resolve_model_id(model)
+            scope = (
+                resolved
+                if resolved in scopes
+                else (
+                    model
+                    if model in scopes
+                    else next((scope for scope in scopes if scope and matches(model, scope)), None)
+                )
+            )
+            if scope:
+                preferred.add(scope)
+        result.windows = [
+            window
+            for window in result.windows
+            if window.model_scope is None or window.model_scope in preferred
+        ]
+    return result
 
 
 class ProviderUsageService:

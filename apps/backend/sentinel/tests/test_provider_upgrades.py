@@ -183,18 +183,23 @@ async def test_stream_preserves_signed_and_opaque_blocks():
     assert message.usage.input_tokens == 4101
 
 
+@pytest.mark.parametrize("model", ["gpt-6-astra", "gpt-6.1-sol", "gpt-6-luna"])
 @pytest.mark.asyncio
-async def test_public_openai_programmatic_tools_and_caller_replay():
+async def test_public_openai_programmatic_tools_and_caller_replay(model):
     from sentral.llm.providers.openai import OpenAIProvider
 
     provider = OpenAIProvider("test")
     payload = {
-        "model": "gpt-6-astra",
+        "model": model,
         "tool_choice": "auto",
-        "tools": [provider._response_tool(ToolSchema("lookup", "Read", {"type": "object"}))],
+        "tools": [
+            provider._response_tool(ToolSchema("lookup", "Read", {"type": "object"})),
+            provider._response_tool(ToolSchema("http_request", "Fetch", {"type": "object"})),
+        ],
     }
     await provider._prepare_response(payload, None, {})
     assert payload["tools"][0]["allowed_callers"] == ["direct", "programmatic"]
+    assert payload["tools"][1]["async"] is True
     assert payload["tools"][-1] == {"type": "programmatic_tool_calling"}
     caller = {"type": "program", "caller_id": "program-1"}
     raw = [
@@ -207,7 +212,7 @@ async def test_public_openai_programmatic_tools_and_caller_replay():
             "caller": caller,
         },
     ]
-    message = provider._responses_message({"status": "completed"}, "gpt-6-astra", raw)
+    message = provider._responses_message({"status": "completed"}, model, raw)
     _, items = provider._to_responses_input(
         [message, ToolResultMessage(tool_call_id="call-1", content="{}")]
     )
@@ -215,10 +220,86 @@ async def test_public_openai_programmatic_tools_and_caller_replay():
     assert items[-1]["caller"] == caller
     paused = provider._responses_message(
         {"status": "completed"},
-        "gpt-6-astra",
+        model,
         [{"type": "program_output", "output": "done"}],
     )
     assert paused.stop_reason == "pause_turn"
+
+
+@pytest.mark.parametrize("model", ["claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-1"])
+@pytest.mark.parametrize("oauth", [False, True])
+@pytest.mark.asyncio
+async def test_current_claude_replays_signed_history_with_edited_context(model, oauth):
+    raw = [
+        {
+            "type": "thinking",
+            "thinking": "Checking",
+            "signature": "opaque-signed-block",
+        },
+        {"type": "tool_use", "id": "lookup-1", "name": "lookup", "input": {}},
+    ]
+    transformations = [
+        {
+            "type": "thinking_dropped",
+            "path": "messages.1.content.0",
+            "reason": "prefix_binding_mismatch",
+        }
+    ]
+    client = _FakeAsyncClient(
+        post_response=_FakeResponse(
+            {
+                "content": [{"type": "text", "text": "Done"}],
+                "usage": {"input_tokens": 10, "output_tokens": 1},
+                "input_transformations": transformations,
+            }
+        )
+    )
+    provider = AnthropicProvider(
+        "sk-ant-oat-test" if oauth else "test-key", client_factory=lambda: client
+    )
+    assistant = provider._message({"content": raw}, model)
+    history = [
+        SystemMessage(content="Updated session context"),
+        UserMessage(content="Look it up"),
+        assistant,
+        ToolResultMessage(tool_call_id="lookup-1", content="Result"),
+    ]
+    tools = [ToolSchema("lookup", "Find", {"type": "object"})]
+    result = await provider.chat(history, model, tools)
+    request = client.post_calls[-1]
+    assert request["json"]["thinking"] == {
+        "type": "adaptive",
+        "display": "summarized",
+        "block_binding": {"prefix_mismatch_behavior": "drop_block"},
+    }
+    assert request["json"]["messages"][1]["content"] == raw
+    assert "thinking-binding-controls-2026-08-01" in request["headers"]["anthropic-beta"]
+    if oauth:
+        assert "oauth-2025-04-20" in request["headers"]["anthropic-beta"]
+    assert result.provider_usage["input_transformations"] == transformations
+    transformations[0]["reason"] = "changed"
+    assert result.provider_usage["input_transformations"][0]["reason"] == "prefix_binding_mismatch"
+    assert assistant.responses_output == raw
+
+    client.post_response = _FakeResponse({"input_tokens": 25})
+    assert await provider.count_input_tokens(history, model, tools) == 25
+    counted = client.post_calls[-1]
+    assert counted["url"].endswith("/messages/count_tokens")
+    assert counted["json"]["thinking"] == request["json"]["thinking"]
+    assert "thinking-binding-controls-2026-08-01" in counted["headers"]["anthropic-beta"]
+
+
+@pytest.mark.parametrize("model", ["claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-1"])
+@pytest.mark.parametrize("choice", ["required", "any", "lookup"])
+def test_current_claude_rejects_forced_tool_selection_without_disabling_thinking(model, choice):
+    with pytest.raises(ValueError, match="does not support forced tool selection"):
+        AnthropicProvider("test-key")._payload(
+            [UserMessage(content="Hello")],
+            model,
+            [ToolSchema("lookup", "Find", {"type": "object"})],
+            None,
+            choice,
+        )
 
 
 @pytest.mark.asyncio

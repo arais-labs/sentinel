@@ -63,6 +63,11 @@ html.dark {
   color-scheme: dark;
 }
 
+/* Mouse clicks do not get a browser focus ring; keyboard focus remains visible. */
+:is(button, a, summary, [role="button"]):focus:not(:focus-visible) {
+  outline: none;
+}
+
 /* Shared in-pane selection treatment matching the desktop navigation. */
 .menu-selection-item {
   position: relative;

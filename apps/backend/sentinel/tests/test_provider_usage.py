@@ -7,7 +7,12 @@ import httpx
 import pytest
 
 from app.config import Settings
-from app.services.settings.provider_usage import ProviderUsageService, normalize_usage
+from app.services.settings.provider_usage import (
+    ProviderUsage,
+    ProviderUsageService,
+    normalize_usage,
+    select_model_usage,
+)
 
 
 def configured(**credentials):
@@ -292,9 +297,113 @@ async def test_router_uses_current_instance_oauth_settings(monkeypatch):
         async def get_usage(self, provider, settings):
             assert provider == "openai"
             assert settings is sentinel
-            return "usage-result"
+            return ProviderUsage(
+                status="available",
+                windows=normalize_usage(
+                    "openai", {"rate_limit": {"primary_window": {"used_percent": 10}}}
+                ),
+            )
 
     monkeypatch.setattr(router, "provider_usage_service", UsageStub())
-    assert (
-        await router.get_provider_usage("openai", "instance-db", SettingsStub()) == "usage-result"
+    result = await router.get_provider_usage("openai", "instance-db", SettingsStub())
+    assert result.windows[0].remaining_percent == 90
+
+
+def test_gemini_quota_projection_matches_explicit_aliases_not_capacity_fallbacks_or_equal_percentages():
+    config = configured(
+        tier_fast_gemini_model="gemini-3.8-flash",
+        tier_normal_gemini_model="gemini-3.8-flash",
+        tier_hard_gemini_model="gemini-3.1-pro-preview",
     )
+    snapshot = ProviderUsage(
+        status="available",
+        windows=normalize_usage(
+            "gemini",
+            {
+                "buckets": [
+                    {"modelId": "gemini-3.8-flash-tiered", "remainingFraction": 0.7},
+                    {"modelId": "gemini-3.6-flash-medium", "remainingFraction": 0.7},
+                    {"modelId": "claude-sonnet-4-6", "remainingFraction": 0.7},
+                ]
+            },
+        ),
+    )
+    result = select_model_usage(snapshot, "gemini", config)
+    assert [window.model_scope for window in result.windows] == ["gemini-3.8-flash-tiered"]
+    assert "unreported_models" not in result.model_dump()
+    assert len(snapshot.windows) == 3
+    other = config.model_copy(
+        update={
+            "tier_fast_gemini_model": "gemini-3.6-flash-medium",
+            "tier_normal_gemini_model": "gemini-3.6-flash-medium",
+        }
+    )
+    assert [
+        window.model_scope for window in select_model_usage(snapshot, "gemini", other).windows
+    ] == ["gemini-3.6-flash-medium"]
+
+
+def test_anthropic_and_codex_account_windows_remain_once_while_unselected_model_limits_are_hidden():
+    for provider, data in (
+        (
+            "anthropic",
+            {
+                "seven_day": {"utilization": 10},
+                "seven_day_sonnet": {"utilization": 20},
+                "seven_day_opus": {"utilization": 30},
+            },
+        ),
+        (
+            "openai",
+            {
+                "rate_limit": {"primary_window": {"used_percent": 10}},
+                "additional_rate_limits": [
+                    {
+                        "normal_model_slug": "gpt-5.6-luna",
+                        "limit_name": "gpt-reserve",
+                        "rate_limit": {"primary_window": {"used_percent": 20}},
+                    }
+                ],
+            },
+        ),
+    ):
+        config = configured(
+            **{
+                f"tier_{tier}_{'codex' if provider == 'openai' else provider}_model": (
+                    "claude-haiku-4-5" if provider == "anthropic" else "gpt-6-luna"
+                )
+                for tier in ("fast", "normal", "hard")
+            },
+            **({"openai_oauth_token": "test-token"} if provider == "openai" else {}),
+        )
+        snapshot = ProviderUsage(status="available", windows=normalize_usage(provider, data))
+        result = select_model_usage(snapshot, provider, config)
+        assert len(result.windows) == 1
+        assert result.windows[0].model_scope is None
+        assert result.windows[0].remaining_percent == 90
+        assert "unreported_models" not in result.model_dump()
+
+
+def test_gemini_prefers_requested_model_bucket_over_alias_without_merging_limits():
+    config = configured(
+        tier_fast_gemini_model="gemini-3.1-pro-preview",
+        tier_normal_gemini_model="gemini-3.1-pro-preview",
+        tier_hard_gemini_model="gemini-3.1-pro-preview",
+    )
+    snapshot = ProviderUsage(
+        status="available",
+        windows=normalize_usage(
+            "gemini",
+            {
+                "buckets": [
+                    {"modelId": "gemini-3.1-pro-high", "remainingFraction": 0.9},
+                    {"modelId": "gemini-pro-agent", "remainingFraction": 0.2},
+                ]
+            },
+        ),
+    )
+    result = select_model_usage(snapshot, "gemini", config)
+    assert len(result.windows) == 1
+    assert result.windows[0].model_scope == "gemini-pro-agent"
+    assert result.windows[0].remaining_percent == 20
+    assert len(snapshot.windows) == 2

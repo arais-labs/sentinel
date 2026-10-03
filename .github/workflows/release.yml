@@ -14,6 +14,8 @@ jobs:
     name: Promote and publish tested release
     runs-on: ubuntu-24.04
     timeout-minutes: 3
+    outputs:
+      candidate-run-id: ${{ steps.promotion.outputs.candidate-run-id }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -22,6 +24,7 @@ jobs:
         with:
           node-version: '22'
       - name: Validate, promote, and publish
+        id: promotion
         working-directory: apps/desktop/sentinel
         env:
           GH_TOKEN: ${{ github.token }}
@@ -33,3 +36,40 @@ jobs:
           esac
           node scripts/publishing/promote-release.mjs "$channel"
           node scripts/publishing/publish-release.mjs "$channel"
+
+  guest-cache:
+    name: Seed beta guest graphics cache without rebuilding
+    needs: release
+    if: github.ref_name == 'beta' && needs.release.outputs.candidate-run-id != ''
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v8
+        with:
+          name: guest-graphics-cache-arm64
+          run-id: ${{ needs.release.outputs.candidate-run-id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/guest-graphics-cache
+      - name: Restore the tested candidate cache
+        id: cache
+        shell: bash
+        env:
+          CACHE_HANDOFF: ${{ runner.temp }}/guest-graphics-cache
+        run: |
+          cache_key="$(< "$CACHE_HANDOFF/guest-graphics-cache-key")"
+          [[ "$cache_key" =~ ^guest-graphics-Linux-ARM64-v[0-9]+-[0-9a-f]{64}$ ]]
+          mkdir -p apps/desktop/sentinel/build/graphics-sources/guest
+          tar -xf "$CACHE_HANDOFF/guest-graphics-cache.tar" -C apps/desktop/sentinel/build/graphics-sources/guest
+          echo "key=$cache_key" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/save@v5
+        with:
+          key: ${{ steps.cache.outputs.key }}
+          path: |
+            apps/desktop/sentinel/build/graphics-sources/guest/*.tar.xz
+            apps/desktop/sentinel/build/graphics-sources/guest/*.json
+            apps/desktop/sentinel/build/graphics-sources/guest/*.snap
+            apps/desktop/sentinel/build/graphics-sources/guest/klipper-*/

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import HTTPException
 from fastapi import APIRouter, Depends, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies import (
@@ -18,11 +18,12 @@ from app.logging_context import (
 )
 from app.services.instance_runtime_context import instance_runtime_context_registry
 from sentral.llm.ids import ProviderChoice
-from app.services.settings.settings_service import SettingsService
+from app.services.settings.settings_service import SettingsService, selected_provider_models
 from app.services.settings.provider_usage import (
     OAuthProvider,
     ProviderUsage,
     provider_usage_service,
+    select_model_usage,
 )
 
 router = APIRouter()
@@ -81,13 +82,44 @@ async def get_api_keys_status(
             "auth_method": item.auth_method,
             "auth_source": item.auth_source,
             "masked_key": item.masked_key,
+            "models": selected_provider_models(instance_settings, provider),
         }
         for provider, item in status.providers.items()
     }
     return {
         "primary_provider": status.primary_provider.value,
         "providers": providers,
+        "routing": settings_service.get_provider_routing(instance_settings),
     }
+
+
+class SetProviderRoutingRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    order: list[ProviderChoice]
+    automatic: list[ProviderChoice]
+
+    @model_validator(mode="after")
+    def validate_routing(self):
+        if len(self.order) != len(ProviderChoice) or set(self.order) != set(ProviderChoice):
+            raise ValueError("Order must contain every provider exactly once.")
+        if not self.automatic or len(set(self.automatic)) != len(self.automatic):
+            raise ValueError("Enable at least one provider, without duplicates.")
+        return self
+
+
+@router.put("/providers/routing")
+async def set_provider_routing(
+    payload: SetProviderRoutingRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    settings_service: SettingsService = Depends(get_settings_service),
+) -> dict:
+    await settings_service.set_provider_routing(
+        db, order=payload.order, automatic=payload.automatic
+    )
+    await _rebuild_current_instance_runtime_context(request)
+    config = await settings_service.build_instance_settings(db)
+    return settings_service.get_provider_routing(config)
 
 
 @router.get("/providers/{provider}/usage", response_model=ProviderUsage)
@@ -97,7 +129,68 @@ async def get_provider_usage(
     settings_service: SettingsService = Depends(get_settings_service),
 ) -> ProviderUsage:
     instance_settings = await settings_service.build_instance_settings(db)
-    return await provider_usage_service.get_usage(provider, instance_settings)
+    usage = await provider_usage_service.get_usage(provider, instance_settings)
+    return select_model_usage(usage, provider, instance_settings)
+
+
+class SetProviderModelsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    namespace: str
+    fast: str | None
+    normal: str | None
+    hard: str | None
+
+    @field_validator("fast", "normal", "hard")
+    @classmethod
+    def model_id(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        value = value.strip()
+        if len(value) > 200 or not all(
+            char.isascii() and (char.isalnum() or char in "-._:/") for char in value
+        ):
+            raise ValueError(
+                "Enter a model ID, not a URL or display name (maximum 200 characters)."
+            )
+        if "://" in value:
+            raise ValueError("Enter a model ID, not a URL.")
+        return value
+
+
+@router.get("/providers/{provider}/models")
+async def get_provider_models(
+    provider: ProviderChoice,
+    db: AsyncSession = Depends(get_db),
+    settings_service: SettingsService = Depends(get_settings_service),
+) -> dict:
+    return await settings_service.get_provider_models(db, provider)
+
+
+@router.put("/providers/{provider}/models")
+async def set_provider_models(
+    provider: ProviderChoice,
+    payload: SetProviderModelsRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    settings_service: SettingsService = Depends(get_settings_service),
+) -> dict:
+    await settings_service.set_provider_models(
+        db,
+        provider,
+        namespace=payload.namespace,
+        models={tier: getattr(payload, tier) for tier in ("fast", "normal", "hard")},
+    )
+    await _rebuild_current_instance_runtime_context(request)
+    return await settings_service.get_provider_models(db, provider)
+
+
+@router.get("/providers/{provider}/model-options")
+async def get_provider_model_options(
+    provider: ProviderChoice,
+    db: AsyncSession = Depends(get_db),
+    settings_service: SettingsService = Depends(get_settings_service),
+) -> dict:
+    return await settings_service.provider_model_options(db, provider)
 
 
 @router.get("/desktop-codex-oauth/status")

@@ -365,7 +365,13 @@ struct WorkspaceRuntime {
                     if let reference = request.image_reference {
                         try WorkspaceDistribution.validateImageReference(reference)
                         imageReference = reference
-                        bootCommand = distribution.buildCommand
+                        let compilerImage: Image
+                        do { compilerImage = try await store.get(reference: reference) }
+                        catch let error as ContainerizationError where error.code == .notFound {
+                            compilerImage = try await store.pull(reference: reference, platform: .init(arch: "arm64", os: "linux"))
+                        }
+                        let imageConfig = try await compilerImage.config(for: .init(arch: "arm64", os: "linux"))
+                        bootCommand = WorkspaceDistribution.buildCommand(entrypoint: imageConfig.config?.entrypoint)
                         boot = nil
                     } else {
                         let catalog = try WorkspaceImages(directory: URL(fileURLWithPath: args[0])

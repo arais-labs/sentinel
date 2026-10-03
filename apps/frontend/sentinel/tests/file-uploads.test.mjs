@@ -53,12 +53,6 @@ test('Files pane uploads, background progress, binary fallback layout and inline
     hold=true;await folder.waitFor();await drop(folder,'ongoing.bin');
     await page.waitForFunction(()=>document.querySelector('progress')?.value===2);
     assert.equal(await page.getByRole('progressbar').getAttribute('max'),'4');
-    if(process.env.SENTINEL_SCREENSHOT_DIR) {
-      for(const theme of ['dark','light']) {
-        await page.evaluate(theme=>document.documentElement.className=theme,theme);
-        await page.screenshot({path:process.env.SENTINEL_SCREENSHOT_DIR+'/file-upload-progress-'+theme+'.png'});
-      }
-    }
     // A chat/workspace switch unmounts the pane, while its upload remains active.
     await page.evaluate(()=>window.setWorkspace('remote'));await folder.waitFor();
     assert.equal(await page.getByRole('progressbar').count(),0);
@@ -78,7 +72,6 @@ test('Files pane uploads, background progress, binary fallback layout and inline
       return(await window.droppedItems({items:[{kind:'file',webkitGetAsEntry:()=>directory,getAsFile:()=>null}]})).map(i=>({name:i.name,size:i.file?.size??null}));
     });
     assert.deepEqual(collected,[{name:'nested',size:null},{name:'nested/child.txt',size:2},{name:'nested/empty',size:null}]);
-    if(process.env.SENTINEL_SCREENSHOT_DIR)await page.screenshot({path:process.env.SENTINEL_SCREENSHOT_DIR+'/file-uploads.png'});
     await page.getByRole('treeitem',{name:'archive.bin',exact:true}).click();
     const fallback=page.locator('.project-file-state');
     await fallback.getByText('This binary file cannot be previewed as text.',{exact:true}).waitFor();
@@ -86,10 +79,6 @@ test('Files pane uploads, background progress, binary fallback layout and inline
     const paragraph=await fallback.locator('p').boundingBox();
     const download=await fallback.getByRole('button',{name:'Download file',exact:true}).boundingBox();
     assert.ok(download.y-paragraph.y-paragraph.height < 20,'Fallback action stays next to its explanation');
-    for(const theme of ['dark','light']) {
-      await page.evaluate(theme=>document.documentElement.className=theme,theme);
-      if(process.env.SENTINEL_SCREENSHOT_DIR)await page.screenshot({path:process.env.SENTINEL_SCREENSHOT_DIR+'/binary-preview-'+theme+'.png'});
-    }
     await page.getByRole('treeitem',{name:'report.pdf',exact:true}).click();
     const pdf=page.getByTitle('PDF preview: report.pdf',{exact:true});await pdf.waitFor();
     const source=new URL(await pdf.getAttribute('src'),page.url());

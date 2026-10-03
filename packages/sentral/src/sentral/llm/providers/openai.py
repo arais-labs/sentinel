@@ -63,6 +63,8 @@ class OpenAIProvider(LLMProvider):
             model,
             (
                 "gpt-6-astra",
+                "gpt-6.1-sol",
+                "gpt-6-luna",
                 "gpt-5.6-sol",
                 "gpt-5.6-terra",
                 "gpt-5.6-luna",
@@ -82,6 +84,16 @@ class OpenAIProvider(LLMProvider):
     def _payload_extras(self) -> dict[str, Any]:
         """Hook for subclasses to inject extra payload fields."""
         return {}
+
+    async def list_model_ids(self) -> list[str]:
+        async with self._client_factory() as client:
+            response = await client.get(f"{self._base_url}/models", headers=self._headers())
+        response.raise_for_status()
+        return [
+            item["id"]
+            for item in response.json().get("data", [])
+            if isinstance(item, dict) and isinstance(item.get("id"), str)
+        ]
 
     async def count_input_tokens(self, messages, model, tools=None, reasoning_config=None):
         if self.name == ProviderId.OPENAI_CODEX or self._base_url != "https://api.openai.com/v1":
@@ -313,7 +325,8 @@ class OpenAIProvider(LLMProvider):
                         if text_started:
                             yield AgentEvent(type="text_end", content_index=0)
                         yield AgentEvent(
-                            type="done", stop_reason=_map_openai_finish_reason(finish_reason)
+                            type="done",
+                            stop_reason=_map_openai_finish_reason(finish_reason),
                         )
 
     def _uses_responses(self, model: str) -> bool:
@@ -361,7 +374,10 @@ class OpenAIProvider(LLMProvider):
                     for item in content
                     if isinstance(item, ToolCallContent)
                 ]
-                payload: dict[str, Any] = {"role": "assistant", "content": "\n".join(text_parts)}
+                payload: dict[str, Any] = {
+                    "role": "assistant",
+                    "content": "\n".join(text_parts),
+                }
                 if tool_calls:
                     payload["tool_calls"] = tool_calls
                 converted.append(payload)
@@ -431,7 +447,9 @@ class OpenAIProvider(LLMProvider):
                     args = {"raw": raw}
                 content.append(
                     ToolCallContent(
-                        id=item.get("call_id", ""), name=item.get("name", ""), arguments=args
+                        id=item.get("call_id", ""),
+                        name=item.get("name", ""),
+                        arguments=args,
                     )
                 )
         usage = response.get("usage") or {}
@@ -534,7 +552,10 @@ class OpenAIProvider(LLMProvider):
                 if isinstance(content, list):
                     content = [
                         (
-                            {"type": "input_image", "image_url": part["image_url"]["url"]}
+                            {
+                                "type": "input_image",
+                                "image_url": part["image_url"]["url"],
+                            }
                             if part.get("type") == "image_url"
                             else {"type": "input_text", "text": part.get("text", "")}
                         )
@@ -547,12 +568,12 @@ class OpenAIProvider(LLMProvider):
     async def _prepare_response(self, payload, client, headers):
         """Enable hosted orchestration only on the documented public model family."""
         if self._base_url != "https://api.openai.com/v1" or not payload["model"].startswith(
-            ("gpt-6-", "gpt-5.6")
+            ("gpt-6-", "gpt-6.1-", "gpt-5.6")
         ):
             return
         # Slow HTTP requests may overlap independent model work. Interactive and
         # delegated tools retain the normal approval/interception flow.
-        if payload["model"].startswith("gpt-6-"):
+        if payload["model"].startswith(("gpt-6-", "gpt-6.1-")):
             for tool in payload["tools"]:
                 if tool.get("name") == "http_request":
                     tool["async"] = True
@@ -580,7 +601,10 @@ class OpenAIProvider(LLMProvider):
 
     async def _stream_lines(self, client, payload, headers):
         async with client.stream(
-            "POST", f"{self._base_url}{self._responses_endpoint}", json=payload, headers=headers
+            "POST",
+            f"{self._base_url}{self._responses_endpoint}",
+            json=payload,
+            headers=headers,
         ) as response:
             if response.is_error:
                 raise RuntimeError(f"{self.name} Responses http_{response.status_code}")
@@ -606,7 +630,9 @@ class OpenAIProvider(LLMProvider):
         }
         if rc.reasoning_effort:
             effort = rc.reasoning_effort
-            if effort == "minimal" or (model.startswith("gpt-6") and effort == "none"):
+            if effort == "minimal" or (
+                model.startswith(("gpt-6-astra", "gpt-6.1-sol")) and effort == "none"
+            ):
                 effort = "low"
             payload["reasoning"] = {"effort": effort}
         output, text, arguments, item_indices = {}, {}, {}, {}
@@ -629,14 +655,17 @@ class OpenAIProvider(LLMProvider):
                         type="toolcall_start",
                         content_index=index,
                         tool_call=ToolCallContent(
-                            id=item.get("call_id") or item.get("id", ""), name=item.get("name", "")
+                            id=item.get("call_id") or item.get("id", ""),
+                            name=item.get("name", ""),
                         ),
                     )
                 full, previous = item.get("arguments") or "", arguments.get(index, "")
                 if full.startswith(previous) and len(full) > len(previous):
                     arguments[index] = full
                     yield AgentEvent(
-                        type="toolcall_delta", content_index=index, delta=full[len(previous) :]
+                        type="toolcall_delta",
+                        content_index=index,
+                        delta=full[len(previous) :],
                     )
                 if done and index not in ended_tools:
                     ended_tools.add(index)
@@ -696,19 +725,28 @@ class OpenAIProvider(LLMProvider):
                                 else str(error)
                             )
                             raise RuntimeError(f"{self.name} Responses: {detail}")
-                        if kind in {"response.output_item.added", "response.output_item.done"}:
+                        if kind in {
+                            "response.output_item.added",
+                            "response.output_item.done",
+                        }:
                             for mapped in emit_item(
                                 index, event.get("item") or {}, kind.endswith(".done")
                             ):
                                 yield mapped
-                        elif kind in {"response.output_text.delta", "response.refusal.delta"}:
+                        elif kind in {
+                            "response.output_text.delta",
+                            "response.refusal.delta",
+                        }:
                             if index not in started_text:
                                 started_text.add(index)
                                 yield AgentEvent(type="text_start", content_index=index)
                             delta = event.get("delta") or ""
                             text[index] = text.get(index, "") + delta
                             yield AgentEvent(type="text_delta", content_index=index, delta=delta)
-                        elif kind in {"response.output_text.done", "response.refusal.done"}:
+                        elif kind in {
+                            "response.output_text.done",
+                            "response.refusal.done",
+                        }:
                             if index in started_text and index not in ended_text:
                                 ended_text.add(index)
                                 yield AgentEvent(type="text_end", content_index=index)
@@ -737,7 +775,11 @@ class OpenAIProvider(LLMProvider):
                             }
                             for mapped in emit_item(index, item, False):
                                 yield mapped
-                        elif kind in {"response.completed", "response.done", "response.incomplete"}:
+                        elif kind in {
+                            "response.completed",
+                            "response.done",
+                            "response.incomplete",
+                        }:
                             final = event.get("response") or {}
                             final_items = dict(enumerate(final.get("output") or [])) or dict(output)
                             for idx, item in final_items.items():
@@ -758,7 +800,9 @@ class OpenAIProvider(LLMProvider):
                                 final, model, [output[k] for k in sorted(output)]
                             )
                             yield AgentEvent(
-                                type="done", stop_reason=message.stop_reason, message=message
+                                type="done",
+                                stop_reason=message.stop_reason,
+                                message=message,
                             )
                             return
                 raise RuntimeError(f"{self.name} Responses stream ended before response completion")

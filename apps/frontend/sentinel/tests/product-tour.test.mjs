@@ -122,7 +122,6 @@ test('guide verifies real shortcut outcomes, cancellation, persistence, and resp
         return number.left - bounds.left;
       });
     assert.ok(chapterPadding >= 14, 'Chapter numbers need space inside the hover surface');
-    await page.screenshot({ path: '/tmp/sentinel-tour-welcome.png' });
     await page.getByRole('button', { name: 'Begin the guide' }).click();
     const next = () =>
       page.locator('.tour-coach-footer').getByRole('button', { name: 'Continue', exact: true });
@@ -141,7 +140,6 @@ test('guide verifies real shortcut outcomes, cancellation, persistence, and resp
       .evaluate((element) =>
         Promise.all(element.getAnimations().map((animation) => animation.finished.catch(() => {})))
       );
-    await page.screenshot({ path: '/tmp/sentinel-tour-locator.png' });
     const highlight = await page.locator('.tour-highlight').evaluate((element) => {
       const r = element.getBoundingClientRect(),
         css = getComputedStyle(element);
@@ -180,7 +178,6 @@ test('guide verifies real shortcut outcomes, cancellation, persistence, and resp
     await verified();
     await page.keyboard.up('Meta');
     await page.keyboard.up('n');
-    await page.screenshot({ path: '/tmp/sentinel-tour-verified.png' });
     await page.getByRole('heading', { name: 'Give the agent a clear brief.' }).waitFor();
     await page
       .getByRole('textbox', { name: 'Message', exact: true })
@@ -230,7 +227,6 @@ test('guide verifies real shortcut outcomes, cancellation, persistence, and resp
       'The shortcut reference pauses automatic advance'
     );
     assert.ok((await page.locator('.tour-shortcut-row').count()) >= 1);
-    await page.screenshot({ path: '/tmp/sentinel-tour-shortcuts.png' });
     await page.setViewportSize({ width: 375, height: 620 });
     await page.getByRole('textbox', { name: 'Search shortcuts' }).fill('');
     const fits = await page.locator('.tour-coach').evaluate((element) => {
@@ -238,7 +234,6 @@ test('guide verifies real shortcut outcomes, cancellation, persistence, and resp
       return r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight;
     });
     assert.ok(fits, 'Coach must stay within narrow viewports');
-    await page.screenshot({ path: '/tmp/sentinel-tour-narrow.png' });
     await page.getByRole('button', { name: 'Finish guide later' }).click();
     const saved = await page.evaluate(() => JSON.parse(localStorage.getItem('sentinel.product-tour:test')));
     assert.ok(saved.verified.includes('new-chat/create'));
@@ -261,10 +256,8 @@ test('guide verifies real shortcut outcomes, cancellation, persistence, and resp
     await page.setViewportSize({ width: 1280, height: 880 });
     await page.goto(`${server.resolvedUrls.local[0]}instances/test/workspace?setup`);
     await page.getByRole('button', { name: 'Set up Sentinel' }).waitFor();
-    await page.screenshot({ path: '/tmp/sentinel-setup-welcome.png' });
     await page.getByRole('button', { name: 'Set up Sentinel' }).click();
     await page.getByRole('heading', { name: 'Connect a model provider.' }).waitFor();
-    await page.screenshot({ path: '/tmp/sentinel-setup-providers.png' });
     await page.setViewportSize({ width: 375, height: 620 });
     const footerFits = await page.locator('.setup-footer').evaluate((element) => {
       const r = element.getBoundingClientRect();
@@ -275,7 +268,6 @@ test('guide verifies real shortcut outcomes, cancellation, persistence, and resp
       await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
       'Setup must not overflow horizontally'
     );
-    await page.screenshot({ path: '/tmp/sentinel-setup-narrow.png' });
     assert.deepEqual(errors, []);
   } finally {
     await browser?.close();

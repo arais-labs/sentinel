@@ -122,7 +122,8 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - name: Cache verified guest graphics
-        uses: actions/cache@v5
+        id: guest-cache
+        uses: actions/cache/restore@v5
         with:
           path: |
             apps/desktop/sentinel/build/graphics-sources/guest/*.tar.xz
@@ -164,6 +165,39 @@ jobs:
           python3 scripts/packaging/graphics/build-guest.py build/guest-graphics klipper-alpine
           python3 scripts/packaging/graphics/build-guest.py build/guest-graphics klipper-debian
           python3 scripts/packaging/graphics/build-guest.py build/guest-graphics klipper-ubuntu
+      # Save compiled work before image packaging, which can fail independently.
+      - name: Save verified guest graphics
+        if: steps.guest-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          key: ${{ steps.guest-cache.outputs.cache-primary-key }}
+          path: |
+            apps/desktop/sentinel/build/graphics-sources/guest/*.tar.xz
+            apps/desktop/sentinel/build/graphics-sources/guest/*.json
+            apps/desktop/sentinel/build/graphics-sources/guest/*.snap
+            apps/desktop/sentinel/build/graphics-sources/guest/klipper-*/
+      # PR caches cannot be restored by another PR. Preserve this verified cache
+      # for the beta promotion workflow to save in the shared base-branch scope.
+      - name: Prepare guest graphics cache handoff
+        working-directory: apps/desktop/sentinel/build/graphics-sources/guest
+        shell: bash
+        env:
+          GUEST_CACHE_KEY: ${{ steps.guest-cache.outputs.cache-primary-key }}
+        run: |
+          shopt -s nullglob
+          cache_files=(*.tar.xz *.json *.snap klipper-*/)
+          test "${#cache_files[@]}" -gt 0
+          tar -cf "$RUNNER_TEMP/guest-graphics-cache.tar" "${cache_files[@]}"
+          printf '%s\n' "$GUEST_CACHE_KEY" > "$RUNNER_TEMP/guest-graphics-cache-key"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: guest-graphics-cache-arm64
+          path: |
+            ${{ runner.temp }}/guest-graphics-cache.tar
+            ${{ runner.temp }}/guest-graphics-cache-key
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 7
       - uses: actions/upload-artifact@v7
         with:
           name: guest-graphics-arm64

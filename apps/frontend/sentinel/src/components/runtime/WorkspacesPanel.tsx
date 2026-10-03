@@ -12,6 +12,7 @@ import { useWorkspaceLibrary } from './useWorkspaceLibrary';
 import { Code2, FolderOpen, Server, Plus, Pencil, Trash2, Loader2, Play, Square, RefreshCw, Wrench, Search, ChevronDown, Monitor, Terminal } from 'lucide-react';
 import { notificationPublisher } from '../../lib/notifications';
 import { MachinesPanel } from './MachinesPanel';
+import { PillSwitch } from '../ui/PillSwitch';
 import { WorkspaceEditor, type WorkspaceDraft } from './WorkspaceEditor';
 import { api } from '../../lib/api';
 import { workspaceSaveError } from './workspaceValidation';
@@ -74,7 +75,8 @@ export function WorkspacesPanel({ onboarding = false, onAddMachine, page = false
     : null;
   const content = <>
     <div className={`workspace-library${page ? " workspace-library--page" : ""}${onboarding ? " workspace-library--onboarding" : ""}`}>
-      {!onboarding && <div className="workspace-library-navigation">{page ? <div className="workspace-library-switch" role="group" aria-label="Workspace management"><span aria-hidden="true" className="workspace-library-switch-indicator" style={{ transform: `translateX(${tab === 'machines' ? 100 : 0}%)` }} />{(['workspaces', 'machines'] as const).map(value => <button key={value} aria-pressed={tab === value} onClick={() => setTab(value)}>{value === 'workspaces' ? <FolderOpen size={14} /> : <Server size={14} />}{value}</button>)}</div> : navigation}{createButton}</div>}
+      {!onboarding && <div className="workspace-library-navigation">{page ? <PillSwitch label="Workspace management" className="workspace-library-switch" value={tab} onChange={setTab}
+        options={[{ value: 'workspaces', label: 'workspaces', icon: <FolderOpen size={14} /> }, { value: 'machines', label: 'machines', icon: <Server size={14} /> }]} /> : navigation}{createButton}</div>}
       {tab === 'workspaces' && error && <div role="alert" className="workspace-container-error">{error} <button type="button" onClick={() => void reload()}>Retry</button></div>}
       {tab === 'workspaces' && !loading && <>
         <div className="workspace-library-filters">
