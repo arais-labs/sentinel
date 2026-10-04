@@ -21,12 +21,12 @@
         "sourceSha256": "45f9a62da2f6e641a7fad57e2ce39656dfd7ef331372d80a2a2aed65abb01642"
       },
       "workspaceRuntime": {
-        "containerizationVersion": "0.45.0",
+        "containerizationVersion": "0.47.0",
         "kernelUrl": "https://github.com/kata-containers/kata-containers/releases/download/3.32.0/kata-static-3.32.0-arm64.tar.zst",
         "kernelSha256": "8736c054d9223974735394f822000823baef509e1c33405ec798240fa9b6e4b5",
         "kernelFileSha256": "fb2cfb79eb1ae19447a85d75682d7fa5cfec97e24beb2609a492b806e8072c8d",
         "kernelArchivePath": "opt/kata/share/kata-containers/vmlinux-6.18.35-197-debug",
-        "initImage": "ghcr.io/apple/containerization/vminit@sha256:aa6ab59d0938f7fadb54ac27e80959bdd2f1dafa8050011086d5f8ab1350fd6c",
+        "initImage": "ghcr.io/apple/containerization/vminit@sha256:4c1836052eafcbc944c403fb23ded06562962d2402c9dcc651495a32300614df",
         "buildImage": "docker.io/library/docker@sha256:5efed980cba3fc126cf54e21a5a6ff8849d05b6e0623d6e7612f48e9cd6cd17e",
         "glibcBuildImage": "docker.io/library/ubuntu@sha256:224a1869083a311ef3f13648a154ba79832fbef6364d31493642ca03082da254"
       }

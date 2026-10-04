@@ -39,7 +39,8 @@ func repairWorkspaceDisk(_ id: String, root: URL, image: String, manager: inout 
     // while its VM could still own resources.
     let repairID = UUID().uuidString + "-repair"
     let output = Capture()
-    let repair = try await manager.create(repairID, reference: image, rootfsSizeInBytes: 2 * 1024 * 1024 * 1024) { @Sendable config in
+    let repair = try await manager.create(repairID, reference: image, rootfsSizeInBytes: 2 * 1024 * 1024 * 1024,
+        vm: .init(cpus: 1, memoryInBytes: 512 * 1024 * 1024)) { @Sendable config in
         config.cpus = 1
         config.memoryInBytes = 512 * 1024 * 1024
         config.mounts.append(.share(source: disk.deletingLastPathComponent().path, destination: "/disk"))
