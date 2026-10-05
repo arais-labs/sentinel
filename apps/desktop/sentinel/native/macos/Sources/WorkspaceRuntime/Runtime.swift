@@ -463,7 +463,7 @@ struct WorkspaceRuntime {
                             if FileManager.default.fileExists(atPath: maintenancePath.path) { try manager.delete(maintenanceID) }
                             let output = Capture()
                             let maintenance = try await manager.create(maintenanceID, reference: maintenanceImage.reference, rootfsSizeInBytes: 2 * 1024 * 1024 * 1024,
-                                vm: .init(cpus: 1, memoryInBytes: 512 * 1024 * 1024)) { @Sendable config in
+                                vm: .init(cpus: 1, memoryInBytes: UInt64(512) * 1024 * 1024)) { @Sendable config in
                                 config.cpus = 1
                                 config.memoryInBytes = 512 * 1024 * 1024
                                 config.mounts.append(.share(source: disk.deletingLastPathComponent().path, destination: "/disk"))
