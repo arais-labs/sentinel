@@ -242,10 +242,11 @@ struct WorkspaceRuntime {
                 _ = try await store.pull(reference: reference, platform: .init(arch: "arm64", os: "linux"))
             }
         }
-        var manager = try await ContainerManager(
+        let initfs = try await WorkspaceImages.bootFilesystem(reference: args[3], store: store)
+        var manager = try ContainerManager(
             kernel: Kernel(path: URL(fileURLWithPath: args[2]), platform: .linuxArm,
                            commandline: .init(kernelArgs: Kernel.CommandLine.kernelDefaults + ["security=apparmor", "apparmor=1"])),
-            initfsReference: args[3], imageStore: store,
+            initfs: initfs, imageStore: store,
             network: try VmnetNetwork()
         )
         var containers: [String: LinuxContainer] = [:]
@@ -396,9 +397,11 @@ struct WorkspaceRuntime {
                         _ = try await store.pull(reference: imageReference, platform: .init(arch: "arm64", os: "linux"))
                     }
                     let displayControl = try HostDisplay.controlPath(root: root, workspace: id)
+                    // Containerization sizes the VM separately from its container limits.
+                    let vm = VMResources(cpus: cpus, memoryInBytes: memory * 1024 * 1024 * 1024)
                     let configure: @Sendable (inout LinuxContainer.Configuration) throws -> Void = { config in
-                        config.cpus = cpus
-                        config.memoryInBytes = memory * 1024 * 1024 * 1024
+                        config.cpus = vm.cpus
+                        config.memoryInBytes = vm.memoryInBytes
                         // tmpfs allocates on demand; allow up to 1 GiB of shared
                         // memory without exceeding half of a smaller VM's RAM.
                         let sharedMemoryBytes = min(config.memoryInBytes / 2, 1024 * 1024 * 1024)
@@ -459,7 +462,8 @@ struct WorkspaceRuntime {
                             let maintenancePath = root.appendingPathComponent("store/containers/\(maintenanceID)")
                             if FileManager.default.fileExists(atPath: maintenancePath.path) { try manager.delete(maintenanceID) }
                             let output = Capture()
-                            let maintenance = try await manager.create(maintenanceID, reference: maintenanceImage.reference, rootfsSizeInBytes: 2 * 1024 * 1024 * 1024) { @Sendable config in
+                            let maintenance = try await manager.create(maintenanceID, reference: maintenanceImage.reference, rootfsSizeInBytes: 2 * 1024 * 1024 * 1024,
+                                vm: .init(cpus: 1, memoryInBytes: UInt64(512) * 1024 * 1024)) { @Sendable config in
                                 config.cpus = 1
                                 config.memoryInBytes = 512 * 1024 * 1024
                                 config.mounts.append(.share(source: disk.deletingLastPathComponent().path, destination: "/disk"))
@@ -490,6 +494,7 @@ struct WorkspaceRuntime {
                         container = try await manager.create(
                             id, image: store.get(reference: imageReference),
                             rootfs: .block(format: "ext4", source: disk.path, destination: "/", options: []),
+                            vm: vm,
                             configuration: configure
                         )
                     } else {
@@ -498,7 +503,7 @@ struct WorkspaceRuntime {
                         if FileManager.default.fileExists(atPath: registration.path) {
                             try FileManager.default.removeItem(at: registration)
                         }
-                        container = try await manager.create(id, reference: imageReference, rootfsSizeInBytes: diskSize * 1024 * 1024 * 1024, configuration: configure)
+                        container = try await manager.create(id, reference: imageReference, rootfsSizeInBytes: diskSize * 1024 * 1024 * 1024, vm: vm, configuration: configure)
                     }
                     try distribution.rawValue.write(to: distroFile, atomically: true, encoding: .utf8)
                     if let boot { try JSONEncoder().encode(boot).write(to: bootFile, options: .atomic) }

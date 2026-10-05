@@ -86,4 +86,23 @@ struct WorkspaceImages {
         try boot.image.validate(for: distribution)
         return boot
     }
+
+    static func bootFilesystem(reference: String, store: ImageStore) async throws -> Mount {
+        try WorkspaceDistribution.validateImageReference(reference)
+        // The SDK's fixed initfs.ext4 cache survives image upgrades. Keep the
+        // read-only agent disk keyed to its pinned image, not the workspace disk.
+        let path = store.path.appendingPathComponent("initfs-\(reference.suffix(64)).ext4")
+        if !FileManager.default.fileExists(atPath: path.path) {
+            let temporary = store.path.appendingPathComponent("initfs-\(UUID().uuidString).ext4")
+            defer { try? FileManager.default.removeItem(at: temporary) }
+            let image = try await store.getInitImage(reference: reference)
+            _ = try await image.initBlock(at: temporary, for: .linuxArm)
+            try FileManager.default.moveItem(at: temporary, to: path)
+        }
+        let values = try path.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+        guard values.isRegularFile == true, values.isSymbolicLink != true else {
+            throw RuntimeError("Workspace boot image cache is unsafe")
+        }
+        return .block(format: "ext4", source: path.path, destination: "/", options: ["ro"])
+    }
 }

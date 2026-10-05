@@ -36,7 +36,8 @@ async def close_codex_connections():
 
 _TOOL_CHOICE_VALUES = {"auto", "required", "none"}
 _MODELS_CACHE_TTL_SECONDS = 300.0
-_MODELS_CLIENT_VERSION = "0.153.4"
+# Catalog compatibility, independent of any locally installed CLI.
+_MODELS_CLIENT_VERSION = "0.160.0"
 _SCHEMA_COMBINER_KEYS = ("oneOf", "anyOf", "allOf", "prefixItems")
 
 _CODEX_EXECUTION_MARKER = "You are Codex, a coding agent running in Sentinel."
@@ -211,7 +212,8 @@ class CodexProvider(OpenAIProvider):
         info = catalog.get(model, {})
         if not info and model.startswith(("gpt-5.6", "gpt-6")):
             raise RuntimeError(
-                "Could not resolve this model in the Codex catalog; reconnect or choose an available model"
+                "This model is not in the Codex catalog for this account and Sentinel client. "
+                "Update Sentinel or choose an available model in provider settings."
             )
         payload.pop("max_output_tokens", None)
         payload["instructions"] = self._with_codex_execution_prelude(
@@ -639,14 +641,13 @@ class CodexProvider(OpenAIProvider):
                 params={"client_version": _MODELS_CLIENT_VERSION},
                 headers=self._headers(),
             )
-            status_code = int(getattr(response, "status_code", 200))
-            if status_code >= 400:
-                self._model_catalog_expiry = now + 30.0
-                return self._model_catalog_by_slug
+            response.raise_for_status()
             payload = response.json()
-        except Exception:
+        except (httpx.HTTPError, ValueError):
             self._model_catalog_expiry = now + 30.0
-            return self._model_catalog_by_slug
+            if self._model_catalog_by_slug:
+                return self._model_catalog_by_slug
+            raise
 
         models = payload.get("models") if isinstance(payload, dict) else None
         parsed: dict[str, dict[str, Any]] = {}

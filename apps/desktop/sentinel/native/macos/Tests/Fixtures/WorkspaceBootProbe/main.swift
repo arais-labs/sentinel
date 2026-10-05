@@ -67,7 +67,8 @@ struct ProbeRequest: Decodable {
         let id = UUID().uuidString
         let console = ProbeOutput(live: true)
         let container = try await manager.create(id, reference: image.reference,
-            rootfsSizeInBytes: 16 * 1024 * 1024 * 1024) { @Sendable config in
+            rootfsSizeInBytes: 16 * 1024 * 1024 * 1024,
+            vm: .init(cpus: 4, memoryInBytes: UInt64(4) * 1024 * 1024 * 1024)) { @Sendable config in
                 config.cpus = 4
                 config.memoryInBytes = 4 * 1024 * 1024 * 1024
                 config.mounts.append(.any(type: "tmpfs", source: "tmpfs", destination: "/run",
