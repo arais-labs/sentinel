@@ -96,3 +96,50 @@ async def test_synthesis_is_bounded_and_uses_managed_worker(tmp_path, monkeypatc
 async def test_synthesis_requires_live_lease(tmp_path):
     with pytest.raises(VoiceUnavailable, match="expired"):
         await VoiceRuntime(tmp_path).synthesize("Hello.", "unknown")
+
+
+@pytest.mark.asyncio
+async def test_install_pins_pyav_below_19(tmp_path, monkeypatch):
+    """faster-whisper 1.2.1 calls av.open(metadata_errors=...), removed in PyAV 19.
+
+    Without an explicit cap, pip resolves the newest PyAV and every transcription
+    fails with TypeError, surfaced only as a generic "reconnect Voice" message.
+    """
+    from app.services.voice import runtime as voice_runtime
+
+    runtime = VoiceRuntime(tmp_path)
+    commands: list[tuple[str, ...]] = []
+
+    async def record(*argv, **_):
+        commands.append(tuple(argv))
+
+    monkeypatch.setattr(runtime, "_install_command", record)
+    monkeypatch.setattr(runtime, "_terminate", AsyncMock())
+    await runtime._install()
+
+    pip_command = next(c for c in commands if "pip" in c)
+    assert voice_runtime.AUDIO_PACKAGE in pip_command
+    assert voice_runtime.AUDIO_PACKAGE == "av<19"
+    # The marker must change whenever pinning changes, so environments already
+    # holding an incompatible PyAV are rebuilt instead of staying broken.
+    assert "av18" in INSTALL_VERSION
+    assert (tmp_path / "voice/installed.json").read_text() == INSTALL_VERSION
+
+
+def test_worker_error_payload_reports_underlying_cause():
+    """The generic operator message must not erase the real failure."""
+    import json as _json
+
+    try:
+        raise TypeError("open() got an unexpected keyword argument 'metadata_errors'")
+    except Exception as exc:  # noqa: BLE001
+        payload = _json.dumps(
+            {
+                "error": "Local speech processing failed. Reconnect Voice and try again.",
+                "cause": f"{type(exc).__name__}: {exc}"[:300],
+            }
+        )
+
+    decoded = _json.loads(payload)
+    assert decoded["cause"].startswith("TypeError:")
+    assert "metadata_errors" in decoded["cause"]
