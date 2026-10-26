@@ -1,0 +1,74 @@
+--- a/libntfs-3g/unix_io.c	2026-10-13 13:41:50
++++ b/libntfs-3g/unix_io.c	2026-10-13 13:41:50
+@@ -79,6 +79,22 @@
+  * was retrieved from:
+  *   http://mirror.linux.org.au/pub/linux.conf.au/2007/video/talks/278.pdf
+  */
++/*
++ * A volume inside a file at NTFS_OFFSET bytes and NTFS_SIZE bytes long: a partition of a disk image,
++ * which Sentinel writes from the host (macOS has no loop devices).
++ */
++static s64 ntfs_volume_base(void)
++{
++	const char *v = getenv("NTFS_OFFSET");
++	return v ? strtoll(v, NULL, 10) : 0;
++}
++
++static s64 ntfs_volume_size(void)
++{
++	const char *v = getenv("NTFS_SIZE");
++	return v ? strtoll(v, NULL, 10) : -1;
++}
++
+ static int ntfs_fsync(int fildes)
+ {
+ 	int ret = -1;
+@@ -244,7 +260,16 @@
+ static s64 ntfs_device_unix_io_seek(struct ntfs_device *dev, s64 offset,
+ 		int whence)
+ {
+-	return lseek(DEV_FD(dev), offset, whence);
++	s64 base = ntfs_volume_base(), size = ntfs_volume_size(), pos;
++
++	if (whence == SEEK_END && size >= 0) {
++		offset += size;
++		whence = SEEK_SET;
++	}
++	if (whence == SEEK_SET)
++		offset += base;
++	pos = lseek(DEV_FD(dev), offset, whence);
++	return pos < 0 ? pos : pos - base;
+ }
+ 
+ /**
+@@ -298,7 +323,7 @@
+ static s64 ntfs_device_unix_io_pread(struct ntfs_device *dev, void *buf,
+ 		s64 count, s64 offset)
+ {
+-	return pread(DEV_FD(dev), buf, count, offset);
++	return pread(DEV_FD(dev), buf, count, offset + ntfs_volume_base());
+ }
+ 
+ /**
+@@ -320,7 +345,7 @@
+ 		return -1;
+ 	}
+ 	NDevSetDirty(dev);
+-	return pwrite(DEV_FD(dev), buf, count, offset);
++	return pwrite(DEV_FD(dev), buf, count, offset + ntfs_volume_base());
+ }
+ 
+ /**
+@@ -356,7 +381,11 @@
+  */
+ static int ntfs_device_unix_io_stat(struct ntfs_device *dev, struct stat *buf)
+ {
+-	return fstat(DEV_FD(dev), buf);
++	int ret = fstat(DEV_FD(dev), buf);
++
++	if (!ret && ntfs_volume_size() >= 0)
++		buf->st_size = ntfs_volume_size();
++	return ret;
+ }
+ 
+ /**
