@@ -1,0 +1,2 @@
+# The VM's disk: Debian's kernel builds virtio_blk as a module.
+virtio_blk

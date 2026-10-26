@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Web Browser
+Comment=Open your preferred web browser
+Exec=sentinel-browser %U
+Icon=web-browser
+Terminal=false
+Categories=Network;WebBrowser;
+StartupNotify=true

@@ -1,0 +1,357 @@
+{
+  "name": "Ubuntu 26.04 LTS",
+  "detail": "All stacks and accelerated desktop",
+  "features": ["shell", "terminal", "files"],
+  "guide": "Workspace OS: Linux (ubuntu). Shell: Bash. The shared project keeps its absolute host path inside the workspace. Install missing packages with apt. Docker and Compose use the workspace's private engine.",
+  "hostname": ["sh", "/run/sentinel/hostname.sh", "{name}"],
+  "ready": ["sh", "-c", "case $(systemctl is-system-running) in running | degraded) exit 0 ;; esac; exit 1"],
+  "poweroff": ["systemctl", "poweroff", "--no-block"],
+  "service": [["systemctl", "enable", "--now", "{name}"]],
+  "packages": {
+    "env": ["DEBIAN_FRONTEND=noninteractive"],
+    "cache": ["-o", "Dir::Cache::archives={cache}", "-o", "APT::Keep-Downloaded-Packages=true", "-o", "APT::Sandbox::User=root"],
+    "cache_dirs": ["partial"],
+    "installed": ["sh", "-c", "for p; do [ \"$(dpkg-query -W -f='${Status}' \"$p\" 2>/dev/null)\" = 'install ok installed' ] || exit 1; done", "sh"],
+    "prepare": [["dpkg", "--configure", "-a"]],
+    "refresh": ["apt-get", "-o", "Acquire::http::Timeout=30", "-o", "Acquire::https::Timeout=30", "-o", "Acquire::Retries=5", "{cache}", "update"],
+    "fetch": ["apt-get", "-o", "Acquire::http::Timeout=30", "-o", "Acquire::https::Timeout=30", "-o", "Acquire::Retries=5", "{cache}", "-d", "install", "-y", "--no-install-recommends"],
+    "install": ["apt-get", "-o", "Acquire::http::Timeout=30", "-o", "Acquire::https::Timeout=30", "-o", "Acquire::Retries=5", "{cache}", "install", "-y", "--no-install-recommends"]
+  },
+  "desktop": {
+    "user": "sentinel",
+    "create_user": ["useradd", "-m", "-s", "/bin/sh", "{user}"],
+    "groups": ["video", "render", "input", "seat", "audio"],
+    "join_group": ["usermod", "-aG", "{group}", "{user}"],
+    "prepare": [["sysctl", "-q", "-w", "kernel.print-fatal-signals=1", "debug.exception-trace=1"], ["sh", "/run/sentinel/desktop/boot-screen.sh"]],
+    "environment": {
+      "x11": {
+        "DISPLAY": ":0",
+        "XDG_RUNTIME_DIR": "/run/user/{uid}",
+        "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/{uid}/bus",
+        "MESA_LOADER_DRIVER_OVERRIDE": "zink"
+      },
+      "wayland": {
+        "WAYLAND_DISPLAY": "wayland-0",
+        "DISPLAY": ":0",
+        "XDG_SESSION_TYPE": "wayland",
+        "XDG_RUNTIME_DIR": "/run/user/{uid}",
+        "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/{uid}/bus",
+        "MESA_LOADER_DRIVER_OVERRIDE": "zink"
+      }
+    },
+    "socket": {
+      "x11": "/tmp/.X11-unix/X0",
+      "wayland": "/run/user/{uid}/wayland-0"
+    },
+    "session": {
+      "x11": "sentinel-desktop-x11.service",
+      "wayland": "sentinel-desktop-wayland.service"
+    },
+    "install": "/run/systemd/system/sentinel-desktop.service",
+    "stop": [["systemctl", "stop", "sentinel-desktop"]],
+    "restart": [["systemctl", "daemon-reload"], ["systemctl", "restart", "sentinel-desktop"]],
+    "failure": ["sh", "-c", "journalctl -b -p warning -n 12 -o cat --no-pager _UID=\"$(id -u sentinel)\" + _COMM=gnome-shell + _COMM=kwin_wayland"]
+  },
+  "desktops": {
+    "xfce": {
+      "display": "x11",
+      "packages": ["libvulkan1", "mesa-vulkan-drivers", "libgl1-mesa-dri", "libegl-mesa0", "libgbm1", "pipewire", "pipewire-pulse", "wireplumber", "libpam-systemd", "dbus-user-session", "python3", "fonts-dejavu", "fonts-noto-core", "xserver-xorg-core", "xserver-xorg-input-libinput", "dbus-x11", "xfce4", "xfce4-terminal", "xfce4-whiskermenu-plugin", "xfdesktop4-data", "greybird-gtk-theme", "papirus-icon-theme", "xclip", "xdotool", "x11-xkb-utils"]
+    },
+    "lxqt": {
+      "display": "wayland",
+      "paste": ["Control_L", "Shift_L", "v"],
+      "packages": ["libvulkan1", "mesa-vulkan-drivers", "libgl1-mesa-dri", "libegl-mesa0", "libgbm1", "pipewire", "pipewire-pulse", "wireplumber", "libpam-systemd", "dbus-user-session", "python3", "fonts-dejavu", "fonts-noto-core", "xwayland", "wl-clipboard", "kbd", "labwc", "lxqt-session", "lxqt-panel", "lxqt-runner", "lxqt-config", "lxqt-qtplugin", "lxqt-notificationd", "lxqt-policykit", "lxqt-themes", "pcmanfm-qt", "qterminal", "breeze-icon-theme", "qt6-wayland", "qt6-svg-plugins"]
+    },
+    "gnome": {
+      "display": "wayland",
+      "paste": ["Control_L", "Shift_L", "v"],
+      "packages": ["libvulkan1", "mesa-vulkan-drivers", "libgl1-mesa-dri", "libegl-mesa0", "libgbm1", "pipewire", "pipewire-pulse", "wireplumber", "libpam-systemd", "dbus-user-session", "python3", "fonts-dejavu", "fonts-noto-core", "xwayland", "wl-clipboard", "kbd", "gnome-shell", "gnome-session", "gnome-settings-daemon", "gnome-control-center", "gnome-terminal", "nautilus", "gnome-backgrounds", "adwaita-icon-theme", "xdg-desktop-portal-gnome", "xclip"]
+    },
+    "plasma": {
+      "display": "wayland",
+      "paste": ["Control_L", "Shift_L", "v"],
+      "packages": ["libvulkan1", "mesa-vulkan-drivers", "libgl1-mesa-dri", "libegl-mesa0", "libgbm1", "pipewire", "pipewire-pulse", "wireplumber", "libpam-systemd", "dbus-user-session", "python3", "fonts-dejavu", "fonts-noto-core", "xwayland", "wl-clipboard", "kbd", "plasma-desktop", "plasma-workspace", "kwin-wayland", "dolphin", "konsole", "systemsettings", "breeze", "breeze-icon-theme", "qt6-wayland", "qt6-svg-plugins", "xdg-desktop-portal-kde"]
+    }
+  },
+  "tools": {
+    "base": {
+      "packages": ["tar", "gzip", "xz-utils", "unzip", "bash", "tmux", "git", "curl", "python3", "ca-certificates", "coreutils", "findutils", "util-linux", "socat", "gh", "ripgrep", "jq"]
+    },
+    "browser": {
+      "requires": ["chrome"]
+    },
+    "git": {
+      "packages": ["git"]
+    },
+    "python": {
+      "packages": ["python3", "python3-pip", "python3-venv"]
+    },
+    "poetry": {
+      "packages": ["python3-poetry"]
+    },
+    "uv": {
+      "packages": ["python3"],
+      "release": {
+        "url": "https://github.com/astral-sh/uv/releases/download/0.12.13/uv-aarch64-unknown-linux-gnu.tar.gz",
+        "sha256": "2eaa5d94f5db7b3a1a092156b9420459e42ab0217d917fe74a876309cef9b5e9",
+        "version": {
+          "command": "uv --version",
+          "contains": "uv 0.12.13"
+        },
+        "unpack": "tar",
+        "install": {
+          "uv-aarch64-unknown-linux-gnu/uv": "/usr/local/bin/uv",
+          "uv-aarch64-unknown-linux-gnu/uvx": "/usr/local/bin/uvx"
+        }
+      }
+    },
+    "node": {
+      "packages": ["libstdc++6", "xz-utils"],
+      "release": {
+        "url": "https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-arm64.tar.xz",
+        "sha256": "6ad1325edbdb5649c379b75a237147a666c95d4f9ae8d340fef2d1575d289ad2",
+        "version": {
+          "command": "node --version",
+          "contains": "v24.21.0"
+        },
+        "unpack": "tar",
+        "into": "/usr/local",
+        "strip": 1
+      }
+    },
+    "pnpm": {
+      "npm": {
+        "package": "pnpm@12.4.1",
+        "version": {
+          "command": "pnpm --version",
+          "contains": "12.4.1"
+        }
+      }
+    },
+    "yarn": {
+      "npm": {
+        "package": "yarn@1.22.22",
+        "version": {
+          "command": "yarn --version",
+          "contains": "1.22.22"
+        }
+      }
+    },
+    "typescript": {
+      "npm": {
+        "package": "typescript@7.0.2",
+        "version": {
+          "command": "tsc --version",
+          "contains": "Version 7.0.2"
+        }
+      }
+    },
+    "bun": {
+      "packages": ["unzip", "libstdc++6"],
+      "release": {
+        "url": "https://github.com/oven-sh/bun/releases/download/bun-v1.4.2/bun-linux-aarch64.zip",
+        "sha256": "54328bbc2d9c8e0c9f892c544d66c57a83b84139e34909e5ee81758f1ac8fda7",
+        "version": {
+          "command": "bun --version",
+          "contains": "1.4.2"
+        },
+        "unpack": "zip",
+        "install": {
+          "bun-linux-aarch64/bun": "/usr/local/bin/bun"
+        }
+      },
+      "links": {
+        "/usr/local/bin/bunx": "bun"
+      }
+    },
+    "deno": {
+      "packages": ["libstdc++6", "unzip"],
+      "release": {
+        "url": "https://github.com/denoland/deno/releases/download/v2.9.6/deno-aarch64-unknown-linux-gnu.zip",
+        "sha256": "9a46afc6c392c7cd2ff71a31558935545b46408d0e87f7a86908c712721c046e",
+        "version": {
+          "command": "deno --version",
+          "contains": "deno 2.9.6"
+        },
+        "unpack": "zip",
+        "install": {
+          "deno": "/usr/local/bin/deno"
+        }
+      }
+    },
+    "go": {
+      "packages": ["golang-go"]
+    },
+    "rust": {
+      "packages": ["rustc", "cargo", "build-essential"]
+    },
+    "php": {
+      "packages": ["php-cli", "php-mbstring", "php-curl", "php-xml", "php-mysql", "php-pgsql"]
+    },
+    "composer": {
+      "packages": ["composer"]
+    },
+    "ruby": {
+      "packages": ["ruby", "ruby-dev", "ruby-bundler", "build-essential"]
+    },
+    "java": {
+      "packages": ["openjdk-21-jdk-headless"]
+    },
+    "dotnet": {
+      "links": {
+        "/usr/local/bin/dotnet": "/usr/share/dotnet/dotnet"
+      },
+      "packages": ["libgcc-s1", "libstdc++6", "libgssapi-krb5-2", "zlib1g", "libssl3t64", "libicu78"],
+      "release": {
+        "url": "https://builds.dotnet.microsoft.com/dotnet/Sdk/10.0.401/dotnet-sdk-10.0.401-linux-arm64.tar.gz",
+        "sha256": "58ace73ced6b4360754689a686bdfb8a317f4da6cb8bb416dbc7d0ba9f47e43e3c09f5eb1f1a1cfaacbd10df9558da4882bf2a5e195d6ab56a02c1f9f76102ed",
+        "version": {
+          "command": "dotnet --list-sdks",
+          "contains": "10.0.401 ["
+        },
+        "unpack": "tar",
+        "into": "/usr/share/dotnet"
+      }
+    },
+    "maven": {
+      "packages": ["maven"]
+    },
+    "gradle": {
+      "packages": ["gradle"]
+    },
+    "cpp": {
+      "packages": ["build-essential"]
+    },
+    "clang": {
+      "packages": ["clang", "build-essential"]
+    },
+    "cmake": {
+      "packages": ["cmake"]
+    },
+    "ninja": {
+      "packages": ["ninja-build"]
+    },
+    "docker": {
+      "packages": ["docker.io", "iptables", "iproute2", "docker-compose-v2"],
+      "release": {
+        "url": "https://github.com/docker/buildx/releases/download/v0.37.1/buildx-v0.37.1.linux-arm64",
+        "sha256": "e5cc9fe3bbff5cbc91230981f7860e06076110730a2db997082652199042a1f2",
+        "version": {
+          "command": "docker buildx version",
+          "contains": "v0.37.1"
+        },
+        "unpack": "binary",
+        "install": {
+          "*": "/usr/local/lib/docker/cli-plugins/docker-buildx"
+        }
+      },
+      "service": "docker"
+    },
+    "kubectl": {
+      "release": {
+        "url": "https://dl.k8s.io/release/v1.36.4/bin/linux/arm64/kubectl",
+        "sha256": "0ecf44450ee6063bf19dd166a103ee6df4a9034455c2abce626e6eea657d73fb",
+        "version": {
+          "command": "kubectl version --client",
+          "contains": "v1.36.4"
+        },
+        "unpack": "binary",
+        "install": {
+          "*": "/usr/local/bin/kubectl"
+        }
+      }
+    },
+    "helm": {
+      "release": {
+        "url": "https://get.helm.sh/helm-v4.3.0-linux-arm64.tar.gz",
+        "sha256": "31c5794dd55c66a51e6b7d2e2ac7a114ae8b1de41ff1d9ba51748ac973b06a08",
+        "version": {
+          "command": "helm version --short",
+          "contains": "v4.3.0"
+        },
+        "unpack": "tar",
+        "install": {
+          "linux-arm64/helm": "/usr/local/bin/helm"
+        }
+      }
+    },
+    "kind": {
+      "release": {
+        "url": {
+          "aarch64": "https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-arm64",
+          "x86_64": "https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-amd64"
+        },
+        "sha256": {
+          "aarch64": "20022bee6cfcd5086cb7234d218e3454e6090022f2a8f55d1fa7fcf42c3867a2",
+          "x86_64": "aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d"
+        },
+        "version": {
+          "command": "kind version",
+          "contains": "v0.33.0"
+        },
+        "unpack": "binary",
+        "install": {
+          "*": "/usr/local/bin/kind"
+        }
+      }
+    },
+    "k3s": {
+      "release": {
+        "url": {
+          "aarch64": "https://github.com/k3d-io/k3d/releases/download/v5.9.0/k3d-linux-arm64",
+          "x86_64": "https://github.com/k3d-io/k3d/releases/download/v5.9.0/k3d-linux-amd64"
+        },
+        "sha256": {
+          "aarch64": "03cde5cf23e6e8e67de5a039ecf26e5b85aca82fba3e5d13dadf904cd218a250",
+          "x86_64": "06d8f25bc3a971c4eb29e0ff08429b180402db0f4dec838c9eac427e296800a0"
+        },
+        "version": {
+          "command": "k3d version",
+          "contains": "v5.9.0"
+        },
+        "unpack": "binary",
+        "install": {
+          "*": "/usr/local/bin/k3d"
+        }
+      }
+    },
+    "chrome": {
+      "package_url": {
+        "url": {
+          "aarch64": "https://dl.google.com/linux/direct/google-chrome-stable_current_arm64.deb",
+          "x86_64": "https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb"
+        },
+        "version": {
+          "command": "google-chrome-stable --version",
+          "contains": "Google Chrome"
+        }
+      }
+    }
+  },
+  "machine": {"transport": "pci"},
+  "install": {
+    "sources": {
+      "rootfs": {"url": "https://cdimage.ubuntu.com/ubuntu-base/releases/26.04/release/ubuntu-base-26.04.1-base-arm64.tar.gz",
+        "sha256": "5a1906794ced63a71a8119c3f211ef5f0bbe0a243001b4bbd41fdf80c5b219fd"},
+      "netboot": {"url": "https://cdimage.ubuntu.com/ubuntu/releases/26.04/release/ubuntu-26.04.1-netboot-arm64.tar.gz",
+        "sha256": "39da7bfadb2cd52e33bc6ccfc8513feeead3cd6dce295107215b5e0adb229342"},
+      "busybox": {"url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/b/busybox/busybox-static_1.37.0-7ubuntu1_arm64.deb",
+        "sha256": "fcf50794faf920455895d7ef103d1c54b9ebf7f18d2e52982dbf3903b7769592"}
+    },
+    "disk": {"gib": 1, "partitions": [{"name": "esp", "type": "esp"}]},
+    "root": {"gib": 3},
+    "steps": [
+      {"extract": "{netboot}", "include": ["arm64/linux", "arm64/grubaa64.efi"], "to": "{work}/netboot"},
+      {"copy": "{install}/esp", "to": "{work}/esp"},
+      {"copy": "{work}/netboot/arm64/linux", "to": "{work}/esp/sentinel/linux"},
+      {"copy": "{work}/netboot/arm64/grubaa64.efi", "to": "{work}/esp/EFI/BOOT/BOOTAA64.EFI"},
+      {"fat32": "esp", "label": "ESP", "from": "{work}/esp"},
+      {"copy": "{busybox}", "to": "{work}/files/var/cache/sentinel-build/busybox-static.deb"},
+      {"archive": [{"from": "{rootfs}"}, {"from": "{install}/root"}, {"from": "{work}/files"}], "to": "{work}/root.tar", "format": "tar"},
+      {"run": ["mke2fs", "-q", "-t", "ext4", "-L", "sentinel-root", "-O", "64bit,extents,flex_bg,metadata_csum,resize_inode", "-E", "root_owner=0:0,lazy_itable_init=1,lazy_journal_init=1,nodiscard,resize=268435456", "-d", "{work}/root.tar", "{root}"], "env": {"MKE2FS_CONFIG": "/nonexistent"}}
+    ],
+    "cpus": 2,
+    "memory_gib": 2,
+    "timeout_min": 20
+  }
+}

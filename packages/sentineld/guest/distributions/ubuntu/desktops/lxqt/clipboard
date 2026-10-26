@@ -1,0 +1,9 @@
+#!/bin/sh
+# Ubuntu's LXQt clipboard (Wayland), run by the agent as the desktop user: `write` puts stdin on the
+# clipboard (wl-copy stays behind to serve it, its output closed so the agent is not kept
+# waiting), `read` prints it, nothing when it is empty.
+set -eu
+case $1 in
+write) exec wl-copy --type 'text/plain;charset=utf-8' >/dev/null 2>&1 ;;
+read) wl-paste --no-newline --type text 2>/dev/null || : ;;
+esac

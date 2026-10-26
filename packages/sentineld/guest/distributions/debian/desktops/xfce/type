@@ -1,0 +1,4 @@
+#!/bin/sh
+# Debian's Xfce typing for computer use: stdin's text as key presses on the X server, run by the agent
+# as the desktop user.
+exec xdotool type --clearmodifiers --delay 1 --file -

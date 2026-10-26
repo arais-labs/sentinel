@@ -1,0 +1,4 @@
+#!/bin/sh
+# Ubuntu's GNOME session, run by session.sh as the desktop user, in a login session holding the seat.
+export XDG_CURRENT_DESKTOP=GNOME XDG_SESSION_DESKTOP=gnome
+exec gnome-session

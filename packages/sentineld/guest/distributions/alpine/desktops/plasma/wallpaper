@@ -1,0 +1,4 @@
+#!/bin/sh
+# Alpine's Plasma wallpaper: `wallpaper IMAGE`, run by the agent as the desktop user.
+set -eu
+exec plasma-apply-wallpaperimage "$1"

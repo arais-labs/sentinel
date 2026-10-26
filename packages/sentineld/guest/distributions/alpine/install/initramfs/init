@@ -1,0 +1,14 @@
+#!/bin/busybox.static sh
+# The first boot's initramfs: loads the disk's drivers (modules in Alpine's virt kernel) and hands
+# over to the build script on the root file system. Alpine's own initramfs replaces it.
+b=/bin/busybox.static
+$b mkdir -p /proc /sys /dev /newroot
+$b mount -t proc proc /proc
+$b mount -t sysfs sys /sys
+$b mount -t devtmpfs dev /dev
+for m in crc16 mbcache jbd2 ext4 virtio_blk; do
+	$b insmod "$($b find /lib/modules -name "$m.ko*")" || echo "init: cannot load $m"
+done
+while [ ! -b /dev/vdb ]; do $b sleep 0.1; done
+$b mount -t ext4 /dev/vdb /newroot
+exec $b switch_root /newroot /sbin/sentinel-build

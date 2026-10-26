@@ -1,0 +1,12 @@
+#!/bin/sh
+# Ubuntu's Plasma session, run by session.sh as the desktop user, in a session holding the seat. KWin
+# uses its hardware cursor plane: the viewer shows its image as the native pointer, so moving the
+# pointer repaints nothing (a software cursor would recomposite and stream a frame per move). KWin
+# 6.4 to 6.6 fill a virtual GPU's cursor plane by reading their rendering back with a pixel type
+# OpenGL ES rejects (fixed upstream by kwin 5e7e8a7b): the plane stays transparent, so those draw the
+# pointer into the frame instead.
+case "$(kwin_wayland --version 2>/dev/null)" in
+"kwin 6."[4-6].*) export KWIN_FORCE_SW_CURSOR=1 ;;
+esac
+export XDG_CURRENT_DESKTOP=KDE XDG_SESSION_DESKTOP=KDE
+exec startplasma-wayland

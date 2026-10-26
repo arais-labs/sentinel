@@ -1,0 +1,39 @@
+#!/bin/sh
+# Runs once, as the first boot's init: installs the system with Alpine's own tools, reports to
+# sentineld on the EFI system partition (sentinel/result: "ok" or why it failed), and powers off.
+step() {
+	echo "sentinel-build: $*"
+	"$@" || { echo "failed: $*" > /boot/sentinel/result; sync; umount /boot; mount -o remount,ro /; poweroff -f; }
+}
+mount -t proc proc /proc
+mount -t sysfs sys /sys
+mount -t devtmpfs dev /dev
+mkdir -p /boot
+modprobe vfat nls_cp437 nls_iso8859-1
+mount -t vfat /dev/vda1 /boot || { echo "sentinel-build: cannot mount the EFI system partition"; poweroff -f; }
+step modprobe virtio_net
+step ip link set lo up
+step ip link set eth0 up
+step udhcpc -q -n -i eth0
+step apk add --no-cache linux-virt mkinitfs openrc busybox-openrc busybox-mdev-openrc e2fsprogs e2fsprogs-extra
+for s in devfs dmesg mdev hwdrivers; do step rc-update add $s sysinit; done
+for s in modules sysctl hostname bootmisc networking; do step rc-update add $s boot; done
+for s in killprocs savecache mount-ro; do step rc-update add $s shutdown; done
+step rc-update add sentineld-agent boot
+# mdev does not autoload drivers: the host reaches the agent through the virtio vsock transport.
+echo vmw_vsock_virtio_transport >> /etc/modules
+# From now on Alpine's kernel and initramfs boot the disk; the first boot's initramfs goes.
+cat > /boot/loader/entries/alpine.conf <<END
+title Alpine Linux
+linux /vmlinuz-virt
+initrd /initramfs-virt
+options root=LABEL=sentinel-root rw rootfstype=ext4 modules=virtio_pci,virtio_blk,ext4 console=hvc0
+END
+rm /boot/sentinel/initramfs
+# The root read-only first: workspaces grow it before booting it, which needs a clean file system.
+# (This script stays on it, as the record of how the disk was made: deleting the running script
+# would keep the root busy.)
+sync
+if mount -o remount,ro /; then echo ok > /boot/sentinel/result; else echo "failed: the root stays busy" > /boot/sentinel/result; fi
+umount /boot
+poweroff -f

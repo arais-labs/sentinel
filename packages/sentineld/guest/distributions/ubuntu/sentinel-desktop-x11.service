@@ -1,0 +1,10 @@
+# The X11 desktop service, installed in /run by sentineld when the desktop starts: session.sh runs
+# the X server as root and the desktop as the sentinel user.
+[Unit]
+Description=Sentinel workspace desktop
+After=systemd-user-sessions.service
+
+[Service]
+ExecStart=/bin/sh /run/sentinel/desktop/session.sh
+Restart=always
+RestartSec=1

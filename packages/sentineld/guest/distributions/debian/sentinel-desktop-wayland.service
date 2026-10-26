@@ -1,0 +1,26 @@
+# The Wayland desktop service, installed in /run by sentineld when the desktop starts. The service
+# is the user's login session on tty7, so logind gives the compositor the seat (GPU and input devices).
+[Unit]
+Description=Sentinel workspace desktop
+After=systemd-user-sessions.service
+Conflicts=getty@tty7.service
+
+[Service]
+User=sentinel
+PAMName=login
+TTYPath=/dev/tty7
+TTYReset=yes
+TTYVHangup=yes
+StandardInput=tty
+StandardOutput=append:/run/sentinel-desktop.log
+StandardError=inherit
+UtmpIdentifier=tty7
+UtmpMode=user
+# pam_systemd types the login session from these: compositors look for a graphical session.
+Environment=XDG_SESSION_TYPE=wayland XDG_SESSION_CLASS=user
+# Only the active VT's session may drive the display.
+ExecStartPre=+/bin/chvt 7
+ExecStartPre=+/bin/sh /run/sentinel/desktop/session.sh publish
+ExecStart=/bin/sh /run/sentinel/desktop/session.sh
+Restart=always
+RestartSec=1

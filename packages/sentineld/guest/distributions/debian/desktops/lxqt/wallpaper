@@ -1,0 +1,5 @@
+#!/bin/sh
+# Debian's LXQt wallpaper (pcmanfm-qt draws the desktop): `wallpaper IMAGE`, run by the agent as the
+# desktop user.
+set -eu
+exec pcmanfm-qt --set-wallpaper "$1" --wallpaper-mode=zoom

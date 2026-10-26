@@ -1,0 +1,7 @@
+{
+  "file_format_version": "1.0.1",
+  "ICD": {
+    "library_path": ".\\vulkan_virtio.dll",
+    "api_version": "1.4.340"
+  }
+}

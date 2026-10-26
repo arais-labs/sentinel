@@ -1,0 +1,33 @@
+{
+  "mesa": {
+    "url": "https://codeload.github.com/osy/virtio-win-mesa/tar.gz/694ea5e21c9b9461c59301727bca889a5e17e972",
+    "sha256": "dedc76d1b0b55b87ad8c1a1f691a2e003b1de00780ebed230f82e7639d48bef9"
+  },
+  "directx-headers": {
+    "url": "https://codeload.github.com/microsoft/DirectX-Headers/tar.gz/refs/tags/v1.618.1",
+    "sha256": "92b8b06e3dce4e689eb2e1c8545c919d385b141314d30ef5adbad4bfdddf5eb3"
+  },
+  "windows-sdk": {
+    "url": "https://api.nuget.org/v3-flatcontainer/microsoft.windows.sdk.cpp/10.0.26100.4188/microsoft.windows.sdk.cpp.10.0.26100.4188.nupkg",
+    "sha256": "a8eec6b3c63a481ee8eb3d91839d99d5cb0b66c30fe18fe64d79146db72283e1",
+    "headers": [
+      "c/Include/10.0.26100.0/shared/d3dkmthk.h",
+      "c/Include/10.0.26100.0/shared/d3dukmdt.h",
+      "c/Include/10.0.26100.0/shared/d3dkmdt.h",
+      "c/Include/10.0.26100.0/um/dxgiddi.h",
+      "c/Include/10.0.26100.0/um/dxmini.h"
+    ]
+  },
+  "windows-wdk": {
+    "url": "https://api.nuget.org/v3-flatcontainer/microsoft.windows.wdk.arm64/10.0.26100.4204/microsoft.windows.wdk.arm64.10.0.26100.4204.nupkg",
+    "sha256": "35820ce38f472e62c0df240e73e9272200f5d8eefb2fd00d00219b51957a3792",
+    "headers": [
+      "c/Include/10.0.26100.0/um/d3dumddi.h",
+      "c/Include/10.0.26100.0/um/d3d10umddi.h",
+      "c/Include/10.0.26100.0/um/d3d10TokenizedProgramFormat.hpp",
+      "c/Include/10.0.26100.0/um/d3d11TokenizedProgramFormat.hpp",
+      "c/Include/10.0.26100.0/um/d3d12TokenizedProgramFormat.hpp",
+      "c/Include/10.0.26100.0/shared/d3dkmddi.h"
+    ]
+  }
+}

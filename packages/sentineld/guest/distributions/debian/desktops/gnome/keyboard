@@ -1,0 +1,21 @@
+#!/bin/sh
+# Debian's GNOME: the layouts as the Shell's input sources, applied live. Run by the agent as the
+# desktop user with XKB_LAYOUT, XKB_VARIANT, XKB_MODEL and XKB_OPTIONS (comma lists, checked).
+set -euf
+IFS=,
+set -- $XKB_VARIANT
+sources=
+for layout in $XKB_LAYOUT; do
+	variant=${1:-}
+	[ $# -eq 0 ] || shift
+	sources="$sources${sources:+, }('xkb', '$layout${variant:++$variant}')"
+done
+# The Shell switches layouts itself (Super+Space): no grp: option.
+options=
+for option in $XKB_OPTIONS; do
+	case $option in grp:* | '') ;; *) options="$options${options:+, }'$option'" ;; esac
+done
+unset IFS
+gsettings set org.gnome.desktop.input-sources sources "[$sources]"
+gsettings set org.gnome.desktop.input-sources mru-sources "[$sources]"
+gsettings set org.gnome.desktop.input-sources xkb-options "[$options]"

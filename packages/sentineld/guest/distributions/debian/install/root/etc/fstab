@@ -1,0 +1,2 @@
+LABEL=sentinel-root / ext4 defaults 0 1
+LABEL=ESP /boot/efi vfat umask=0077,nofail 0 2

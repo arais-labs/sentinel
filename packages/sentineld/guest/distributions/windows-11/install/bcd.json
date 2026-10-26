@@ -1,0 +1,30 @@
+[
+  {"key": "Description", "values": {"KeyName": {"sz": "BCD00000000"}, "System": {"dword": 1}, "TreatAsSystem": {"dword": 1}}},
+
+  {"copy": "Objects\\{7254a080-1510-4e85-ac0f-e7fb3d444736}", "to": "Objects\\{5e9a1c3d-7b2f-4c86-9a41-2d8e0f6b3c17}"},
+  {"key": "Objects\\{5e9a1c3d-7b2f-4c86-9a41-2d8e0f6b3c17}\\Description", "values": {"Type": {"dword": 270532611}}},
+  {"key": "Objects\\{5e9a1c3d-7b2f-4c86-9a41-2d8e0f6b3c17}\\Elements\\26000022", "delete": true},
+  {"key": "Objects\\{5e9a1c3d-7b2f-4c86-9a41-2d8e0f6b3c17}\\Elements\\42000002", "delete": true},
+  {"key": "Objects\\{5e9a1c3d-7b2f-4c86-9a41-2d8e0f6b3c17}\\Elements\\42000003", "delete": true},
+  {"key": "Objects\\{5e9a1c3d-7b2f-4c86-9a41-2d8e0f6b3c17}\\Elements\\45000001", "delete": true},
+  {"key": "Objects\\{5e9a1c3d-7b2f-4c86-9a41-2d8e0f6b3c17}\\Elements\\47000005", "delete": true},
+  {"key": "Objects\\{5e9a1c3d-7b2f-4c86-9a41-2d8e0f6b3c17}\\Elements\\11000001", "values": {"Element": {"binary": [
+    "00000000000000000000000000000000", "0600000000000000", "4800000000000000", {"guid": "{windows}"}, "0000000000000000", {"guid": "{disk}"}, "00000000000000000000000000000000"]}}},
+  {"key": "Objects\\{5e9a1c3d-7b2f-4c86-9a41-2d8e0f6b3c17}\\Elements\\21000001", "values": {"Element": {"binary": [
+    "00000000000000000000000000000000", "0600000000000000", "4800000000000000", {"guid": "{windows}"}, "0000000000000000", {"guid": "{disk}"}, "00000000000000000000000000000000"]}}},
+  {"key": "Objects\\{5e9a1c3d-7b2f-4c86-9a41-2d8e0f6b3c17}\\Elements\\12000002", "values": {"Element": {"sz": "\\Windows\\system32\\winload.efi"}}},
+  {"key": "Objects\\{5e9a1c3d-7b2f-4c86-9a41-2d8e0f6b3c17}\\Elements\\12000004", "values": {"Element": {"sz": "Windows 11"}}},
+
+  {"key": "Objects\\{9dea862c-5cdd-4e70-acc1-f32b344d4795}\\Elements\\45000001", "delete": true},
+  {"key": "Objects\\{9dea862c-5cdd-4e70-acc1-f32b344d4795}\\Elements\\11000001", "values": {"Element": {"binary": [
+    "00000000000000000000000000000000", "0600000000000000", "4800000000000000", {"guid": "{esp}"}, "0000000000000000", {"guid": "{disk}"}, "00000000000000000000000000000000"]}}},
+  {"key": "Objects\\{9dea862c-5cdd-4e70-acc1-f32b344d4795}\\Elements\\23000003", "values": {"Element": {"sz": "{5e9a1c3d-7b2f-4c86-9a41-2d8e0f6b3c17}"}}},
+  {"key": "Objects\\{9dea862c-5cdd-4e70-acc1-f32b344d4795}\\Elements\\24000001", "values": {"Element": {"multi": ["{5e9a1c3d-7b2f-4c86-9a41-2d8e0f6b3c17}"]}}},
+  {"key": "Objects\\{9dea862c-5cdd-4e70-acc1-f32b344d4795}\\Elements\\25000004", "values": {"Element": {"binary": ["0000000000000000"]}}},
+
+  {"key": "Objects\\{7254a080-1510-4e85-ac0f-e7fb3d444736}", "delete": true},
+  {"key": "Objects\\{0c334284-9a41-4de1-99b3-a7e87e8ff07e}", "delete": true},
+  {"key": "Objects\\{4636856e-540f-4170-a130-a84776f4c654}\\Elements\\47000006", "delete": true},
+  {"key": "Objects\\{5189b25c-5558-4bf2-bca4-289b11bd29e2}\\Elements\\47000006", "delete": true},
+  {"key": "Objects\\{7ff607e0-4395-11db-b0de-0800200c9a66}\\Elements\\47000006", "delete": true}
+]

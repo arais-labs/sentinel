@@ -1,0 +1,12 @@
+button-title=Apps
+button-icon=view-app-grid-symbolic
+show-button-title=true
+show-button-icon=true
+show-command-logout=false
+show-command-lockscreen=false
+show-command-switchuser=false
+show-command-suspend=false
+show-command-hibernate=false
+show-command-shutdown=false
+show-command-restart=false
+favorites=sentinel-browser.desktop,thunar.desktop,xfce4-terminal.desktop,xfce-settings-manager.desktop

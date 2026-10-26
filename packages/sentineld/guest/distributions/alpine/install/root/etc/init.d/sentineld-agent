@@ -1,0 +1,16 @@
+#!/sbin/openrc-run
+# The agent runs from sentineld's read-only share, so it always matches the host (DESIGN.md §9).
+description="Sentinel guest agent"
+command=/run/sentinel/sentineld-agent
+supervisor=supervise-daemon
+respawn_delay=1
+
+depend() {
+	need localmount
+	after modules  # loads the vsock transport (/etc/modules)
+}
+
+start_pre() {
+	mkdir -p /run/sentinel
+	mountpoint -q /run/sentinel || mount -t virtiofs -o ro sentinel /run/sentinel
+}

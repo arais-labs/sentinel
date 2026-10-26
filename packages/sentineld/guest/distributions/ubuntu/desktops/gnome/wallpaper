@@ -1,0 +1,7 @@
+#!/bin/sh
+# Ubuntu's GNOME wallpaper: `wallpaper IMAGE`, run by the agent as the desktop user.
+set -eu
+for key in picture-uri picture-uri-dark; do
+	gsettings set org.gnome.desktop.background $key "file://$1"
+done
+gsettings set org.gnome.desktop.background picture-options zoom

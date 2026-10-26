@@ -1,0 +1,19 @@
+#!/bin/sh
+# Alpine's Xfce: the layouts in xfconf (keyboard-layout), and on the running X server, since xfconf
+# exposes only some options. Run by the agent as the desktop user with XKB_LAYOUT, XKB_VARIANT,
+# XKB_MODEL and XKB_OPTIONS (comma lists, checked).
+set -euf
+group= compose=
+IFS=,
+for option in $XKB_OPTIONS; do
+	case $option in grp:*) group=$option ;; compose:*) compose=$option ;; esac
+done
+unset IFS
+setting() { xfconf-query --channel keyboard-layout --property "/Default/$1" --create --type "$2" --set "$3"; }
+setting XkbModel string "$XKB_MODEL"
+setting XkbLayout string "$XKB_LAYOUT"
+setting XkbVariant string "$XKB_VARIANT"
+setting XkbOptions/Group string "$group"
+setting XkbOptions/Compose string "$compose"
+setting XkbDisable bool false
+setxkbmap -rules "$XKB_RULES" -model "$XKB_MODEL" -layout "$XKB_LAYOUT" -variant "$XKB_VARIANT" -option "" -option "$XKB_OPTIONS"
