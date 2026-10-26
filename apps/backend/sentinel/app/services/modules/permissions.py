@@ -37,8 +37,6 @@ def combined_agent_permissions() -> dict[str, str]:
         for action in module.actions or []:
             if not action.handler:
                 continue
-            key = f"{module.name}.{action.id}"
-            level = "approval" if action.approval else "allow"
-            permissions.setdefault(key, level)
+            permissions.setdefault(f"{module.name}.{action.id}", action.default_permission())
 
     return permissions

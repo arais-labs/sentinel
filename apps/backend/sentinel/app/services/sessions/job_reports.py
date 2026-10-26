@@ -1,4 +1,4 @@
-"""Deliver a finished background runtime job to the agent that started it.
+"""Deliver a finished background runtime job (or any report) to the agent that started it.
 
 The report is the turn's input itself: a user-role item (what model APIs accept as a turn's input)
 whose `notice` metadata makes the chat show it as a system notice, never as the user's message. It
@@ -41,15 +41,29 @@ async def deliver_job_report(db, session, job, *, stdout_tail, stderr_tail, run_
     """Persists and queues the report for `session`; with `wake`, an idle agent starts a turn."""
     job_id = str(job.get("id") or "")
     message_id = uuid5(NAMESPACE_URL, f"sentinel:runtime-job:{session.id}:{job_id}")
+    return await deliver_report(
+        db,
+        session,
+        message_id,
+        report_text(job, stdout_tail=stdout_tail, stderr_tail=stderr_tail),
+        {
+            "source": "runtime_job_completion",
+            "job_id": job_id,
+            "status": str(job.get("status") or ""),
+        },
+        title="Background job report",
+        run_registry=run_registry,
+        wake=wake,
+    )
+
+
+async def deliver_report(db, session, message_id, content, metadata, *, title, run_registry, wake):
+    """Persists `content` as a notice once per `message_id` and queues it for `session`'s agent."""
     if await db.get(Message, message_id) is not None:
         return False
-    content = report_text(job, stdout_tail=stdout_tail, stderr_tail=stderr_tail)
-    status = str(job.get("status") or "")
     metadata = {
-        "source": "runtime_job_completion",
-        "job_id": job_id,
-        "status": status,
-        "notice": {"title": "Background job report", "body": content},
+        **metadata,
+        "notice": {"title": title, "body": content},
         "steering": "pending",
         "steering_id": str(message_id),
     }

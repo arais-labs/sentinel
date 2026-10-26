@@ -14,6 +14,7 @@ _BUILTIN_MODULE_NAMES = (
     "host_runtime",
     "session_layout",
     "port_forward",
+    "workspaces",
     "git_tool",
     "str_replace_editor",
     "memory",

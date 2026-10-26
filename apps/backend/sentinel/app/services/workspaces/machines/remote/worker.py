@@ -68,17 +68,15 @@ def unreachable(machine, exc: BaseException) -> RuntimeUnavailable:
 def runtime_assets(assets, *, installed=False):
     """[(path, release name)] of one release.
 
-    Local: the sentineld and workspace VM build trees the desktop app runs. Installed: the
-    manifest's recorded inventory under its release directory, validated, never discovered.
+    Local: the sentineld build tree the desktop app runs. Installed: the manifest's recorded
+    inventory under its release directory, validated, never discovered.
     """
     if not installed:
-        return release_files(assets["sentineld"], assets["workspace"])
+        return release_files(assets["sentineld"])
     executable = assets["executable"]
     if not isinstance(executable, str) or not executable.endswith(_EXECUTABLE):
         raise ValueError("Invalid release executable")
     release = PurePosixPath(executable[: -len(_EXECUTABLE)])
-    if assets.get("workspace") != str(release / "sentinel-workspace"):
-        raise ValueError("Invalid release workspace VM process")
     names = validate_release_files(assets.get("files"))
     return [(Path(release / name), name) for name in names]
 
@@ -206,8 +204,7 @@ async def read_installation(conn, root):
         manifest = await read("manifest.json")
         journal = await read("update.json")
         worker = await read("state/worker-id", parse=lambda text: text.strip() or None)
-        # A manifest without the workspace VM process is a release this backend cannot run.
-        installed = bool(manifest) and "workspace" in manifest
+        installed = bool(manifest) and "executable" in manifest
         return {
             "installed": installed,
             "path": root,
@@ -407,6 +404,9 @@ async def _install(
             )
         manifest = {
             "executable": release + _EXECUTABLE,
+            # Read only by releases from before the VM process merged into sentineld: their
+            # update coordinator requires it and passes it to the new release as --workspace,
+            # which current releases accept and ignore. The directory does not exist.
             "workspace": release + "/sentinel-workspace",
             "files": [name for _, name in files],
             "version": version,
@@ -544,8 +544,6 @@ class RemoteMacRuntime:
                 root + "/state",
                 "--cache",
                 root + "/cache",
-                "--workspace",
-                manifest["workspace"],
             ]
             # sentineld's store lock rejects duplicate owners. No boot/login service.
             # Do not replay mutations after a dropped connection.

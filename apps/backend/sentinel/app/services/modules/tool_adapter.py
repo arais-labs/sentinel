@@ -12,7 +12,6 @@ from app.models.modules import ModulePermission
 from app.services.modules.definitions import (
     ActionDefinition,
     ModuleDefinition,
-    _normalize_permission_default_value,
 )
 from sentral.errors import ToolValidationError
 from app.services.tools.executor import evaluate_approval_check, validate_payload
@@ -153,10 +152,7 @@ def _resolve_action_approval_check(
     action: ActionDefinition,
     session_factory: "async_sessionmaker[AsyncSession] | None",
 ) -> Any | None:
-    default_level = _default_permission_level(
-        approval=action.approval,
-        permission_default=action.permission_default,
-    )
+    default_level = action.default_permission()
     action_key = f"{module_name}.{action.id}"
     description = (action.description or action.label or action_key).strip()
 
@@ -201,13 +197,6 @@ async def _load_permission_level(
     if level in {"allow", "approval", "deny"}:
         return level
     return default_level
-
-
-def _default_permission_level(*, approval: bool, permission_default: str | None = None) -> str:
-    normalized = _normalize_permission_default_value(permission_default)
-    if normalized is not None:
-        return normalized
-    return "approval" if approval else "allow"
 
 
 def _resolve_grouped_action(

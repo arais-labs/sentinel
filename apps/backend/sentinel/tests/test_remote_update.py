@@ -329,7 +329,6 @@ async def test_only_update_owner_can_attach_during_transaction(monkeypatch, upda
                 if name.endswith("update.json")
                 else {
                     "executable": "/new/sentineld/bin/sentineld",
-                    "workspace": "/new/sentinel-workspace",
                 }
             )
             yield SimpleNamespace(read=AsyncMock(return_value=json.dumps(value)))

@@ -718,7 +718,7 @@ async def _run_hidden_runtime_command(
         session_factory=runtime.db_session_factory,
     ):
         raise ToolValidationError(
-            "No usable workspace attached. Ask the user to attach a workspace from the session toolbar before using this tool."
+            "No usable workspace attached. Attach one with the workspaces tool, or ask the user to attach one from the session toolbar, before using this tool."
         )
     terminal_manager = await get_terminal_manager(
         session_id=runtime.runtime_session_id or runtime.session_id,

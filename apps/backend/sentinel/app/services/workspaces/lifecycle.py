@@ -93,14 +93,25 @@ async def remote_for(workspace_id):
     return None
 
 
-# sentineld's catalog (distributions, desktops, tools, stacks) is static for a runtime.
+# sentineld's catalog (distributions, desktops, tools, stacks), until a distribution changes.
 _catalogs: dict[str, dict] = {}
+
+
+async def runtime_request(remote, action: str, **values) -> dict:
+    """An op on a machine's sentineld (None: this Mac's) that no workspace owns."""
+    try:
+        return await (
+            remote.operation(action, **values) if remote else local_request(action, **values)
+        )
+    finally:
+        if action in {"distribution", "distribution_delete"}:
+            _catalogs.pop(str(remote.machine.id) if remote else "", None)
 
 
 async def catalog(remote=None, *, refresh: bool = False) -> dict:
     key = str(remote.machine.id) if remote else ""
     if refresh or key not in _catalogs:
-        _catalogs[key] = await (remote.operation("catalog") if remote else local_request("catalog"))
+        _catalogs[key] = await runtime_request(remote, "catalog")
     return _catalogs[key]
 
 

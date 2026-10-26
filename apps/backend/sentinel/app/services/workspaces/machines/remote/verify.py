@@ -1,7 +1,7 @@
 """On-demand, read-only checks of an enrolled remote runtime.
 
 No service starts, workspace boots, or repairs happen here. The installed release
-hash covers sentineld, the workspace VM process and the guest share; it does not prove that a
+hash covers sentineld, its VM libraries and the guest share; it does not prove that a
 guest can boot or render a desktop.
 """
 
@@ -117,7 +117,7 @@ async def verify_installation(machine):
             add(
                 "Runtime files",
                 "passed",
-                "sentineld, the workspace VM process and the guest share match the installed release checksum.",
+                "sentineld, its VM libraries and the guest share match the installed release checksum.",
             )
 
             labels = {
@@ -128,7 +128,6 @@ async def verify_installation(machine):
                 "sentineld/tools/wimlib-imagex": "Windows image tool",
                 "sentineld/tools/mkntfs": "NTFS formatter",
                 "sentineld/tools/hive": "Registry editor",
-                "sentinel-workspace/bin/sentinel-workspace": "Workspace VM process",
             }
             for label, path in ((labels[name], str(release / name)) for name in SIGNED):
                 verified = await conn.run(

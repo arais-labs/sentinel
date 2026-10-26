@@ -2,22 +2,16 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
-from pathlib import PurePosixPath
-from shlex import quote
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-import app.services.workspaces.machines.environment as environment_module
-import app.services.workspaces.machines.folders as directories_module
 import app.services.workspaces.machines.registry as machines_module
-import app.services.workspaces.guest_commands as guest_commands_module
 import app.services.workspaces.machines.remote.worker as remote_mac_module
 import app.services.workspaces.machines.remote.verify as remote_verify_module
-import app.services.workspaces.machines.transport as storage_module
-from app.services.workspaces import lifecycle
+from app.services.workspaces import lifecycle, operations
 from app.dependencies import get_manager_db
 from app.schemas.machines import (
     MachineCapabilitiesResponse,
@@ -29,7 +23,6 @@ from app.schemas.machines import (
     MachineTestResponse,
     MachineUpdateRequest,
 )
-from app.services.workspaces.machines.folders import list_local_directories
 from app.services.workspaces.machines.providers import (
     MachineJobNotFound,
     MachineProviderError,
@@ -251,43 +244,7 @@ async def install_remote_runtime(
 
 @router.get("/machines/{machine_id}/development-tools")
 async def development_tool_options(machine_id: UUID, db: AsyncSession = Depends(get_manager_db)):
-
-    try:
-        machine = machines_module.resolve_machine_secret(
-            await machines_module.get_machine(db, machine_id)
-        )
-        os_name = await environment_module.machine_os(machine)
-    except machines_module.MachineNotFound as exc:
-        raise HTTPException(404, str(exc)) from exc
-    except (machines_module.MachineErrorBase, RuntimeError, OSError, TimeoutError) as exc:
-        raise HTTPException(
-            502,
-            "Could not detect this machine's operating system. Check its connection.",
-        ) from exc
-
-    available = os_name == "darwin" and (
-        (machine.provider == "local" and lifecycle.available())
-        or (machine.provider == "ssh" and bool(machine.runtime_root))
-    )
-    catalog = {}
-    if available:
-        # sentineld's catalog is the source of truth for what a workspace can be.
-        try:
-            remote = (
-                await remote_mac_module.get_runtime(machine.id)
-                if machine.provider == "ssh"
-                else None
-            )
-            catalog = await lifecycle.catalog(remote, refresh=True)
-        except Exception as exc:  # noqa: BLE001
-            raise HTTPException(
-                503, f"Could not read this machine's workspace catalog: {exc}"
-            ) from exc
-    return {
-        "os": os_name,
-        "workspaces_available": available,
-        **{key: catalog.get(key, []) for key in ("distributions", "desktops", "tools", "stacks")},
-    }
+    return await operations.machine_catalog(db, machine_id)
 
 
 @router.get("/machines/{machine_id}/directories")
@@ -296,54 +253,7 @@ async def browse_machine_directories(
     path: str = "",
     db: AsyncSession = Depends(get_manager_db),
 ) -> dict:
-
-    if path and (not path.startswith("/") or "\0" in path):
-        raise HTTPException(status_code=422, detail="Choose an absolute directory path")
-    try:
-        machine = machines_module.resolve_machine_secret(
-            await machines_module.get_machine(db, machine_id)
-        )
-    except machines_module.MachineNotFound as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except machines_module.MachineErrorBase as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    if machine.provider == "local":
-
-        try:
-            return await asyncio.to_thread(list_local_directories, path)
-        except OSError as exc:
-            raise HTTPException(
-                status_code=400,
-                detail="Cannot open this directory. Check its path and permissions.",
-            ) from exc
-    transport = storage_module.machine_transport(machine)
-    try:
-        result = await transport.run_script(
-            f"set -- {quote(path)}\n"
-            + guest_commands_module.load_guest_command("common/directories.sh"),
-            timeout=15,
-        )
-        if result.exit_status != 0:
-            raise HTTPException(
-                status_code=400,
-                detail="Cannot open this directory. Check its path and permissions.",
-            )
-        fields = result.stdout.split("\0")
-        current = fields[0]
-        if not current.startswith("/"):
-            raise HTTPException(status_code=502, detail="Machine returned an invalid directory")
-        return {
-            "path": current,
-            "parent": str(PurePosixPath(current).parent),
-            "directories": sorted((name for name in fields[1:] if name), key=str.casefold),
-        }
-    except (OSError, TimeoutError) as exc:
-        raise HTTPException(
-            status_code=502,
-            detail="Could not browse folders on this machine. Check its connection.",
-        ) from exc
-    finally:
-        await transport.close()
+    return await operations.browse_directories(db, machine_id, path)
 
 
 class DirectoryCreateRequest(BaseModel):
@@ -357,59 +267,7 @@ async def create_machine_directory(
     payload: DirectoryCreateRequest,
     db: AsyncSession = Depends(get_manager_db),
 ) -> dict:
-
-    try:
-        directories_module.validate_new_directory(payload.path, payload.name)
-    except ValueError as exc:
-        raise HTTPException(422, str(exc)) from exc
-    try:
-        machine = machines_module.resolve_machine_secret(
-            await machines_module.get_machine(db, machine_id)
-        )
-    except machines_module.MachineNotFound as exc:
-        raise HTTPException(404, str(exc)) from exc
-    except machines_module.MachineErrorBase as exc:
-        raise HTTPException(400, str(exc)) from exc
-    if machine.provider == "local":
-        try:
-            return await asyncio.to_thread(
-                directories_module.create_local_directory, payload.path, payload.name
-            )
-        except FileExistsError as exc:
-            raise HTTPException(409, "A file or folder with that name already exists.") from exc
-        except OSError as exc:
-            raise HTTPException(
-                400,
-                "Cannot create this folder. Check the name and parent folder permissions.",
-            ) from exc
-    transport = storage_module.machine_transport(machine)
-    try:
-        result = await transport.run_script(
-            f"set -- {quote(payload.path)} {quote(payload.name)}\n"
-            + guest_commands_module.load_guest_command("common/create_directory.sh"),
-            timeout=15,
-        )
-        if result.exit_status == 17:
-            raise HTTPException(409, "A file or folder with that name already exists.")
-        if result.exit_status != 0:
-            raise HTTPException(
-                400,
-                "Cannot create this folder. Check the name and parent folder permissions.",
-            )
-        created = result.stdout.rstrip("\n")
-        if not created.startswith("/"):
-            raise HTTPException(502, "Machine returned an invalid directory")
-        return {
-            "path": created,
-            "parent": str(PurePosixPath(created).parent),
-            "directories": [],
-        }
-    except (OSError, TimeoutError) as exc:
-        raise HTTPException(
-            502, "Could not create folder on this machine. Check its connection."
-        ) from exc
-    finally:
-        await transport.close()
+    return await operations.create_directory(db, machine_id, payload.path, payload.name)
 
 
 @router.get("/machines", response_model=list[MachineResponse])

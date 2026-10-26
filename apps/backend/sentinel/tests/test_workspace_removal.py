@@ -40,13 +40,12 @@ async def linked_workspace(fixture):
 async def test_remove_detaches_all_sessions_and_broadcasts(workspace_app, monkeypatch):
     client, factory, _, first, second, _ = workspace_app
     workspace_id, child = await linked_workspace(workspace_app)
-    from app.routers import workspaces
-    from app.services.modules import runtime_services
+    from app.services.workspaces import operations
 
     invalidate = AsyncMock()
     pool = type("Pool", (), {"remove": AsyncMock()})()
-    monkeypatch.setattr(workspaces, "invalidate_session_managers", invalidate)
-    monkeypatch.setattr(runtime_services, "get_browser_pool", lambda: pool)
+    monkeypatch.setattr(operations, "invalidate_session_managers", invalidate)
+    monkeypatch.setattr(operations, "get_browser_pool", lambda: pool)
     manager = type("Manager", (), {"broadcast": AsyncMock()})()
     client._transport.app.state.ws_manager = manager
     preview = await client.get(f"workspaces/{workspace_id}/removal")
