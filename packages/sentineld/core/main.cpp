@@ -1,8 +1,9 @@
-// sentineld --state DIR [--cache DIR] [--lifeline] [--mke2fs PATH] [--share DIR] [--workspace DIR] [--owner-fd N]
+// sentineld --state DIR [--cache DIR] [--lifeline] [--mke2fs PATH] [--share DIR] [--owner-fd N]
 //           [--distributions DIR]...  (folders of distribution folders; default: <root>/distributions)
 //           [--keep-images]  (keep installed bases no workspace uses: the end-to-end harness)
 // sentineld ctl (--state DIR | --socket PATH) OP [FIELDS]  (one request, from a shell: ctl.hpp)
 // sentineld view (--state DIR | --socket PATH) WORKSPACE  (the desktop in a window: view/view.hpp)
+// sentineld vm  (one VM, a child sentineld spawns per workspace: macos/vm/main.m)
 // sentineld help [distributions]  (core/help/*.txt, built into the binary)
 // sentineld --update-session ROOT (remote Macs: the update coordinator, update.hpp)
 // Owned mode (--lifeline): stops when stdin reaches EOF, i.e. when Sentinel quits or crashes.
@@ -24,6 +25,7 @@
 #include <vector>
 
 #include "ctl.hpp"
+#include "help/help.hpp"
 #include "loop.hpp"
 #include "platform.hpp"
 #include "server.hpp"
@@ -86,29 +88,21 @@ bool own(const std::string& dir, int inherited = -1) {
   return false;
 }
 
-// The help texts, in the binary so they always match it (core/help/).
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wc23-extensions"
-constexpr char kHelp[] = {
-#embed "help/sentineld.txt"
-    , 0};
-constexpr char kDistributionsHelp[] = {
-#embed "help/distributions.txt"
-    , 0};
-#pragma clang diagnostic pop
-
 int help(const char* topic) {
-  if (!topic) return std::fputs(kHelp, stdout), 0;
-  if (!std::strcmp(topic, "distributions")) return std::fputs(kDistributionsHelp, stdout), 0;
+  if (const char* text = sentineld::helpText(topic ? topic : "")) return std::fputs(text, stdout), 0;
   std::fprintf(stderr, "sentineld: no help on %s (topics: distributions; sentineld ctl --help for operations)\n", topic);
   return 2;
 }
 
 }  // namespace
 
+extern "C" int sentineld_vm(void);  // macos/vm/main.m
+
 int main(int argc, char** argv) {
+  // First, before this process opens anything: the VM reads its descriptors 3 and 4 as sentineld left them.
+  if (argc == 2 && !std::strcmp(argv[1], "vm")) return sentineld_vm();
   const std::string base = root(argv[0]);
-  std::string state, cache, workspace = base + "/../sentinel-workspace", mke2fs = base + "/tools/mke2fs", share = base + "/share";
+  std::string state, cache, mke2fs = base + "/tools/mke2fs", share = base + "/share";
   std::vector<std::string> distributions;
   bool lifeline = false, keepImages = false;
   int ownerFd = -1;
@@ -123,7 +117,7 @@ int main(int argc, char** argv) {
     else if (a == "--cache" && i + 1 < argc) cache = argv[++i];
     else if (a == "--mke2fs" && i + 1 < argc) mke2fs = argv[++i];
     else if (a == "--share" && i + 1 < argc) share = argv[++i];
-    else if (a == "--workspace" && i + 1 < argc) workspace = argv[++i];
+    else if (a == "--workspace" && i + 1 < argc) ++i;  // passed by releases before `sentineld vm` updating to this one
     else if (a == "--distributions" && i + 1 < argc) distributions.push_back(argv[++i]);
     else if (a == "--owner-fd" && i + 1 < argc) ownerFd = std::atoi(argv[++i]);
     else if (a == "--lifeline") lifeline = true;
@@ -146,7 +140,7 @@ int main(int argc, char** argv) {
     if (!own(cache)) return 1;
 
     sentineld::Loop loop;
-    auto platform = sentineld::makePlatform(loop, workspace);
+    auto platform = sentineld::makePlatform(loop, base + "/bin/sentineld");
     sentineld::Media media(loop, base + "/bin/sentineld-media");
     sentineld::Workspaces workspaces(loop, *platform, state, cache, mke2fs, share, distributions, &media, keepImages);
     bool draining = false;

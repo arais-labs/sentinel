@@ -1,8 +1,10 @@
 Writing a distribution
 
-A distribution is one folder, <id>/, inside a folder given to sentineld with --distributions. The id is
-the folder's name. sentineld knows no operating system: everything about one is in its folder, which
-sentineld only reads (again at every catalog, configure and start, so edits apply without a restart).
+A distribution is one folder, <id>/, inside a folder given to sentineld with --distributions, or in
+sentineld's own folder (DIR/distributions of its --state), which `sentineld ctl ... distribution`
+writes (sentineld ctl help distribution). The id is the folder's name. sentineld knows no operating
+system: everything about one is in its folder, which it reads again at every catalog, configure and
+start, so edits apply without a restart.
 Every VM of the distribution also sees the folder, read-only, at /run/sentinel/distribution.
 
   <id>/distribution.json       what sentineld and the guest agent need to know (below)
@@ -36,7 +38,9 @@ the "install" object and the files under install/: changing either installs agai
   }
 
 - sources: downloaded once and checked against their SHA-256. Pin URLs that stay published: a URL
-  that later disappears breaks every new install of the recipe.
+  that later disappears breaks every new install of the recipe. The source op downloads a URL and
+  gives its SHA-256 (sentineld ctl help source), and the install then uses that copy; the same op
+  lists and reads what is inside a downloaded archive.
 - disk: a GPT disk; the last partition without "mib" takes the rest.
 - steps run on the host, in a work folder, in order. In any string, {work}, {install}, {disk},
   {disk.guid}, {root}, {<source name>} (the downloaded file) and, per partition, {<p>.guid},
@@ -52,7 +56,8 @@ the "install" object and the files under install/: changing either installs agai
 - Then the VM boots the new disks, as every workspace boots. The first boot finishes the install
   inside the guest (typically: install the system with its own package manager). It must end by
   writing the file sentinel/result on the EFI system partition, containing "ok" or the reason it
-  failed, and powering off. Powering off without it, a crash, or timeout_min fails the install.
+  failed, and powering off. Powering off without it, a crash, a kernel panic on the console (at
+  once), or timeout_min fails the install.
   sentineld starts the VM again after every guest reboot.
 - The root disk (when there is one) must be ext4: before each boot sentineld grows the file to the
   workspace's size and runs resize2fs on it. Leave it cleanly unmounted at the end of the install.
@@ -170,4 +175,6 @@ TESTING A DISTRIBUTION
   sentineld view --state S t1                         the desktop in a window, to use it yourself
   sentineld ctl --state S stop '{"workspace":"t1"}'
 
-When something fails, read the error, then the console logs (`sentineld help` lists where they are).
+When something fails, read the error, then the console logs: sentineld ctl --state S log
+'{"workspace":"t1"}' gives the end of its boot's console and of the install's (`sentineld help`
+lists the files).

@@ -31,6 +31,26 @@ constexpr Op kOps[] = {
      "features, minimum), problems (folders that could not be used and why), desktops and tools (with the\n"
      "distributions offering them), stacks, wallpapers.",
      "catalog"},
+    {"distribution", "distribution, files",
+     "Writes a distribution (sentineld help distributions) into sentineld's own folder, creating it, or\n"
+     "changes one written so. files: {\"<path in the folder>\": {\"text\": ..., \"executable\": bool} to write,\n"
+     "or null to remove}; other files stay. Replies its folder, files [{path, bytes}] and problem (null when usable).",
+     "distribution '{\"distribution\":\"d1\",\"files\":{\"distribution.json\":{\"text\":\"{...}\"}}}'"},
+    {"distribution_read", "distribution, [path]",
+     "Any distribution's folder, files, problem and whether it is writable; with path, that file's text.",
+     "distribution_read '{\"distribution\":\"d1\",\"path\":\"distribution.json\"}'"},
+    {"distribution_delete", "distribution",
+     "Removes a distribution sentineld wrote, unless a workspace uses it (the reply names them).",
+     "distribution_delete '{\"distribution\":\"d1\"}'"},
+    {"source", "url, [match | paths, offset, length], [limit]",
+     "Downloads a file a distribution's install recipe may pin (install.sources) into sentineld's cache.\n"
+     "Replies state downloading (bytes so far) at once; ask again later: state ready with sha256 and\n"
+     "bytes, or the download's error. An install pinning that sha256 uses the copy.\n"
+     "Once ready, inside an archive: match (a glob, * for all) lists members {path, bytes, type};\n"
+     "paths reads members whole, each {bytes, text} or {bytes, binary: true}; with one path, offset\n"
+     "and length read a byte range of it. A reply over limit characters (default 50000) is refused\n"
+     "with what matched and where, to narrow the request.",
+     "source '{\"url\":\"https://example.org/rootfs.tar.gz\",\"match\":\"boot/*\"}'"},
     {"list", "[watch]",
      "Every workspace's record: spec, revision, state (running|stopped|failed), operation\n"
      "(preparing|stopping|null), progress, error, screen. With watch:true, then prints one\n"
@@ -78,10 +98,25 @@ constexpr Op kOps[] = {
      "keyboard '{\"workspace\":\"w1\",\"layout\":\"us,fr\"}'"},
     {"wallpaper", "workspace, design", "Sets one of the catalog's wallpapers on the running desktop.",
      "wallpaper '{\"workspace\":\"w1\",\"design\":\"<id>\"}'"},
+    {"log", "workspace, [lines]",
+     "What the guest printed: console (its newest boot's console log), build (the console of the\n"
+     "install or layer that made its disks: running, or the last failed one) and failure (the\n"
+     "workspace's error). lines: the last lines of each (default 200, at most 5000); null when\n"
+     "there is none.",
+     "log '{\"workspace\":\"w1\",\"lines\":400}'"},
+    {"usage", "",
+     "Disk space sentineld uses, in bytes: workspaces {id: its disks and logs, by what is its own (its\n"
+     "disks share their base's): what deleting it frees}, shared {systems (installed bases and layers),\n"
+     "packages, sources, installs, distributions}, total, and the volume's free and capacity.",
+     "usage"},
     {"display", "workspace",
      "A ticket for a viewer of the workspace's screen: port, cert_sha256, ticket, expires (DESIGN.md §6).\n"
      "To open the screen in a window: sentineld view --state DIR WORKSPACE.",
      "display '{\"workspace\":\"w1\"}'"},
+    {"help", "[topic]",
+     "The text `sentineld help [topic]` prints, for clients without the binary: the overview, or topic\n"
+     "\"distributions\" (how to write one).",
+     "help '{\"topic\":\"distributions\"}'"},
     {"status", "", "sentineld's API version and worker_id (ctl checks the version itself first).", "status"},
     {"shutdown", "", "Powers off every VM and exits sentineld.", "shutdown"},
 };

@@ -4,8 +4,8 @@ The workspace daemon: VMs on macOS, one per workspace. The Sentinel app runs it,
 its own.
 
 ```sh
-make                      # build/bin/sentineld, build/share, build/distributions, build/tools
-make -C ../sentinel-workspace
+make                      # build/: bin/sentineld (also each VM, as `sentineld vm`), lib/, share/,
+                          # distributions/, tools/ (the first build compiles the VM's libraries)
 
 build/bin/sentineld --state DIR [--cache DIR] [--distributions DIR]...
 ```

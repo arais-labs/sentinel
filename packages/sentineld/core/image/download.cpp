@@ -56,6 +56,7 @@ struct Transfer {
   int fd = -1;
   Sha256 hash;
   uint64_t got = 0;
+  std::atomic<uint64_t>* progress = nullptr;
   int attempts = 0;
   bool failed = false, tooLarge = false;
   Easy easy;
@@ -64,6 +65,7 @@ struct Transfer {
     ::unlink(part.c_str());
     hash = Sha256();
     got = 0;
+    if (progress) *progress = 0;
     failed = tooLarge = false;
   }
   bool open() { return fd >= 0 || (fd = ::open(part.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0644)) >= 0; }
@@ -80,6 +82,7 @@ size_t store(char* p, size_t size, size_t n, void* u) {
   if (!t->open()) return t->failed = true, 0;
   t->hash.update(p, len);
   t->got += len;
+  if (t->progress) *t->progress = t->got;
   for (size_t off = 0; off < len;) {
     ssize_t w = ::write(t->fd, p + off, len - off);
     if (w <= 0) return t->failed = true, 0;
@@ -90,13 +93,15 @@ size_t store(char* p, size_t size, size_t n, void* u) {
 
 }  // namespace
 
-void download(const std::string& url, const std::string& digest, const std::string& path, const std::atomic<bool>& cancel) {
+std::string download(const std::string& url, const std::string& digest, const std::string& path, const std::atomic<bool>& cancel,
+                     std::atomic<uint64_t>* got) {
   static const bool init = curl_global_init(CURL_GLOBAL_DEFAULT) == CURLE_OK;
   if (!init) throw std::runtime_error("curl_global_init failed");
   // The digest is what makes a source trustworthy, not the transport: some publishers (Microsoft's
   // Windows images) serve their files over plain HTTP only.
   if (url.rfind("https://", 0) != 0 && url.rfind("http://", 0) != 0) throw std::runtime_error("unsupported source URL: " + url);
   Transfer t;
+  t.progress = got;
   for (;;) {
     t.part = path + "." + std::to_string(getpid()) + "." + std::to_string(arc4random()) + ".part";
     setup(t.easy, url, cancel);
@@ -116,10 +121,12 @@ void download(const std::string& url, const std::string& digest, const std::stri
     t.reset();
     std::this_thread::sleep_for(std::chrono::seconds(2 * t.attempts));
   }
-  if (t.hash.digest() != digest) throw std::runtime_error("download does not match its digest: " + url);
+  const std::string actual = t.hash.digest();
+  if (!digest.empty() && actual != digest) throw std::runtime_error("download does not match its digest: " + url);
   if (!t.open() || fcntl(t.fd, F_FULLFSYNC) != 0 || ::rename(t.part.c_str(), path.c_str()) != 0)
     throw std::runtime_error("cannot store " + path);
   t.part.clear();
+  return actual;
 }
 
 }  // namespace sentineld::image

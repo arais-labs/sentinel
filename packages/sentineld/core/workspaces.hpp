@@ -58,6 +58,7 @@ class Workspaces {
     json::Object keys;            // their key chords, as the agent last applied them (computer use)
     std::shared_ptr<std::atomic<bool>> computing;  // the running computer-use batch's cancel flag; null when none
     std::string progress;         // what provisioning is doing, for people (record.progress)
+    std::string build;            // the work folder of the install or layer it last waited for (the log op)
   };
   using Converted = std::function<void(std::string base, std::string error)>;
   // A running install (image/install.hpp): its install VM, by the VM's id.
@@ -69,6 +70,7 @@ class Workspaces {
     bool timedOut = false;
     std::vector<json::Array> layer;  // a layer's steps (argv), run in order (layerDisk); none for a distribution's install
     std::string failure;  // why a layer failed before its VM stopped
+    std::string panic;    // the guest kernel's panic line, when it panicked (watchInstall)
   };
   struct Conversion {
     struct Waiter { std::string id; uint64_t epoch; Converted done; };
@@ -92,6 +94,25 @@ class Workspaces {
   void wallpaper(const json::Value& r, Reply reply);
   void computer(const json::Value& r, Reply reply);
   void computerCancel(const json::Value& r, Reply reply);
+  // Distributions written through sentineld: <state>/distributions/<id>, read like the others.
+  void distribution(const json::Value& r, Reply reply);
+  void distributionRead(const json::Value& r, Reply reply);
+  void distributionDelete(const json::Value& r, Reply reply);
+  json::Object distributionState(const std::string& id) const;
+  std::string ownDistributions() const { return state_ + "/distributions"; }
+  // A file a distribution may pin as an install source, downloaded into the cache (source op).
+  void source(const json::Value& r, Reply reply);
+  void watchInstall(const std::string& vm);
+  void browseSource(const std::string& url, const json::Value& r, Reply reply);
+  void log(const json::Value& r, Reply reply);
+  void usage(Reply reply);
+  struct Fetch {
+    std::shared_ptr<std::atomic<uint64_t>> got = std::make_shared<std::atomic<uint64_t>>(0);
+    bool done = false;
+    std::string sha256, error;
+  };
+  std::map<std::string, Fetch> fetches_;  // by URL
+  std::shared_ptr<std::atomic<bool>> fetchCancel_ = std::make_shared<std::atomic<bool>>(false);
   void keepKeys(const std::string& id, const json::Value& applied);
   void acceptForwards(const std::string& id, int fd, int port);
 

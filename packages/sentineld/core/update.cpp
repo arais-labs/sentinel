@@ -87,22 +87,20 @@ bool inside(const std::string& path, const std::string& dir) {
 
 const std::string kExecutable = "/sentineld/bin/sentineld";
 
-// The manifest names its release: ROOT/releases/<release>/sentineld/bin/sentineld and the VM
-// process ROOT/releases/<release>/sentinel-workspace.
+// The manifest names its release: ROOT/releases/<release>/sentineld/bin/sentineld (which runs the VMs too).
 std::string release(const std::string& root, const json::Value& manifest) {
   auto* protocol = std::get_if<double>(&manifest["updateProtocol"].v);
   auto* exe = std::get_if<std::string>(&manifest["executable"].v);
-  auto* workspace = std::get_if<std::string>(&manifest["workspace"].v);
-  if (!protocol || *protocol != 1 || !exe || !workspace || !inside(*exe, root + "/releases/") ||
+  if (!protocol || *protocol != 1 || !exe || !inside(*exe, root + "/releases/") ||
       exe->size() <= kExecutable.size() || exe->compare(exe->size() - kExecutable.size(), kExecutable.size(), kExecutable) != 0)
     throw std::runtime_error("Unsupported runtime update manifest");
   std::string dir = exe->substr(0, exe->size() - kExecutable.size());
-  if (dir.find('/', root.size() + 10) != std::string::npos || *workspace != dir + "/sentinel-workspace")
+  if (dir.find('/', root.size() + 10) != std::string::npos)
     throw std::runtime_error("Unsupported runtime update manifest");
   return dir;
 }
 
-pid_t launch(const std::string& root, const std::string& exe, const std::string& workspace, int owner) {
+pid_t launch(const std::string& root, const std::string& exe, int owner) {
   posix_spawn_file_actions_t actions;
   posix_spawnattr_t attr;
   posix_spawn_file_actions_init(&actions);
@@ -120,7 +118,7 @@ pid_t launch(const std::string& root, const std::string& exe, const std::string&
   const char* home = std::getenv("HOME");
   std::string envHome = std::string("HOME=") + (home ? home : "/");
   const std::string state = root + "/state", cache = root + "/cache", fd = std::to_string(kInheritedOwner);
-  const char* argv[] = {exe.c_str(), "--state", state.c_str(), "--cache", cache.c_str(), "--workspace", workspace.c_str(),
+  const char* argv[] = {exe.c_str(), "--state", state.c_str(), "--cache", cache.c_str(),
                         "--owner-fd", fd.c_str(), nullptr};
   const char* envp[] = {"PATH=/usr/bin:/bin:/usr/sbin:/sbin", "LANG=en_US.UTF-8", envHome.c_str(), nullptr};
   pid_t pid = 0;
@@ -164,7 +162,7 @@ json::Object handle(const std::string& root, const json::Value& request) {
     try {
       write(root + "/manifest.json", manifest);
       point(root, dir);
-      const pid_t pid = launch(root, manifest["executable"].str(), manifest["workspace"].str(), owner);
+      const pid_t pid = launch(root, manifest["executable"].str(), owner);
       ::close(owner);
       return {{"ok", true}, {"pid", int64_t(pid)}};
     } catch (...) {

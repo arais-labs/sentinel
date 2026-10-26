@@ -133,7 +133,7 @@ static void *accept_loop(void *arg) {
     const int fd = accept(server, NULL, NULL);
     if (fd < 0) {
       if (errno == EINTR) continue;
-      perror("sentinel-workspace: display service accept");
+      perror("sentineld vm: display service accept");
       return NULL;
     }
     struct client *c = calloc(1, sizeof *c);
@@ -153,12 +153,12 @@ void service_start(const char *path) {
   const int server = socket(AF_UNIX, SOCK_STREAM, 0);
   struct sockaddr_un addr = {.sun_family = AF_UNIX};
   if (server < 0 || strlcpy(addr.sun_path, path, sizeof addr.sun_path) >= sizeof addr.sun_path) {
-    fprintf(stderr, "sentinel-workspace: display service socket path too long\n");
+    fprintf(stderr, "sentineld vm: display service socket path too long\n");
     exit(1);
   }
   unlink(path);
   if (bind(server, (struct sockaddr *)&addr, sizeof addr) || listen(server, 4)) {
-    perror("sentinel-workspace: display service");
+    perror("sentineld vm: display service");
     exit(1);
   }
   pthread_t thread;

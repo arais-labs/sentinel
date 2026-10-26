@@ -116,7 +116,7 @@ static int32_t properties(void *self, uint8_t *buf, size_t len) {
 static KrunInputDevice make(struct queue *q) {
   if (pipe(q->pipe) || fcntl(q->pipe[0], F_SETFL, O_NONBLOCK) || fcntl(q->pipe[0], F_SETFD, FD_CLOEXEC) ||
       fcntl(q->pipe[1], F_SETFD, FD_CLOEXEC)) {
-    perror("sentinel-workspace: input pipe");
+    perror("sentineld vm: input pipe");
     exit(1);
   }
   struct krun_input_config config = {
@@ -132,7 +132,7 @@ static KrunInputDevice make(struct queue *q) {
   KrunError err = NULL;
   KrunInputDevice device = krun_input_device_new(&config, sizeof config, &provider, sizeof provider, &err);
   if (err) {
-    fprintf(stderr, "sentinel-workspace: input device failed\n");
+    fprintf(stderr, "sentineld vm: input device failed\n");
     exit(1);
   }
   return device;

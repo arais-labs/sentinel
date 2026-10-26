@@ -36,7 +36,6 @@ import zlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SENTINELD = os.path.normpath(os.path.join(HERE, "..", ".."))
-REPO_PACKAGES = os.path.dirname(SENTINELD)
 GiB = 1 << 30
 
 # What each desktop's session runs once it is up (/proc/*/comm, at most 15 characters).
@@ -212,8 +211,6 @@ class Daemon:
             self.args.share,
             "--distributions",
             self.args.distributions,
-            "--workspace",
-            self.args.workspace,
             "--mke2fs",
             self.args.mke2fs,
             "--lifeline",
@@ -1867,11 +1864,6 @@ def main():
         help="the distributions folder sentineld is given",
     )
     p.add_argument("--mke2fs", default=os.path.join(build, "tools", "mke2fs"))
-    p.add_argument(
-        "--workspace",
-        default=os.path.join(REPO_PACKAGES, "sentinel-workspace", "build"),
-        help="sentinel-workspace build tree",
-    )
     p.add_argument("--viewer", default=os.path.join(build, "tests", "e2e-viewer"))
     p.add_argument(
         "--d3d11-probe",
@@ -1907,27 +1899,28 @@ def main():
         args.sentineld,
         args.mke2fs,
         args.viewer,
-        os.path.join(args.workspace, "bin", "sentinel-workspace"),
+        os.path.join(os.path.dirname(args.sentineld), "..", "lib", "libkrun.dylib"),
     ):
         if not os.path.exists(path):
             raise SystemExit(
                 "missing %s: build first (make -C packages/sentineld e2e builds everything)" % path
             )
-    # The workspace tree and the share are cloned for the run, so a rebuild meanwhile changes nothing
-    # mid-run (a changed install recipe would install its base again).
+    # sentineld (its VMs run the same binary, beside lib/ and share/firmware/), the share and the
+    # distributions are cloned for the run, so a rebuild meanwhile changes nothing mid-run (a changed
+    # install recipe would install its base again).
     run = Run(args)
-    snapshot = os.path.join(run.run_dir, "sentinel-workspace")
-    os.makedirs(snapshot)
-    for part in ("bin", "lib", "share"):
-        subprocess.run(
-            ["cp", "-cR", os.path.join(args.workspace, part), os.path.join(snapshot, part)],
-            check=True,
-        )
+    built = os.path.join(os.path.dirname(args.sentineld), "..")
+    os.makedirs(os.path.join(run.run_dir, "bin"))
+    subprocess.run(["cp", "-c", args.sentineld, os.path.join(run.run_dir, "bin")], check=True)
+    subprocess.run(
+        ["cp", "-cR", os.path.join(built, "lib"), os.path.join(run.run_dir, "lib")], check=True
+    )
     subprocess.run(["cp", "-cR", args.share, os.path.join(run.run_dir, "share")], check=True)
     subprocess.run(
         ["cp", "-cR", args.distributions, os.path.join(run.run_dir, "distributions")], check=True
     )
-    args.workspace, args.share = snapshot, os.path.join(run.run_dir, "share")
+    args.sentineld = os.path.join(run.run_dir, "bin", os.path.basename(args.sentineld))
+    args.share = os.path.join(run.run_dir, "share")
     args.distributions = os.path.join(run.run_dir, "distributions")
     if os.path.exists(args.d3d11_probe):  # the Windows guest finds it on its share disk
         shutil.copy(args.d3d11_probe, os.path.join(args.share, "windows", "e2e-d3d11.exe"))
@@ -1942,7 +1935,8 @@ def main():
     try:
         code = run.main()
     finally:
-        shutil.rmtree(snapshot, ignore_errors=True)
+        for part in ("bin", "lib"):
+            shutil.rmtree(os.path.join(run.run_dir, part), ignore_errors=True)
         shutil.rmtree(args.share, ignore_errors=True)
         shutil.rmtree(args.distributions, ignore_errors=True)
     sys.exit(code)

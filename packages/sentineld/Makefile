@@ -48,9 +48,15 @@ CXX := clang++
 export SDKROOT := $(shell xcrun --sdk macosx --show-sdk-path)
 CXXFLAGS := -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror
 CORE_SRC := core/util/json.cpp core/util/sha256.cpp core/image/disk.cpp core/image/download.cpp \
-	core/image/media.cpp core/image/install.cpp core/loop.cpp core/agent.cpp core/catalog.cpp core/computer.cpp core/media.cpp core/workspaces.cpp core/server.cpp core/update.cpp core/ctl.cpp core/main.cpp \
+	core/image/media.cpp core/image/install.cpp core/loop.cpp core/agent.cpp core/catalog.cpp core/computer.cpp core/media.cpp core/workspaces.cpp core/server.cpp core/update.cpp core/ctl.cpp core/help/help.cpp core/main.cpp \
 	core/view/view.mm core/view/transport.cpp
 MACOS_SRC := macos/backend/workspace.cpp
+# `sentineld vm` (macos/vm, DESIGN.md §15): one VM per process, on the libraries ../sentinel-workspace
+# builds (libkrun, virglrenderer, KosmicKrisp, ...), bundled in build/lib with its firmware.
+LIBS := ../sentinel-workspace/build
+VM_SRC := $(wildcard macos/vm/*.m macos/vm/*.c) macos/video/DesktopVideoEncoder.m
+VM_OBJ := $(patsubst %,$(BUILD)/obj/%.o,$(VM_SRC))
+VM_CFLAGS := -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-unused-parameter -fobjc-arc -Imacos/vm -Imacos/video -I$(LIBS)/include
 MEDIA_SRC := media/main.cpp media/server.cpp core/loop.cpp core/util/json.cpp
 AGENT_SRC := guest/agent/agent.cpp core/util/json.cpp
 
@@ -71,7 +77,7 @@ GUEST_CXX := $(SRC)/$(ZIG)/zig c++ -target aarch64-linux-musl -std=c++20 -O2 -Wa
 	-static -s -I$(GUEST_ROOT)/usr/include
 WINDOWS_CXX := $(SRC)/$(ZIG)/zig c++ -target aarch64-windows-gnu -std=c++20 -O2 -Wall -Wextra -Werror -static -s
 
-.PHONY: distributions all tools deps share release clean e2e
+.PHONY: distributions all tools deps share release clean e2e test
 all: tools $(BUILD)/bin/sentineld $(BUILD)/bin/sentineld-media share distributions $(BUILD)/compile_commands.json
 # The share's data: the catalog, the desktop session, the wallpapers.
 GUEST_DATA := catalog.json hostname.sh $(patsubst guest/%,%,$(wildcard guest/desktop/*.sh guest/desktop/*.py guest/wallpapers/*.png))
@@ -95,12 +101,34 @@ share: $(BUILD)/share/sentineld-agent $(BUILD)/share/windows/sentineld-agent.exe
 	@mkdir -p $(BUILD)/share/distribution
 tools: $(TOOLS)/mke2fs $(TOOLS)/resize2fs $(TOOLS)/wimlib-imagex $(TOOLS)/mkntfs $(TOOLS)/hive
 
-# VMs run in sentinel-workspace (../sentinel-workspace), which holds the hypervisor entitlement.
-$(BUILD)/bin/sentineld: $(CORE_SRC) $(MACOS_SRC) $(wildcard core/*.hpp core/*/*.hpp core/help/*.txt) $(FATFS_OBJ) $(DEPS)/lib/libngtcp2_crypto_ossl.a $(TOOLS)/resize2fs
-	@mkdir -p $(@D) && $(CXX) $(CXXFLAGS) -fobjc-arc -I$(DEPS)/include -I$(SRC)/$(FATFS)/source -I$(SRC)/$(ARCHIVE)/libarchive -o $@ \
-		$(CORE_SRC) $(MACOS_SRC) $(FATFS_OBJ) -lz -lcurl -larchive \
+# One binary: the daemon and, as `sentineld vm`, each VM, hence the hypervisor entitlement. Written as
+# a new file: running VMs keep the one they started with.
+$(BUILD)/bin/sentineld: $(CORE_SRC) $(MACOS_SRC) $(VM_OBJ) $(wildcard core/*.hpp core/*/*.hpp core/help/*.txt) $(FATFS_OBJ) $(DEPS)/lib/libngtcp2_crypto_ossl.a $(TOOLS)/resize2fs $(BUILD)/lib/libkrun.dylib macos/vm/entitlements.plist
+	@mkdir -p $(@D) && $(CXX) $(CXXFLAGS) -fobjc-arc -I$(DEPS)/include -I$(SRC)/$(FATFS)/source -I$(SRC)/$(ARCHIVE)/libarchive -o $@.new \
+		$(CORE_SRC) $(MACOS_SRC) $(VM_OBJ) $(FATFS_OBJ) -lz -lcurl -larchive \
 		$(DEPS)/lib/libngtcp2_crypto_ossl.a $(DEPS)/lib/libngtcp2.a $(DEPS)/lib/libssl.a $(DEPS)/lib/libcrypto.a \
-		$(addprefix -framework ,IOKit CoreFoundation AppKit AVFoundation CoreMedia)
+		-L$(BUILD)/lib -lkrun -lslirp.0 -Wl,-rpath,@executable_path/../lib \
+		$(addprefix -framework ,IOKit CoreFoundation AppKit AVFoundation CoreMedia Foundation AudioToolbox CoreVideo \
+			CoreGraphics ImageIO QuartzCore VideoToolbox)
+	@codesign --force --sign - --entitlements macos/vm/entitlements.plist $@.new
+	@mv -f $@.new $@
+
+$(BUILD)/obj/macos/%.o: macos/% $(wildcard macos/vm/*.h macos/video/*.h) $(BUILD)/lib/libkrun.dylib
+	@mkdir -p $(@D) && clang $(VM_CFLAGS) -c -o $@ $<
+
+# The VM's libraries and firmware, built by ../sentinel-workspace (its first build takes a while), and
+# copied here so build/ is the whole runtime: bin/, lib/, share/firmware/.
+$(LIBS)/lib/libkrun.dylib: $(wildcard ../sentinel-workspace/macos/scripts/* ../sentinel-workspace/macos/patches/*)
+	@$(MAKE) -s -C ../sentinel-workspace libs
+$(BUILD)/lib/libkrun.dylib: $(LIBS)/lib/libkrun.dylib
+	@mkdir -p $(BUILD)/share && rsync -a --delete $(LIBS)/lib/ $(BUILD)/lib/ && \
+		rsync -a --delete $(LIBS)/share/firmware/ $(BUILD)/share/firmware/ && touch $@
+
+# The video encoder's backpressure, against VideoToolbox (no VM).
+test:
+	@mkdir -p $(BUILD)/tests && clang -fobjc-arc -Imacos/video -o $(BUILD)/tests/encoder-backpressure \
+		macos/video/encoder-backpressure.m $(addprefix -framework ,Foundation CoreMedia CoreVideo QuartzCore VideoToolbox) && \
+		$(BUILD)/tests/encoder-backpressure && echo "PASS encoder-backpressure"
 
 # The viewer endpoint (DESIGN.md §6): static QUIC stack from build/deps.
 $(BUILD)/bin/sentineld-media: $(MEDIA_SRC) $(wildcard media/*.hpp core/*.hpp core/util/*.hpp) $(DEPS)/lib/libngtcp2_crypto_ossl.a
@@ -122,7 +150,6 @@ $(BUILD)/tests/e2e-d3d11.exe: tests/e2e/d3d11_probe.c $(SRC)/$(ZIG)/zig
 	@mkdir -p $(@D) && $(SRC)/$(ZIG)/zig cc -target aarch64-windows-gnu -O2 -Wall -Wextra -Werror -s -o $@ \
 		tests/e2e/d3d11_probe.c -ld3d11 -ldxgi
 e2e: all $(BUILD)/tests/e2e-viewer $(BUILD)/tests/e2e-d3d11.exe
-	@$(MAKE) -s -C ../sentinel-workspace
 	@python3 tests/e2e/e2e.py --distros "$(DISTROS)" --desktops "$(DESKTOPS)" --jobs "$(or $(JOBS),0)"
 
 # The read-only share every VM mounts at /run/sentinel (DESIGN.md §9).
@@ -173,7 +200,7 @@ $(BUILD)/share/%: guest/%
 release: $(BUILD)/bin/sentineld $(BUILD)/bin/sentineld-media tools share distributions
 	@rm -rf $(BUILD)/release && mkdir -p $(BUILD)/release
 	@COPYFILE_DISABLE=1 tar -czf $(BUILD)/release/sentineld.tar.gz --exclude=__pycache__ --exclude=.DS_Store \
-		-C $(BUILD) bin/sentineld bin/sentineld-media tools/mke2fs tools/resize2fs tools/wimlib-imagex tools/mkntfs tools/hive share distributions
+		-C $(BUILD) bin/sentineld bin/sentineld-media lib tools/mke2fs tools/resize2fs tools/wimlib-imagex tools/mkntfs tools/hive share distributions
 	@sha=$$(shasum -a 256 $(BUILD)/release/sentineld.tar.gz | cut -c1-64); file=sentineld-$$(echo $$sha | cut -c1-16).tar.gz; \
 		mv $(BUILD)/release/sentineld.tar.gz $(BUILD)/release/$$file; \
 		printf '{"name": "sentineld", "file": "%s", "sha256": "%s"}\n' $$file $$sha > $(BUILD)/release/sentineld.json; \

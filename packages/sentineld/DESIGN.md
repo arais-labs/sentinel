@@ -26,7 +26,7 @@ user's machine                                         local or remote host
 backend (Python) ──control: Unix socket / SSH streamlocal──▶ sentineld
 frontend viewer  ──media: WebTransport/QUIC (UDP)──────────▶   │ Platform (C++ interface)
                                                                ▼
-                                                    macOS backend → sentinel-workspace
+                                                    macOS backend → sentineld vm
                                                                │ vsock
                                                                ▼
                                                     guest agent (service under distro init)
@@ -36,8 +36,8 @@ frontend viewer  ──media: WebTransport/QUIC (UDP)─────────
 |---|---|---|
 | `sentineld` core | C++20 | catalog, request handling, provisioning jobs, health |
 | `Platform` interface | C++ header in core | VM create/start/power-off, vsock connect, disk clone/grow |
-| macOS backend | C++ | spawns and supervises one `sentinel-workspace` per VM (§15) |
-| `sentinel-workspace` | Objective-C, C | one VM on libkrun: disks, NAT (libslirp), virtiofs, vsock, GPU (Venus), video encoder, input |
+| macOS backend | C++ | spawns and supervises one `sentineld vm` per VM (§15) |
+| `sentineld vm` | Objective-C, C | one VM on libkrun: disks, NAT (libslirp), virtiofs, vsock, GPU (Venus), video encoder, input |
 | guest agent | C++ | the host's way into the guest: exec, process, forward, mount, shutdown (replaces Apple `vminitd`). Display, input and sound are VM devices (§16) |
 
 ### Tree
@@ -51,11 +51,11 @@ packages/sentineld/
     agent/              C++ agents (Linux, Windows)
     distributions/      one folder per distribution: its install recipe and guest data (§8)
     desktop/            desktop setup, session and computer use
-  macos/backend/        Platform implementation: spawns sentinel-workspace
-packages/sentinel-workspace/
-  macos/workspace/      the VM process (libkrun, display, input, network, computer use)
+  macos/backend/        Platform implementation: spawns `sentineld vm`
+  macos/vm/             `sentineld vm`, the VM process (libkrun, display, input, network, computer use)
   macos/video/          VideoToolbox encoder
-  macos/scripts/, macos/patches/   pinned build of libkrun, virglrenderer, Mesa
+packages/sentinel-workspace/
+  macos/scripts/, macos/patches/   pinned build of libkrun, virglrenderer, Mesa (the VM's libraries)
 ```
 
 ## 3. Process model
@@ -176,6 +176,14 @@ recovery_backup, recovery_required}`.
 | `status` | `api` | `api`, `worker_id` | `unsupported` | Handshake: version check and identity. The backend checks `worker_id` against the machine it expects |
 | `list` | `watch?` | `{id → record}` | — | Snapshot. With `watch`, the connection then receives `{"event":"workspace","id","record"}` per change; `record:null` means deleted |
 | `catalog` | — | `distributions`, `desktops`, `tools`, `stacks`, `wallpapers` | — | What a spec may select (§8), read again from the distribution folders at every `catalog`, `configure` and `start`: the distributions (`id`, `name`, `detail`, `features`, `minimum`); the `problems` (`id`, `problem`: a folder whose `distribution.json` is missing or unreadable, or an id in two folders; a spec naming it gets that problem as its error); the desktops (`id`, `name`, `distributions`: where it is available); the tools not `hidden` (`id`, `name`, `detail`, `category`, `distributions`, `requires?`); the preset `stacks` (`id`, `name`, `description`, `tools`); and the `wallpapers` (`id`, `name`) |
+| `distribution` | `distribution`, `files` | `distribution`, `folder`, `files` (`[{path, bytes}]`), `problem`, `writable` | `invalid`, `conflict` | Writes files of a distribution in sentineld's own folder (`<state>/distributions/<id>`, §8), creating it: `files` maps a path inside the folder to `{text, executable?}` (write) or `null` (remove); other files stay. `conflict`: the id is in a folder sentineld does not write |
+| `distribution_read` | `distribution`, `path?` | as `distribution`, or `path`, `text`, `executable` | `not_found` | Any distribution's folder and files, or one file (at most 1 MiB) |
+| `distribution_delete` | `distribution` | — | `not_found`, `conflict` | Removes a distribution sentineld wrote; `conflict` (with `workspaces`) while a workspace uses it |
+| `help` | `topic?` | `text` | `not_found` | The texts `sentineld help` prints (`core/help/`), for clients that drive sentineld from elsewhere: the overview, or `distributions` (how to write one) |
+| `source` | `url` | `url`, `state` (`downloading`\|`ready`), `bytes`, `sha256` when ready | `invalid`, `unavailable` | Downloads a file for a recipe to pin into `<cache>/sources/<sha256>` (through `<cache>/fetch/`) on a worker thread; asking again follows the same download, and its error is replied once. Kept from pruning while sentineld runs |
+| `source` (browse) | `url`, `match` or `paths` (+ `offset`, `length` with one path), `limit?` | `members` `[{path, bytes, type, target?}]` and `matched`; or `files` `{path → {bytes, text \| binary, offset?}}` | `conflict` (not downloaded), `too_large`, `unsupported` | Inside a downloaded archive (libarchive, read once through on a worker thread): what a recipe can use from it. A reply over `limit` characters (default 50000) is refused, with the matches per top folder or each member's size |
+| `log` | `workspace`, `lines?` | `console`, `build`, `failure` | `not_found` | The last lines of the workspace's newest console log and of the console of the install or layer it last waited for (running, or the last failed one, §7) |
+| `usage` | — | `workspaces` `{id → bytes}`, `shared` (`systems`, `packages`, `sources`, `installs`, `distributions`), `total`, `free`, `capacity` | — | Disk space by what holds it (§18), a workspace by its files' own bytes (`Platform::ownBytes`: APFS's private size, so its clone of a base counts only what it changed): what deleting it frees; an installed base whole (its clones share its blocks), a layer by what it adds to its base |
 | `configure` | `workspace`, `revision`, `spec` | `record` | `conflict` | Create or edit, with the spec rules above |
 | `start` | `workspace`, `revision`, `erase?`, `spec?` | `record` (`operation:"preparing"`) | `conflict` | Async: boot and provision, with progress as events. `erase:true` reinstalls and may carry a new `spec`. Erasing cancels any job and powers off without the guest. An existing workspace disk boots without touching the base disk. `erase` first deletes the disk and EFI vars, so a failed reinstall never boots old data under a new spec |
 | `stop` | `workspace` | `record` | `conflict` | Synchronous. Cancels a `preparing` job, asks the agent to shut down within the distribution's `shutdown_s` (15 s by default), then powers off regardless |
@@ -370,8 +378,9 @@ install what their archives have that day.
 sentineld and the agent know no distribution by name. Everything that differs between
 distributions is data in one folder per distribution, `<id>/`, in the folders sentineld is given:
 `--distributions DIR`, any number of times (default: `distributions/` beside its `bin/`, the ones it
-ships, from `guest/distributions/`). Every folder is treated the same; sentineld never writes to
-them and reads them again at every `catalog`, `configure` and `start`. An id in two folders is a
+ships, from `guest/distributions/`), and its own, `<state>/distributions/`, the one the
+`distribution` op writes. Every folder is treated the same; sentineld writes only to its own and
+reads them all again at every `catalog`, `configure`, `start` and distribution op. An id in two folders is a
 problem, not a choice; a distribution a workspace uses stays as last read while its folder is broken
 or gone. Supporting another OS is adding a folder:
 
@@ -629,9 +638,8 @@ Every agent wait is bounded (60 s default).
 # Stage 3: macOS backend
 
 `Platform` is implemented in `macos/backend/workspace.cpp` and linked into sentineld. Each VM runs
-in its own child process, `sentinel-workspace` (`packages/sentinel-workspace`): libkrun on
-Hypervisor.framework, which runs one VM per process. sentineld holds no hypervisor code and no
-entitlement. Base disk installs are portable core code (§7), not part of `Platform`.
+in its own child process, the same binary as `sentineld vm` (`macos/vm`): libkrun on
+Hypervisor.framework, which runs one VM per process. The daemon itself never creates a VM. Base disk installs are portable core code (§7), not part of `Platform`.
 Every API used is available on macOS 26, which stays supported (the 4 KiB guest page granule,
 `hv_vm_config_set_ipa_granule`, is public from macOS 26).
 
@@ -642,7 +650,7 @@ distribution kernels and Mesa drive it, as on any KVM host.
 
 ## 15. Process model
 
-- **One `sentinel-workspace` per running VM**, spawned by `start` with `POSIX_SPAWN_CLOEXEC_DEFAULT`
+- **One `sentineld vm` per running VM**, spawned by `start` with `POSIX_SPAWN_CLOEXEC_DEFAULT`
   and only these fds: 0 `/dev/null`, 1 the console (a pipe sentineld reads), 2 the VM log
   (`workspaces/<id>/workspace.log`, appended), 3 the control socket, 4 the media channel (§6;
   desktops only).
@@ -711,7 +719,7 @@ in the distribution folder, as the guest sees them.
 | vsock port | Direction | Host end |
 |---|---|---|
 | 1 | host connects in | `agent.sock`: libkrun listens and forwards each connection to the guest agent (§10). `connect` opens it |
-| 1101 | guest connects out | `display.sock`, served by `sentinel-workspace`: computer use (§22), which sentineld also reaches directly |
+| 1101 | guest connects out | `display.sock`, served by `sentineld vm`: computer use (§22), which sentineld also reaches directly |
 
 Both sockets live in a directory of their own for each VM launch under the user's temp directory
 (`sentineld-XXXXXXXX` from `mkdtemp`, mode 0700), short enough for `sun_path`: no other sentineld
@@ -722,13 +730,16 @@ host.
 
 ```
 <state>/{catalog.json, worker-id, sentineld.sock, forwards/}
+<state>/distributions/<id>/   distributions written with the `distribution` op (§8)
 <state>/workspaces/<id>/{boot.raw, root.raw, share.raw, workspace.log}   share.raw: `share` `disk` only
 <state>/logs/<id>/console-<UTC time>.log   the guest console of each of the last 5 boots
 <cache>/images/install-<key>.{boot,root}.raw   a distribution's base disks (§7; <key>: its install recipe's hash; root: when the recipe has one)
 <cache>/sources/<sha256>                       install sources, removed once installed
 <cache>/install/<key>/                         an install's work folder (target disk, step outputs, console.log), removed when it ends
 <cache>/install/<key>.console.log              a failed install's console, kept for the next look
-<cache>/install/<key>.failed.raw               a failed install's disk (the installer's logs), until the recipe's next install ends or any install succeeds
+<cache>/install/<key>.failed.raw               the newest failed install's disk, until the recipe's next install ends, another fails or any succeeds
+<cache>/install/<key>.failed.root.raw          its root disk when the recipe has one (the installer's own logs), likewise
+                                               (sentineld logs where each failure's files are, and each removal)
 <cache>/packages/<distribution>/{apk,apt}     package downloads shared by the distribution's workspaces
 ```
 
@@ -751,14 +762,14 @@ host.
 
 ## 20. Signing
 
-- `sentinel-workspace` carries `com.apple.security.hypervisor`; nothing else needs an entitlement
-  (user-mode networking needs none). sentineld is a plain binary.
-- Local development signs ad-hoc (`packages/sentinel-workspace/Makefile`).
+- `sentineld` carries `com.apple.security.hypervisor` (for `sentineld vm`); nothing else needs an
+  entitlement (user-mode networking needs none).
+- Local development signs ad-hoc (`Makefile`).
 - Release signing and notarization belong to the build/release stage.
 
-## 21. sentinel-workspace build
+## 21. The VM's libraries
 
-`packages/sentinel-workspace` builds the process and its libraries from pinned sources
+`packages/sentinel-workspace` builds the libraries `sentineld vm` links from pinned sources
 (`macos/scripts/sources.json`) and pinned tools (`toolchain.lock.json`: Meson, Ninja, a private
 Rust toolchain, Homebrew bottles for libslirp and glib); nothing is installed on the host. Patches
 (`macos/patches/`) apply with no fuzz:
@@ -784,8 +795,9 @@ Rust toolchain, Homebrew bottles for libslirp and glib); nothing is installed on
 | edk2 (`edk2-sentinel-platform`) | the `ArmVirtSentinel` platform: ACPI tables generated from the device tree (DynamicTablesPkg) beside the device tree itself, a RAM-emulated variable store (libkrun has no flash), and a Graphics Output Protocol on the ramfb register page the device tree names |
 | Mesa (KosmicKrisp, a `main` snapshot) | geometry shaders, transform feedback, fill modes and custom border colors (the guest's Zink needs them for OpenGL 4.6 / ES 3.2), a GPU-only memory type for tiled images, linear color attachments, the shader disk cache, a queue barrier lifetime fix, non-solid fill modes and geometry shader streams (DXVK requires both) |
 
-`build/` is the release tree: `bin/sentinel-workspace`, `lib/` (libkrun, virglrenderer,
-KosmicKrisp and its ICD, the Vulkan loader, libslirp and glib) and `share/firmware/`.
+Its `build/` holds `lib/` (libkrun, virglrenderer, KosmicKrisp and its ICD, the Vulkan loader,
+libslirp and glib), `include/` and `share/firmware/`; sentineld's `make` builds it and copies `lib/`
+and `share/firmware/` into its own `build/`, linking `sentineld` against `lib/` (`@executable_path/../lib`).
 
 ## 22. Computer use
 
@@ -820,21 +832,21 @@ backend's update-time requests and for the desktop app's forwarded control conne
 **Layout** (`~/.sentinel/sentineld`):
 
 ```
-manifest.json    the active release: executable, workspace, files, links, version, updateProtocol 1
+manifest.json    the active release: executable, files, links, version, updateProtocol 1 (and
+                 workspace, read only by releases before `sentineld vm`)
 update.json      the update journal (remote_update.py)
 update.lock      the update lease
 current ->       releases/<version>-<id>, the active release
-releases/<version>-<id>/sentineld/      bin/, tools/{mke2fs,resize2fs,wimlib-imagex,mkntfs,hive}, share/
-releases/<version>-<id>/sentinel-workspace/   bin/, lib/, share/firmware/
+releases/<version>-<id>/sentineld/      bin/, lib/, tools/{mke2fs,resize2fs,wimlib-imagex,mkntfs,hive}, share/
 state/  cache/   sentineld's --state and --cache (§18)
 service.log
 ```
 
-- **Release:** the two build trees the desktop app runs, uploaded file by file, each checked
+- **Release:** the build tree the desktop app runs, uploaded file by file, each checked
   with `shasum` before it's renamed into place. Library aliases in the guest Mesa trees are
   same-directory symlinks, recorded in the manifest. The version hashes every name, byte and alias.
   The three Mach-O binaries are verified with `codesign --verify --strict` before activation.
-- **Start:** when nothing listens, the backend starts `sentineld --state --cache --workspace` with
+- **Start:** when nothing listens, the backend starts `sentineld --state --cache` with
   `nohup`; it's ready once the socket answers `status{api}`. sentineld's `owner.lock` rejects a
   second instance.
 - **Update coordinator:** the new release's `sentineld --update-session ROOT`, one JSON request per
@@ -851,16 +863,13 @@ service.log
 The desktop app bundles no runtime. Only the app is signed and notarized; it downloads the runtime
 as release components and verifies each against the release index first.
 
-- **sentineld:** `make release` packs `bin/sentineld`, `bin/sentineld-media`, `tools/mke2fs`, `tools/resize2fs`, `tools/wimlib-imagex`, `tools/mkntfs`, `tools/hive` and
+- **sentineld**, the one component: `make release` packs `bin/sentineld`, `bin/sentineld-media`, `lib/`, `tools/mke2fs`, `tools/resize2fs`, `tools/wimlib-imagex`, `tools/mkntfs`, `tools/hive` and
   `share/` and `distributions/` into `build/release/sentineld-<sha256[:16]>.tar.gz` with `sentineld.json`
   (`{name, file, sha256}`).
-- **sentinel-workspace:** `make release` in `packages/sentinel-workspace` packs `bin/`, `lib/` and
-  `share/firmware/` the same way.
 - **Distributions** are not components: the shipped ones ride in `distributions/`, and sentineld installs each
   when a workspace first uses it (§7).
-- **One release train:** the candidate CI calls each package's workflow (`sentineld.yml`,
-  `sentinel-workspace.yml`). Each reuses its last output when its sources are
-  unchanged (tarballs cached by a source hash). The payload's
+- **One release train:** the candidate CI calls `sentineld.yml`, which reuses its last output when
+  its sources (and the VM libraries') are unchanged (tarballs cached by a source hash). The payload's
   `latest-<channel>.json` lists them under `components`; promotion reuses the tarballs byte for
   byte and publishing attaches them to the versioned release.
 - **On the Mac** (`apps/desktop/sentinel/src/main/app/components.ts`): each version is extracted into
@@ -879,7 +888,7 @@ run installs them), and `build/e2e/sources`, a mirror of the pinned install sour
 source once installed; the harness clones each verified download first and seeds the next run's cache
 with it, `--seed DIR` adds other folders). At the end it keeps only those two: bases, layers, failed
 install disks and the cache's source clones are deleted (sentineld prunes unused bases at start anyway),
-and the newest 5 runs' evidence. The share and the `sentinel-workspace` tree are cloned for the run. `JOBS` defaults to
+and the newest 5 runs' evidence. The share is cloned for the run. `JOBS` defaults to
 what free memory (≈2.5 GiB a workspace, by `memory_pressure`) and disk allow; below 25 GiB of free disk
 (`--min-disk`) no VM is built: those cases are reported skipped, not failed. Each case is created,
 started and checked:

@@ -1,11 +1,13 @@
 # sentinel-workspace
 
-One workspace's virtual machine on macOS: the process sentineld starts for every running workspace
-(`packages/sentineld/DESIGN.md` §15–22). It runs the VM on libkrun over Hypervisor.framework, which
-allows one VM per process.
+The libraries `sentineld vm` runs one workspace's virtual machine on (`packages/sentineld/DESIGN.md`
+§15–22), built from pinned sources: libkrun on Hypervisor.framework (one VM per process), virglrenderer,
+KosmicKrisp (Mesa's Vulkan on Metal), ANGLE, DXMT, libslirp, and Sentinel's EFI firmware. The VM
+process itself is sentineld's (`packages/sentineld/macos/vm`); sentineld's `make` builds this and
+bundles `lib/` and `share/firmware/`.
 
 ```
-GUEST (stock distribution kernel and Mesa)       HOST: sentinel-workspace (one per running VM)
+GUEST (stock distribution kernel and Mesa)       HOST: sentineld vm (one per running VM)
 app → OpenGL → Zink → Venus (Vulkan)              libkrun: virtio-gpu, -blk, -net, -fs, -vsock, -input
         │ virtio-gpu (Venus capset)                 │ virglrenderer (Venus; vrend and Neptune for Windows)
 virtio_gpu kernel driver ─────────────────────────▶ │   → KosmicKrisp (Vulkan on Metal) → Mac GPU
@@ -23,26 +25,20 @@ see a standard device. EFI firmware boots the image's own GRUB and kernel, so an
 
 | Path | What |
 |---|---|
-| `macos/workspace/main.m` | Reads the VM configuration from sentineld (fd 3), builds the VM, sandboxes itself, runs it. |
-| `macos/workspace/display.m` | The display backend libkrun calls: scanouts into a CVPixelBuffer pool, the encoder, the cursor image, snapshots. |
-| `macos/workspace/input.c` | Virtual keyboard, pointer and wheel; the computer-use lease. |
-| `macos/workspace/audio.m` | The guest's sound card output: 10 ms Opus packets (AudioToolbox) to the viewers. |
-| `macos/workspace/net.c` | libslirp on its own thread behind a virtio-net datagram socket. |
-| `macos/workspace/service.m` | Computer use over vsock port 1101 (DESIGN.md §22). |
-| `macos/video/` | The VideoToolbox encoder (and its backpressure test in `macos/tests/`). |
 | `macos/scripts/` | `build.py`: fetches the pinned sources (`sources.json`), applies `macos/patches/`, builds with the pinned tools (`toolchain.lock.json`) and bundles `lib/`. |
 | `macos/patches/` | Patches against libkrun, virglrenderer and Mesa (below). |
+| `macos/firmware/` | The firmware's boot logo. |
+| `macos/tests/` | The renderers' smoke test. |
 
 ## Build
 
 ```
-make            # build/: bin/sentinel-workspace, lib/, share/firmware/  (sentineld --workspace build)
-make test       # the encoder's backpressure test and the renderers' smoke test (no VM)
-make release    # build/release/sentinel-workspace-<sha16>.tar.gz + sentinel-workspace.json
+make            # build/: lib/, include/, share/firmware/
+make test       # the renderers' smoke test (no VM)
 ```
 
 The first build fetches and builds libkrun (private Rust toolchain), virglrenderer, Mesa, ANGLE, LLVM 15
-and DXMT; later builds are incremental. No Xcode component beyond the SDK is needed (no Metal compiler). Nothing is installed on the host. CI: `.github/workflows/sentinel-workspace.yml`.
+and DXMT; later builds are incremental. No Xcode component beyond the SDK is needed (no Metal compiler). Nothing is installed on the host. CI: `.github/workflows/sentineld.yml`.
 
 ## Patches
 
