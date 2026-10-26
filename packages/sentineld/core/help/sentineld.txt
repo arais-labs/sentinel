@@ -1,0 +1,39 @@
+sentineld: runs virtual machines (workspaces) on this Mac. Each workspace boots a distribution, which
+a folder describes: sentineld itself knows no operating system.
+
+usage:
+  sentineld --state DIR [--cache DIR] [--distributions DIR]... [--keep-images] [--workspace DIR]
+  sentineld ctl (--state DIR | --socket PATH) OP [FIELDS]
+  sentineld view (--state DIR | --socket PATH) WORKSPACE
+  sentineld help [distributions]
+
+Running the daemon (it stays in the foreground; SIGTERM or SIGINT powers off every VM and exits):
+  --state DIR          its catalog, logs and control socket (DIR/sentineld.sock); one sentineld per DIR
+  --cache DIR          base disks, downloads and package caches, on the same volume as --state
+                       (default: ~/Library/Caches/Sentinel/<hash of DIR>)
+  --distributions DIR  a folder of distribution folders, one per distribution (DIR/<id>/distribution.json);
+                       any number of times, read again at every catalog, configure and start
+                       (default: the distributions shipped beside this binary)
+  --keep-images        keep base disks no workspace uses (faster repeated tests)
+  --workspace DIR      the sentinel-workspace build that runs each VM (default: beside this binary)
+  --share DIR, --mke2fs PATH, --lifeline, --owner-fd N
+                       set by the Sentinel app; defaults suit a standalone sentineld
+
+Talking to it:
+  sentineld ctl --help             every operation, its fields and an example
+  sentineld ctl help OP            one operation
+
+Seeing and using a workspace's desktop:
+  sentineld view --state DIR W     opens its screen in a window on this Mac, for the person at it: live
+                                   video, sound, mouse, keyboard and clipboard. It stays open until the
+                                   window is closed (run it in the background); the workspace keeps running.
+  sentineld ctl ... computer       the same screen for a program: screenshots, clicks and typing
+
+Writing a distribution:
+  sentineld help distributions     the folder format, what the guest must do, and how to test it
+
+Files a running sentineld writes:
+  <state>/workspaces/<id>/workspace.log       the VM process's log
+  <state>/logs/<id>/console-<time>.log        the guest console of each of the last 5 boots
+  <cache>/install/<key>.console.log           a failed install's console
+  <cache>/install/<key>.failed.raw            a failed install's disk, for a look
