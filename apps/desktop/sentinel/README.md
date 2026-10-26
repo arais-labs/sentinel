@@ -70,12 +70,12 @@ dependencies, and check signing. The desktop build creates the shell app and DMG
 the payload build creates the separately updatable backend and frontend. Both
 write distributable artifacts to `release/`.
 
-The workspace runtime is not bundled. sentineld (`packages/sentineld`) and the
-workspace VM process (`packages/sentinel-workspace`) are release components: each package builds its
-own tarball (`make release`), the release index lists them, and the app downloads
-whatever changed. sentineld installs each workspace distribution itself. Only the app is
-signed and notarized; it verifies each component against the index before
-installing it. Development uses the packages' `build/` directories directly.
+The workspace runtime is not bundled. sentineld (`packages/sentineld`: the daemon and, as
+`sentineld vm`, each VM, with the libraries `packages/sentinel-workspace` builds) is a release
+component: its package builds the tarball (`make release`), the release index lists it, and the
+app downloads it when it changed. sentineld installs each workspace distribution itself. Only the
+app is signed and notarized; it verifies the component against the index before installing it.
+Development uses `packages/sentineld/build` directly.
 
 For internal ad-hoc signing, set `SENTINEL_INTERNAL_BUILD=1` for the desktop build.
 Public distribution requires the appropriate signing setup. Publishing is explicit

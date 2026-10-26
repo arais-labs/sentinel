@@ -57,6 +57,13 @@ async function fakeSentineld(parent = tmpdir(), prefix = 'sentineld-') {
         const { id, op, workspace } = request;
         if (op === 'status') reply({ id, api: 1 });
         else if (op === 'catalog') reply({ id, ...catalog });
+        else if (op === 'help') reply({ id, text: request.topic === 'distributions' ? 'Writing a distribution' : 'sentineld' });
+        else if (op === 'distribution') reply({ id, distribution: request.distribution, files: Object.keys(request.files), problem: null, writable: true });
+        else if (op === 'distribution_read') reply(request.path ? { id, path: request.path, text: '{}', executable: false } : { id, distribution: request.distribution, files: [] });
+        else if (op === 'distribution_delete') reply({ id });
+        else if (op === 'source') reply({ id, url: request.url, state: 'ready', bytes: 3, sha256: 'ab'.repeat(32) });
+        else if (op === 'usage') reply({ id, workspaces: { w1: 2048 }, shared: { systems: 4096, packages: 512, sources: 0, installs: 0, distributions: 8 }, total: 6664, free: 100, capacity: 1000 });
+        else if (op === 'log') reply({ id, console: `last ${request.lines ?? 200}`, build: null, failure: 'install: boom' });
         else if (op === 'list') { if (request.watch) watchers.add(reply); reply({ id, workspaces }); }
         else if (op === 'configure') {
           if ((workspaces[workspace]?.revision ?? 0) !== request.revision) { reply({ id, error: { code: 'conflict', message: 'revision mismatch' } }); continue; }
@@ -161,6 +168,53 @@ test('the backend reads sentineld\'s catalog through the bridge', async () => {
     });
     assert.equal(reply.status, 200);
     assert.deepEqual(reply.data, catalog);
+  } finally { await bridge.close(); await owner.stop(); await fake.close(); }
+});
+
+test('sentineld\'s guide, source, log, usage and distribution ops pass through the bridge; writes reread the catalog', async () => {
+  const { openWorkspaceRuntimeBridge } = await import('../../.test-dist/main/transport/workspaceRuntimeBridge.js');
+  const fake = await fakeSentineld();
+  const owner = runtime(fake);
+  const local = path.join(fake.dir, 'bridge.sock');
+  const bridge = await openWorkspaceRuntimeBridge(owner, local, 'test-token', {});
+  const post = body => new Promise((resolve, reject) => {
+    const req = httpRequest({ socketPath: local, path: '/v1/request', method: 'POST', headers: { 'x-sentinel-desktop-token': 'test-token' } }, response => {
+      let data = ''; response.on('data', chunk => data += chunk);
+      response.on('end', () => resolve(JSON.parse(data)));
+    });
+    req.on('error', reject);
+    req.end(JSON.stringify(body));
+  });
+  try {
+    await owner.start();
+    assert.deepEqual(await post({ action: 'help', topic: 'distributions' }), { text: 'Writing a distribution' });
+    assert.deepEqual(await post({ action: 'help' }), { text: 'sentineld' });
+    await post({ action: 'catalog' });
+    const files = { 'distribution.json': { text: '{}' }, 'old.sh': null };
+    assert.deepEqual(await post({ action: 'distribution', distribution: 'mine', files }),
+      { distribution: 'mine', files: ['distribution.json', 'old.sh'], problem: null, writable: true });
+    assert.deepEqual(await post({ action: 'distribution_read', distribution: 'mine', path: 'distribution.json' }),
+      { path: 'distribution.json', text: '{}', executable: false });
+    assert.deepEqual(await post({ action: 'distribution_delete', distribution: 'mine' }), {});
+    await post({ action: 'catalog' });
+    assert.deepEqual(await post({ action: 'source', url: 'https://example.org/a.tar' }),
+      { url: 'https://example.org/a.tar', state: 'ready', bytes: 3, sha256: 'ab'.repeat(32) });
+    await post({ action: 'source', url: 'https://example.org/a.tar', paths: ['etc/x'], offset: 10, length: 5, limit: 50000 });
+    assert.deepEqual(await post({ action: 'log', workspace: 'w1', lines: 50 }), { console: 'last 50', build: null, failure: 'install: boom' });
+    assert.deepEqual(await post({ action: 'log', workspace: 'w1' }), { console: 'last 200', build: null, failure: 'install: boom' });
+    assert.deepEqual(await post({ action: 'usage' }), { workspaces: { w1: 2048 },
+      shared: { systems: 4096, packages: 512, sources: 0, installs: 0, distributions: 8 }, total: 6664, free: 100, capacity: 1000 });
+    // Only each op's own fields reach sentineld, which rejects unknown ones.
+    const sent = fake.requests.filter(request => !['status', 'list'].includes(request.op)).map(({ id: _id, ...request }) => request);
+    assert.deepEqual(sent, [
+      { op: 'help', topic: 'distributions' }, { op: 'help' }, { op: 'catalog' },
+      { op: 'distribution', distribution: 'mine', files },
+      { op: 'distribution_read', distribution: 'mine', path: 'distribution.json' },
+      { op: 'distribution_delete', distribution: 'mine' }, { op: 'catalog' },
+      { op: 'source', url: 'https://example.org/a.tar' },
+      { op: 'source', url: 'https://example.org/a.tar', paths: ['etc/x'], offset: 10, length: 5, limit: 50000 },
+      { op: 'log', workspace: 'w1', lines: 50 }, { op: 'log', workspace: 'w1' }, { op: 'usage' },
+    ]);
   } finally { await bridge.close(); await owner.stop(); await fake.close(); }
 });
 

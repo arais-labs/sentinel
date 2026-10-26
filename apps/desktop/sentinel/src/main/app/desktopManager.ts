@@ -452,23 +452,22 @@ export class DesktopManager {
   private async openWorkspaceServices(): Promise<void> {
     if (process.platform !== 'darwin') return;
     if (!this.workspaceRuntime) {
-      // sentineld and the workspace VM process: the installed release components, or in development the
-      // make outputs in packages/ (scripts/dev/workspace-runtime-dev.mjs builds them).
-      let sentineld: string, workspace: string;
+      // sentineld (the daemon and its VMs): the installed release component, or in development the
+      // make output in packages/sentineld (scripts/dev/workspace-runtime-dev.mjs builds it).
+      let sentineld: string;
       if (app.isPackaged) {
         const active = await this.components().active();
         if (!active) throw new Error('the workspace runtime is not installed yet');
         // Nothing runs from other versions yet: this is the sentineld about to start.
         await this.components().prune(active);
-        ({ sentineld, workspace } = active);
+        ({ sentineld } = active);
       } else {
         sentineld = path.join(repoRoot(), 'packages/sentineld/build');
-        workspace = path.join(repoRoot(), 'packages/sentinel-workspace/build');
       }
       const state = path.join(hostStateRoot(), 'sentineld');
       this.workspaceRuntime = new WorkspaceRuntime({
-        daemon: { command: path.join(sentineld, 'bin/sentineld'), args: ['--state', state, '--lifeline', '--workspace', workspace] },
-        release: { sentineld, workspace },
+        daemon: { command: path.join(sentineld, 'bin/sentineld'), args: ['--state', state, '--lifeline'] },
+        release: { sentineld },
         socket: path.join(state, 'sentineld.sock'),
         root: state,
         onProgress: message => this.supervisor.appendManagerLog(message),

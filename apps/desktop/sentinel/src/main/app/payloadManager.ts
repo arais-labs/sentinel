@@ -6,7 +6,7 @@ import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import type { PayloadInfo, PayloadUpdate, ReleaseChannel } from '../../shared/ipc.js';
 import { execFileText } from './shell.js';
-import { validateComponents } from './components.js';
+import { COMPONENT_NAMES, validateComponents } from './components.js';
 import { shellUpdateFor } from './version.js';
 import {
   hostStateRoot,
@@ -161,7 +161,7 @@ function releaseComponents(index: ReleaseIndex): PayloadUpdate['components'] {
   if (index.components === undefined) return undefined;
   const components = validateComponents(index.components);
   const local = localBaseUrl();
-  for (const name of ['sentineld', 'sentinel-workspace'] as const) {
+  for (const name of COMPONENT_NAMES) {
     if (!components[name].url && local) components[name] = { ...components[name], url: `${local}/${components[name].file}` };
   }
   return components;

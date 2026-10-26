@@ -53,8 +53,8 @@ interface RuntimeLaunch {
   /** sentineld, owned by this app: --lifeline stops it (its guests shut down, then any left are powered off) when the app exits.
    * Absent for a daemon reached through a tunnel. */
   daemon?: { command: string; args: string[] };
-  /** The build trees a remote Mac installs (the backend uploads them as one release). */
-  release?: { sentineld: string; workspace: string };
+  /** The build tree a remote Mac installs (the backend uploads it as its release). */
+  release?: { sentineld: string };
   socket: string;  // sentineld.sock
   root: string;    // sentineld's state directory
   onProgress: (message: string) => void;
@@ -232,7 +232,13 @@ export class WorkspaceRuntime {
     return this.control.call(op, values);
   }
 
-  /** sentineld's catalog, read once per connection: it changes only with sentineld. */
+  /** An op's reply without its request id. */
+  private async reply(op: string, values: Message): Promise<RuntimeReply> {
+    const { id: _id, ...reply } = await this.call(op, values);
+    return reply as RuntimeReply;
+  }
+
+  /** sentineld's catalog, read once per connection: it changes with sentineld or a distribution op. */
   catalog(): Promise<RuntimeCatalog> {
     if (!this.catalogReply) {
       const reply = this.call('catalog').then(({ id: _id, ...catalog }) => catalog as RuntimeCatalog);
@@ -284,6 +290,23 @@ export class WorkspaceRuntime {
         return { protocol_version: RUNTIME_PROTOCOL, states, errors, screens, capabilities: [] };
       }
       case 'catalog': return this.catalog();
+      // sentineld's guide, sources, consoles and distributions, for the agent's workspaces tool.
+      case 'source': {
+        // Downloading needs url alone; browsing a downloaded archive adds what to list or read.
+        const fields = ['match', 'paths', 'offset', 'length', 'limit'].filter(key => values[key] !== undefined);
+        return this.reply('source', { url: values.url, ...Object.fromEntries(fields.map(key => [key, values[key]])) });
+      }
+      // The machine's disk use by workspace and by shared item, in bytes, for the Workspaces screen.
+      case 'usage': return this.reply('usage', {});
+      case 'log': return this.reply('log', values.lines === undefined ? { workspace } : { workspace, lines: values.lines });
+      case 'help': return this.reply('help', values.topic === undefined ? {} : { topic: values.topic });
+      case 'distribution_read': return this.reply('distribution_read', values.path === undefined
+        ? { distribution: values.distribution } : { distribution: values.distribution, path: values.path });
+      case 'distribution': case 'distribution_delete':
+        try {
+          return await this.reply(action, action === 'distribution'
+            ? { distribution: values.distribution, files: values.files } : { distribution: values.distribution });
+        } finally { this.catalogReply = undefined; }
       case 'start': return this.startWorkspace(values);
       case 'stop': await this.call('stop', { workspace }); return {};
       case 'delete': {

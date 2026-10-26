@@ -11,7 +11,7 @@ import { WorkspaceRuntime } from '../workspace/workspaceRuntime.js';
 import { WorkspaceLifecycle } from '../workspace/workspaceLifecycle.js';
 import { RuntimeCompatibilityError } from '../workspace/runtimeCompatibility.js';
 
-const actions = new Set(['status', 'recover', 'prepare', 'reinstall', 'exec', 'stop', 'delete', 'display', 'keyboard', 'clipboard', 'wallpaper', 'computer', 'computer_cancel', 'port_forward', 'deployment', 'remote_register', 'configure', 'workspaces', 'workspace_resume', 'runtime_migration_inputs', 'catalog']);
+const actions = new Set(['status', 'recover', 'prepare', 'reinstall', 'exec', 'stop', 'delete', 'display', 'keyboard', 'clipboard', 'wallpaper', 'computer', 'computer_cancel', 'port_forward', 'deployment', 'remote_register', 'configure', 'workspaces', 'workspace_resume', 'runtime_migration_inputs', 'catalog', 'help', 'distribution', 'distribution_read', 'distribution_delete', 'source', 'log', 'usage']);
 
 export async function openWorkspaceRuntimeBridge(runtime: WorkspaceRuntime, socketPath: string, token: string, lifecycle: WorkspaceLifecycle, notifications?: NotificationCenter, worker?: WorkerClient) {
   const remotes = new Map<string, { socket: string; bridge: Awaited<ReturnType<typeof openWorkspaceRuntimeBridge>>; runtime: WorkspaceRuntime }>();

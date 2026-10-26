@@ -8,4 +8,5 @@ Run commands from `apps/desktop/sentinel`.
 | `integration/` | Electron windows and bundle loading, against a built app | `npx electron tests/integration/<name>.mjs` |
 
 The workspace runtime has its own tests beside its code: `packages/sentineld` (daemon, guest
-agent, images) and `packages/sentinel-workspace` (`make test` for the encoder test).
+agent, images; `make test` for the encoder test) and `packages/sentinel-workspace` (`make test`
+for the renderers).
