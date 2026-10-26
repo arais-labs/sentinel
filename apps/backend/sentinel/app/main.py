@@ -7,15 +7,15 @@ from sentral.llm.providers.codex import close_codex_connections
 from app.services.runtime.ssh_runtime import close_runtime_terminal_manager
 from app.services.runtime.remote_mac import close_all as close_remote_runtimes
 from app.services.sessions.compaction import CompactionService
+from app.services.sessions.job_reports import deliver_job_report
 
 import logging
 import os
-from collections import defaultdict, deque
+from collections import defaultdict
 from collections.abc import Awaitable
 from contextlib import asynccontextmanager
 from typing import Any
 from uuid import UUID as _UUID
-from uuid import uuid4
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -75,7 +75,7 @@ from app.routers import (
 from app.routers import (
     version as version_router,
 )
-from sentral import ConversationItem, GenerationConfig, RunTurnRequest, TextBlock
+from sentral import GenerationConfig, RunTurnRequest
 import app.services.agent_runtime_adapters.runtime as runtime_adapter_module
 from sentral.llm.runtime_conversions import runtime_event_to_sentinel_event
 from app.services.instance_runtime_context import (
@@ -145,7 +145,7 @@ async def lifespan(app: FastAPI):
         app_state=app.state,
     )
 
-    wakeup_pending: dict[str, deque[str]] = defaultdict(deque)
+    wakeup_pending: dict[str, int] = defaultdict(int)
     wakeup_workers: set[str] = set()
     wakeup_lock = asyncio.Lock()
     # Live handles for every spawned drainer. Tracking them lets the lifespan
@@ -181,7 +181,7 @@ async def lifespan(app: FastAPI):
                     return context, sid
         return None, sid
 
-    async def _wakeup_main_agent(session_id: object, prompt: str) -> bool:
+    async def _wakeup_main_agent(session_id: object) -> bool:
         """Server-initiated agent turn triggered by queued background updates.
 
         Returns True when one queued wakeup item is consumed, False when it
@@ -205,7 +205,7 @@ async def lifespan(app: FastAPI):
             for item in run_registry.peek_interjections(session_key)
             if item.metadata.get("steering") == "pending"
         ]
-        if prompt == "__sentinel_steering__" and not queued_steering:
+        if not queued_steering:  # wake-ups only deliver the steering inbox
             return True
         steering_metadata = queued_steering[0].metadata if queued_steering else {}
         steering_generation = steering_metadata.get("generation") or {}
@@ -232,24 +232,10 @@ async def lifespan(app: FastAPI):
                 runtime.run_turn(
                     RunTurnRequest(
                         conversation_id=session_key,
-                        new_items=(
-                            []
-                            if queued_steering
-                            else [
-                                ConversationItem(
-                                    id=f"server-wakeup-{uuid4().hex}",
-                                    role="user",
-                                    content=[TextBlock(text=prompt)],
-                                )
-                            ]
-                        ),
+                        new_items=[],
                         config=GenerationConfig(
                             model=await wakeup_model(db, sid, steering_metadata),
-                            max_iterations=(
-                                steering_generation.get("max_iterations", 0)
-                                if queued_steering
-                                else 0
-                            ),
+                            max_iterations=steering_generation.get("max_iterations", 0),
                             stream=True,
                             provider_metadata={
                                 "persist_user_message": False,
@@ -262,7 +248,7 @@ async def lifespan(app: FastAPI):
                     ),
                     sink=_on_event,
                 ),
-                require_interjections=bool(queued_steering),
+                require_interjections=True,
             )
             if run_task is None:
                 return False
@@ -301,11 +287,11 @@ async def lifespan(app: FastAPI):
                     pass
         return True
 
-    async def _enqueue_main_agent_wakeup(session_id: object, prompt: str) -> None:
+    async def _enqueue_main_agent_wakeup(session_id: object) -> None:
         session_key = str(session_id)
         should_start_worker = False
         async with wakeup_lock:
-            wakeup_pending[session_key].append(prompt)
+            wakeup_pending[session_key] += 1
             if session_key not in wakeup_workers:
                 wakeup_workers.add(session_key)
                 should_start_worker = True
@@ -317,23 +303,18 @@ async def lifespan(app: FastAPI):
         try:
             while True:
                 async with wakeup_lock:
-                    pending = wakeup_pending.get(session_key)
-                    prompt = pending[0] if pending else None
-                if prompt is None:
-                    return
+                    if not wakeup_pending.get(session_key):
+                        wakeup_pending.pop(session_key, None)
+                        return
 
-                consumed = await _wakeup_main_agent(session_id, prompt)
+                consumed = await _wakeup_main_agent(session_id)
                 if not consumed:
                     await asyncio.sleep(0.75)
                     continue
 
                 async with wakeup_lock:
-                    current = wakeup_pending.get(session_key)
-                    if not current:
-                        wakeup_pending.pop(session_key, None)
-                    else:
-                        current.popleft()
-                    if not current:
+                    wakeup_pending[session_key] -= 1
+                    if wakeup_pending[session_key] <= 0:
                         wakeup_pending.pop(session_key, None)
         finally:
             async with wakeup_lock:
@@ -345,89 +326,40 @@ async def lifespan(app: FastAPI):
             if should_restart:
                 _spawn_wakeup_drainer(session_id)
 
-    def _runtime_job_report_text(
-        job: dict[str, object],
-        *,
-        stdout_tail: str,
-        stderr_tail: str,
-    ) -> str:
-        lines = [
-            "[Machine Job Report]",
-            "A background runtime job just finished while you were working.",
-            "Finish the current step, then integrate this result on the next loop if relevant. If you are already wrapping up, process it immediately afterward.",
-            "",
-            f"Job ID: {str(job.get('id') or '').strip()}",
-            f"Status: {str(job.get('status') or '').strip() or 'unknown'}",
-        ]
-        if job.get("window_id"):
-            lines.append(f"Window: {job['window_id']}")
-        if job.get("pane_id"):
-            lines.append(f"Pane: {job['pane_id']}")
-        returncode = job.get("returncode")
-        if returncode is not None:
-            lines.append(f"Return code: {returncode}")
-        command = str(job.get("command") or "").strip()
-        if command:
-            lines.extend(["", "Command:", command])
-        stdout_text = stdout_tail.strip()
-        if stdout_text:
-            lines.extend(["", "Stdout tail:", stdout_text])
-        stderr_text = stderr_tail.strip()
-        if stderr_text:
-            lines.extend(["", "Stderr tail:", stderr_text])
-        return "\n".join(lines).strip()
-
     async def _handle_runtime_job_completed(
         session_id: str,
         job: dict[str, object],
         stdout_tail: str,
         stderr_tail: str,
     ) -> None:
-        session_key = str(session_id)
-        run_registry.enqueue_interjection(
-            session_key,
-            ConversationItem(
-                id=f"runtime-job-report-{str(job.get('id') or uuid4().hex)}",
-                role="system",
-                content=[
-                    TextBlock(
-                        text=_runtime_job_report_text(
-                            job, stdout_tail=stdout_tail, stderr_tail=stderr_tail
-                        )
-                    )
-                ],
-                metadata={
-                    "source": "runtime_job_completion",
-                    "notice": {"title": "Background job report"},
-                    "job_id": str(job.get("id") or ""),
-                    "status": str(job.get("status") or ""),
-                },
-            ),
-        )
-        if await run_registry.is_running(session_key):
+        # The report goes to the agent that started the job (a sub-agent using its parent's
+        # terminals gets its own reports) as a notice through the steering inbox: no prompt is
+        # ever written in the user's name.
+        instance_context, sid = await _resolve_runtime_context_for_session(session_id)
+        if instance_context is None:
             return
-        await _enqueue_main_agent_wakeup(
-            session_id,
-            (
-                "A background runtime job just finished. Review the latest [Machine Job Report] system message(s), "
-                "integrate useful findings, and continue helping the user immediately."
-            ),
-        )
+        async with instance_context.session_factory() as db:
+            session = await db.get(SessionModel, sid)
+            if session is None:
+                return
+            # A finished sub-agent is not woken outside its task; it reads the report if resumed.
+            wake = session.parent_session_id is None or await run_registry.is_running(str(sid))
+            await deliver_job_report(
+                db,
+                session,
+                job,
+                stdout_tail=stdout_tail,
+                stderr_tail=stderr_tail,
+                run_registry=run_registry,
+                wake=wake,
+            )
 
     async def _resume_pending_runtime_job_updates(session_key: str) -> None:
         if any(
             item.metadata.get("steering") == "pending"
             for item in run_registry.peek_interjections(session_key)
         ):
-            await _enqueue_main_agent_wakeup(session_key, "__sentinel_steering__")
-            return
-        await _enqueue_main_agent_wakeup(
-            session_key,
-            (
-                "A background runtime job finished while you were busy. Review the latest [Machine Job Report] "
-                "system message(s), integrate useful findings, and continue helping the user immediately."
-            ),
-        )
+            await _enqueue_main_agent_wakeup(session_key)
 
     run_registry.configure_idle_interjections_callback(_resume_pending_runtime_job_updates)
 
