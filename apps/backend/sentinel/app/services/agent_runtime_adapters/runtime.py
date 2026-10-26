@@ -160,7 +160,8 @@ class SentinelLoopRuntimeAdapter(Machine):
         deferred_done: RuntimeAgentEvent | None = None
         # Track most-recent tool_call_id per tool name so the pending callback
         # can emit a pending tool_result event with the correct call ID.
-        tool_call_ids_by_name: dict[str, str] = {}
+        # Discarded streamed calls never run, so they leave this map again.
+        tool_call_ids_by_name: dict[str, list[str]] = {}
 
         async def _emit_runtime_event(runtime_event: RuntimeAgentEvent) -> None:
             nonlocal last_stop_reason, pending_approval, deferred_done
@@ -182,7 +183,13 @@ class SentinelLoopRuntimeAdapter(Machine):
             elif runtime_event.type == "done" and runtime_event.stop_reason != "pending_approval":
                 pending_approval = None
             if runtime_event.type == "toolcall_start" and runtime_event.tool_call:
-                tool_call_ids_by_name[runtime_event.tool_call.name] = runtime_event.tool_call.id
+                tool_call_ids_by_name.setdefault(runtime_event.tool_call.name, []).append(
+                    runtime_event.tool_call.id
+                )
+            if runtime_event.type == "toolcall_discard" and runtime_event.tool_call:
+                ids = tool_call_ids_by_name.get(runtime_event.tool_call.name, [])
+                if runtime_event.tool_call.id in ids:
+                    ids.remove(runtime_event.tool_call.id)
             if (
                 config.stream
                 and runtime_event.type == "done"
@@ -205,7 +212,7 @@ class SentinelLoopRuntimeAdapter(Machine):
             instead of waiting until the approval is resolved.
             """
 
-            tool_call_id = tool_call_ids_by_name.get(tool_name, "")
+            tool_call_id = (tool_call_ids_by_name.get(tool_name) or [""])[-1]
             pending_metadata: dict = {"approval": approval_payload, "pending": True}
             content = _json.dumps(
                 {
@@ -438,6 +445,7 @@ class SentinelLoopRuntimeAdapter(Machine):
                 exposure=mcp_exposure,
             ),
             compactor=self._compactor,
+            tool_result_max_chars=settings.tool_result_max_chars,
         )
         runtime_result = await runtime.run_turn(
             RunTurnRequest(

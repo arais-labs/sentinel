@@ -56,9 +56,13 @@ class AgentRuntimeEngine(Machine):
             ]
             | None
         ) = None,
+        tool_result_max_chars: int | None = None,
     ) -> None:
         self._provider = provider
         self._tool_registry = tool_registry
+        # The one cut a tool result gets: here, before the model, storage or a display sees it,
+        # so every later request replays the same bytes.
+        self._tool_result_max_chars = tool_result_max_chars
         self._tool_semaphore = asyncio.Semaphore(8)
         self._conversation_store = conversation_store
         self._compactor = compactor
@@ -212,6 +216,8 @@ class AgentRuntimeEngine(Machine):
         iterations = 0
         pending_approval: ApprovalRequest | None = None
         last_stop_reason: str | None = None
+        consecutive_cutoffs = 0
+        run_error: str | None = None
         timeout_seconds = request.timeout_seconds
         interjection_source = request.interjection_source
         logger.debug(
@@ -259,6 +265,11 @@ class AgentRuntimeEngine(Machine):
 
         await _checkpoint(list(request.new_items))
 
+        async def _append_note(item: ConversationItem) -> None:
+            working_history.append(item)
+            created_items.append(item)
+            await _checkpoint([item])
+
         async def _collect_pending(*, wait=False):
             if wait and pending_tools:
                 await asyncio.gather(
@@ -301,7 +312,7 @@ class AgentRuntimeEngine(Machine):
                     await _collect_pending(wait=True)
 
         async def _run_iterations_inner() -> None:
-            nonlocal iterations
+            nonlocal iterations, consecutive_cutoffs, run_error
             auto_steps = config.max_iterations == 0
             effective_max = max(1, config.max_iterations)
             grace_extension = max(10, effective_max // 4)
@@ -385,19 +396,46 @@ class AgentRuntimeEngine(Machine):
                     **assistant_item.metadata,
                     "iteration": iterations,
                 }
+                # Cut-off calls are never stored, run or answered; displays drop them.
+                incomplete_calls = assistant_item.metadata.pop("incomplete_tool_calls", None) or []
+                for call in incomplete_calls:
+                    await _emit(_discard_event(call["id"], call["name"]))
                 working_history.append(assistant_item)
                 created_items.append(assistant_item)
                 await _checkpoint([assistant_item])
 
+                has_calls = any(
+                    isinstance(block, ToolCallBlock) for block in assistant_item.content
+                )
+                cutoff_note: ConversationItem | None = None
+                if turn.stop_reason == "length":
+                    consecutive_cutoffs += 1
+                    if consecutive_cutoffs >= _MAX_CONSECUTIVE_CUTOFFS:
+                        run_error = (
+                            f"The model's reply hit its output limit {consecutive_cutoffs} times "
+                            "in a row, so the run stopped. Ask for smaller steps."
+                        )
+                        await _emit(AgentEvent(type="error", error=run_error))
+                        await _emit(AgentEvent(type="done", stop_reason="error"))
+                        return
+                    cutoff_note = _cutoff_note(turn.usage.output_tokens, incomplete_calls)
+                    if not has_calls:
+                        await _append_note(cutoff_note)
+                        continue
+                else:
+                    consecutive_cutoffs = 0
+                # A cut-off reply still runs the calls it finished.
+                runs_tools = turn.stop_reason == "tool_use" or cutoff_note is not None
+
                 if turn.stop_reason == "pause_turn":
                     continue
-                if turn.stop_reason != "tool_use" and pending_tools:
+                if not runs_tools and pending_tools:
                     if not await _collect_pending(wait=True):
                         return
                     continue
                 if turn.stop_reason == "stop" and await _drain_injected_items():
                     continue
-                if turn.stop_reason != "tool_use":
+                if not runs_tools:
                     logger.debug(
                         "iteration_finish_without_tools iteration=%d stop_reason=%s total_usage_in=%d total_usage_out=%d",
                         iterations,
@@ -520,6 +558,8 @@ class AgentRuntimeEngine(Machine):
                             and form_result.get("kind") == "form"
                             and form_result.get("status") == "awaiting_input"
                         ):
+                            if cutoff_note is not None:
+                                await _append_note(cutoff_note)
                             await _emit(AgentEvent(type="done", stop_reason="awaiting_input"))
                             return
                 if tool_execution_cancelled:
@@ -528,6 +568,8 @@ class AgentRuntimeEngine(Machine):
                     )
                     await _emit(AgentEvent(type="done", stop_reason="aborted"))
                     return
+                if cutoff_note is not None:
+                    await _append_note(cutoff_note)
                 logger.debug(
                     "iteration_finish_with_tool_results iteration=%d tool_results=%s",
                     iterations,
@@ -619,7 +661,7 @@ class AgentRuntimeEngine(Machine):
                 usage=usage,
                 iterations=iterations,
                 stop_reason=last_stop_reason,
-                error=None,
+                error=run_error,
                 pending_approval=pending_approval,
             ),
             events,
@@ -678,6 +720,15 @@ class AgentRuntimeEngine(Machine):
         ):
             event_count += 1
             logger.debug("provider_stream_event #%d %s", event_count, _summarize_event(event))
+            if event.type == "stream_reset":
+                # A failed attempt: its partial output never becomes part of the turn.
+                for partial in streamed_events:
+                    if partial.type == "toolcall_start" and partial.tool_call is not None:
+                        await emit(_discard_event(partial.tool_call.id, partial.tool_call.name))
+                streamed_events.clear()
+                done_event = None
+                await emit(event)
+                continue
             if event.type == "done":
                 done_event = event
                 continue
@@ -716,6 +767,8 @@ class AgentRuntimeEngine(Machine):
         responses_output: list[dict[str, Any]] = []
         responses_context_reset = False
         provider_usage: dict[str, Any] | None = None
+        incomplete_ids: set[str] = set()
+        incomplete_calls: list[dict[str, str]] = []
 
         def _remember(kind: str, index: int) -> None:
             key = (kind, index)
@@ -737,6 +790,10 @@ class AgentRuntimeEngine(Machine):
                         event.item.metadata.get("responses_context_reset")
                     )
                     provider_usage = deepcopy(event.item.metadata.get("provider_usage"))
+                    incomplete_ids = {
+                        str(call.get("id") or "")
+                        for call in event.item.metadata.get("incomplete_tool_calls") or []
+                    }
                 model = str(event.item.metadata.get("model") or model)
                 provider = str(event.item.metadata.get("provider") or provider)
                 usage_payload = (
@@ -821,11 +878,18 @@ class AgentRuntimeEngine(Machine):
                 if not call_id or not call_name:
                     continue
                 raw_args = "".join(state.get("arg_deltas", []))
+                if call_id in incomplete_ids:
+                    incomplete_calls.append({"id": call_id, "name": call_name})
+                    continue
                 if raw_args:
                     try:
                         loaded = json.loads(raw_args)
                         parsed_args = loaded if isinstance(loaded, dict) else {"value": loaded}
                     except json.JSONDecodeError:
+                        if stop_reason == "length":
+                            # Arguments cut off by the output cap: never a runnable call.
+                            incomplete_calls.append({"id": call_id, "name": call_name})
+                            continue
                         parsed_args = {"raw": raw_args}
                 else:
                     parsed_args = (
@@ -850,7 +914,7 @@ class AgentRuntimeEngine(Machine):
                 )
 
         has_tool_calls = any(isinstance(block, ToolCallBlock) for block in content)
-        if has_tool_calls and stop_reason not in {"error", "aborted", "timeout"}:
+        if has_tool_calls and stop_reason not in {"error", "aborted", "timeout", "length"}:
             stop_reason = "tool_use"
         elif not has_tool_calls and stop_reason == "tool_use":
             stop_reason = "stop"
@@ -872,6 +936,8 @@ class AgentRuntimeEngine(Machine):
                 },
             },
         )
+        if incomplete_calls:
+            item.metadata["incomplete_tool_calls"] = incomplete_calls
         logger.debug(
             "assemble_turn_complete provider=%s model=%s stop_reason=%s usage_in=%d usage_out=%d content=%s",
             provider,
@@ -957,15 +1023,20 @@ class AgentRuntimeEngine(Machine):
             return ToolResultBlock(
                 tool_call_id=tool_call.id,
                 tool_name=tool_call.name,
-                content=str(result.error or "Tool execution failed."),
+                content=self._cap_tool_output(
+                    str(result.error or "Tool execution failed."), metadata
+                ),
                 is_error=True,
                 metadata=metadata,
                 tool_arguments=dict(tool_call.arguments),
             )
-        content = (
-            result.content
-            if isinstance(result.content, str)
-            else json.dumps(result.content, default=str)
+        content = self._cap_tool_output(
+            (
+                result.content
+                if isinstance(result.content, str)
+                else json.dumps(result.content, default=str)
+            ),
+            metadata,
         )
         return ToolResultBlock(
             tool_call_id=tool_call.id,
@@ -974,6 +1045,20 @@ class AgentRuntimeEngine(Machine):
             is_error=False,
             metadata=metadata,
             tool_arguments=dict(tool_call.arguments),
+        )
+
+    def _cap_tool_output(self, content: str, metadata: dict[str, Any]) -> str:
+        """Keeps a result over the cap as its start and end, saying what was cut."""
+        cap = self._tool_result_max_chars
+        if not cap or len(content) <= cap:
+            return content
+        head = cap // 2
+        tail = cap - head
+        metadata["output_cut"] = {"shown_chars": cap, "original_chars": len(content)}
+        return (
+            content[:head] + f"\n[... output cut: {cap} of {len(content)} characters shown,"
+            f" {len(content) - cap} removed here; ask for a narrower part"
+            " (filter, range or fewer items) ...]\n" + content[-tail:]
         )
 
     def _approval_from_tool_result(self, result: ToolResultBlock) -> ApprovalRequest | None:
@@ -1237,6 +1322,31 @@ class AgentRuntimeEngine(Machine):
 
 def _new_item_id(prefix: str) -> str:
     return f"{prefix}-{uuid4()}"
+
+
+_MAX_CONSECUTIVE_CUTOFFS = 3
+
+
+def _discard_event(call_id: str, name: str) -> AgentEvent:
+    return AgentEvent(type="toolcall_discard", tool_call=ToolCallBlock(id=call_id, name=name))
+
+
+def _cutoff_note(output_tokens: int, calls: list[dict[str, str]]) -> ConversationItem:
+    """Tell the model its reply was cut off, as a user-side notice every provider accepts."""
+    limit = f" ({output_tokens} tokens)" if output_tokens else ""
+    text = f"Your previous reply hit the output limit{limit} and was cut off"
+    names = ", ".join(dict.fromkeys(call["name"] for call in calls))
+    if len(calls) == 1:
+        text += f"; the unfinished call to {names} was not run"
+    elif calls:
+        text += f"; the unfinished calls to {names} were not run"
+    text += ". Continue, splitting large content across several smaller calls."
+    return ConversationItem(
+        id=_new_item_id("user"),
+        role="user",
+        content=[TextBlock(text=text)],
+        metadata={"notice": {"title": "Reply cut off", "body": text}},
+    )
 
 
 def _summarize_content_blocks(blocks: list[Any]) -> str:

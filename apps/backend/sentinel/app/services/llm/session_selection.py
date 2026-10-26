@@ -107,10 +107,11 @@ def with_reasoning(config, level):
         rc = replace(rc, reasoning_effort=level, thinking_budget=None)
     else:
         budget = {"low": 1024, "medium": 4096, "high": 16384}[level]
+        # The model's own cap leaves room for any budget; only a smaller explicit cap needs it.
         rc = replace(
             rc,
             thinking_budget=budget,
             reasoning_effort=None,
-            max_tokens=max(rc.max_tokens, budget + 4096),
+            max_tokens=max(rc.max_tokens, budget + 4096) if rc.max_tokens else None,
         )
     return replace(config, reasoning_config=rc)

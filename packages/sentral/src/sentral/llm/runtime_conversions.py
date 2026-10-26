@@ -151,6 +151,10 @@ def sentinel_message_to_runtime_item(
                 "output_tokens": message.usage.output_tokens,
             },
         }
+        if message.incomplete_tool_calls:
+            metadata["incomplete_tool_calls"] = [
+                {"id": call.id, "name": call.name} for call in message.incomplete_tool_calls
+            ]
         return ConversationItem(
             id=item_id,
             role="assistant",

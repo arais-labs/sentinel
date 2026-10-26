@@ -21,7 +21,8 @@ from sentral.llm.generic.types import (
     ToolCallContent,
     ToolSchema,
 )
-from sentral.llm.providers.gemini import GeminiProvider, _map_finish_reason
+from sentral.llm.model_limits import output_cap
+from sentral.llm.providers.gemini import GeminiProvider, _map_finish_reason, _stop_reason
 
 _GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 # Public installed-application identity from Antigravity CLI 1.1.5 consumer OAuth.
@@ -348,8 +349,7 @@ class GeminiOAuthProvider(GeminiProvider):
     @staticmethod
     def _configure_generation(payload: dict[str, Any], model: str, rc: ReasoningConfig) -> None:
         config = payload["generationConfig"]
-        limit = 65535 if model == "gemini-pro-agent" else 65536
-        config["maxOutputTokens"] = min(max(1, rc.max_tokens), limit)
+        config["maxOutputTokens"] = output_cap(model, rc.max_tokens)
         if model == "gemini-pro-agent":
             # Antigravity's Pro selector is a gateway alias. Its reasoning tier is
             # selected by budget, as sent by the native Antigravity client.
@@ -361,7 +361,7 @@ class GeminiOAuthProvider(GeminiProvider):
                 "thinkingBudget": budget,
                 "includeThoughts": True,
             }
-            config["maxOutputTokens"] = min(max(config["maxOutputTokens"], budget + 4096), limit)
+            config["maxOutputTokens"] = max(config["maxOutputTokens"], budget + 4096)
 
     async def _stream_once(
         self,
@@ -521,11 +521,7 @@ class GeminiOAuthProvider(GeminiProvider):
                             yield AgentEvent(type="thinking_end", content_index=0)
                         if text_started:
                             yield AgentEvent(type="text_end", content_index=0)
-                        stop = (
-                            "tool_use"
-                            if response_has_function_call
-                            else _map_finish_reason(finish_reason)
-                        )
+                        stop = _stop_reason(finish_reason, response_has_function_call)
                         yield AgentEvent(type="done", stop_reason=stop)
                         done_emitted = True
 

@@ -54,7 +54,6 @@ def build_tier_provider_from_settings(
         openai_model,
         codex_model,
         gemini_model,
-        max_tokens,
         temperature,
         anthropic_reasoning_effort,
         openai_reasoning_effort,
@@ -68,7 +67,6 @@ def build_tier_provider_from_settings(
                 provider=anthropic,
                 model=anthropic_model,
                 reasoning_config=ReasoningConfig(
-                    max_tokens=max_tokens,
                     reasoning_effort=(
                         (anthropic_reasoning_effort or None)
                         if reasoning_kind(anthropic_model) == "effort"
@@ -84,7 +82,6 @@ def build_tier_provider_from_settings(
                 provider=openai,
                 model=codex_model if openai_uses_codex else openai_model,
                 reasoning_config=ReasoningConfig(
-                    max_tokens=max_tokens,
                     reasoning_effort=(
                         (openai_reasoning_effort or None)
                         if reasoning_kind(codex_model if openai_uses_codex else openai_model)
@@ -101,7 +98,6 @@ def build_tier_provider_from_settings(
                 provider=gemini,
                 model=gemini_model,
                 reasoning_config=ReasoningConfig(
-                    max_tokens=max_tokens,
                     thinking_budget=(
                         gemini_thinking_budget
                         if gemini_thinking_budget > 0 and reasoning_kind(gemini_model)
@@ -117,7 +113,7 @@ def build_tier_provider_from_settings(
                 provider=ollama,
                 model=getattr(settings, f"tier_{tier_name.value}_ollama_model")
                 or settings.ollama_model,
-                reasoning_config=ReasoningConfig(max_tokens=min(max_tokens, 8192)),
+                reasoning_config=ReasoningConfig(),
                 temperature=temperature,
             )
         if not candidates:
@@ -206,7 +202,7 @@ def _build_enabled_providers(settings: Settings) -> tuple[dict[ProviderChoice, L
 
 def _tier_rows(
     settings: Settings,
-) -> tuple[tuple[TierName, str, str, str, str, int, float, str, str, int], ...]:
+) -> tuple[tuple[TierName, str, str, str, str, float, str, str, int], ...]:
     return (
         (
             TierName.FAST,
@@ -214,7 +210,6 @@ def _tier_rows(
             settings.tier_fast_openai_model,
             settings.tier_fast_codex_model,
             settings.tier_fast_gemini_model,
-            settings.tier_fast_max_tokens,
             settings.tier_fast_temperature,
             settings.tier_fast_anthropic_reasoning_effort,
             settings.tier_fast_openai_reasoning_effort,
@@ -226,7 +221,6 @@ def _tier_rows(
             settings.tier_normal_openai_model,
             settings.tier_normal_codex_model,
             settings.tier_normal_gemini_model,
-            settings.tier_normal_max_tokens,
             settings.tier_normal_temperature,
             settings.tier_normal_anthropic_reasoning_effort,
             settings.tier_normal_openai_reasoning_effort,
@@ -238,7 +232,6 @@ def _tier_rows(
             settings.tier_hard_openai_model,
             settings.tier_hard_codex_model,
             settings.tier_hard_gemini_model,
-            settings.tier_hard_max_tokens,
             settings.tier_hard_temperature,
             settings.tier_hard_anthropic_reasoning_effort,
             settings.tier_hard_openai_reasoning_effort,

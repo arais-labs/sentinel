@@ -111,6 +111,23 @@ export function applyToolcallEnd(
   };
 }
 
+/** A streamed call that will never run (cut off, or from a discarded attempt) leaves the view. */
+export function applyToolcallDiscard(current: StreamingState, callId: string): StreamingState {
+  const dropped = current.activeToolCalls.filter((call) => call.id === callId);
+  if (!dropped.length) return current;
+  const keys = new Set(dropped.map(streamingCallKey));
+  return {
+    ...current,
+    activeToolCalls: current.activeToolCalls.filter((call) => call.id !== callId),
+    timeline: current.timeline.filter((item) => item.kind !== 'tool' || !keys.has(item.callKey)),
+  };
+}
+
+/** A failed attempt is retried from scratch: its streamed text is void. */
+export function applyStreamReset(current: StreamingState): StreamingState {
+  return { ...current, text: '', textPresentation: undefined, isStreaming: false, isThinking: true };
+}
+
 interface ToolResultUpdate {
   callId: string;
   toolName: string;

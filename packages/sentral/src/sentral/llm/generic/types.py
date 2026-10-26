@@ -22,6 +22,10 @@ AgentEventType = Literal[
     "toolcall_start",
     "toolcall_delta",
     "toolcall_end",
+    # The streamed call was not finished and will never run; displays drop it.
+    "toolcall_discard",
+    # A failed attempt's partial output is void; the same call restarts from scratch.
+    "stream_reset",
     "tool_result",
     "agent_progress",
     "done",
@@ -98,6 +102,8 @@ class AssistantMessage:
     responses_output: list[dict[str, Any]] = field(default_factory=list)
     provider_usage: dict[str, Any] | None = None
     responses_context_reset: bool = False
+    # Calls cut off by the output cap: absent from content and responses_output, never run.
+    incomplete_tool_calls: list[ToolCallContent] = field(default_factory=list)
     presentation: dict[str, Any] | None = None
     conversation_message: dict[str, Any] | None = None
 
@@ -153,7 +159,7 @@ class ToolSchema:
 class ReasoningConfig:
     """Per-call reasoning parameters that flow from tier config to API payload."""
 
-    max_tokens: int = 8192
+    max_tokens: int | None = None  # None: the model's own output cap (model_limits).
     fast_mode: bool = False  # Opt-in premium processing; provider translates the wire format.
     thinking_budget: int | None = None  # Anthropic extended thinking budget_tokens
     reasoning_effort: str | None = None  # OpenAI: "low" | "medium" | "high"

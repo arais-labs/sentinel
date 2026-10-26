@@ -26,6 +26,7 @@ from sentral.llm.generic.types import (
 )
 from sentral.llm.http_pool import provider_http_client
 from sentral.llm.ids import ProviderId
+from sentral.llm.model_limits import output_cap
 from sentral.llm.pricing import claude_token_price
 from sentral.llm.providers.fast_mode import matches_model
 
@@ -189,7 +190,19 @@ class AnthropicProvider(LLMProvider):
             )
         self._raise_for_status(response)
 
-        return self._message(response.json(), model)
+        data = response.json()
+        blocks = data.get("content") or []
+        cut = []
+        if (
+            _map_anthropic_stop_reason(data.get("stop_reason")) == "length"
+            and blocks
+            and blocks[-1].get("type") == "tool_use"
+        ):
+            # A reply cut off inside a call returns that call with partial input.
+            cut = [blocks.pop()]
+        message = self._message(data, model)
+        message.incomplete_tool_calls = _tool_calls(cut)
+        return message
 
     @staticmethod
     def _raise_for_status(response: httpx.Response) -> None:
@@ -451,20 +464,33 @@ class AnthropicProvider(LLMProvider):
                         accumulated.setdefault("usage", {}).update(event.get("usage") or {})
                         continue
                     elif kind == "message_stop":
-                        if pending_inputs:
+                        stop = _map_anthropic_stop_reason(accumulated.get("stop_reason"))
+                        if pending_inputs and stop != "length":
                             raise RuntimeError(
                                 "Claude stream ended before tool content_block_stop."
                             )
+                        # The output cap can end a reply inside a call, whose block then
+                        # never closes. It is neither content nor replayable output.
+                        blocks = accumulated.get("content") or []
+                        cut = [blocks[index] for index in sorted(pending_inputs)]
+                        accumulated["content"] = [
+                            block
+                            for index, block in enumerate(blocks)
+                            if index not in pending_inputs
+                        ]
                         message = self._message(accumulated, model)
+                        message.incomplete_tool_calls = _tool_calls(cut)
                         yield AgentEvent(
                             type="done",
                             stop_reason=message.stop_reason,
                             message=message,
                         )
                         return
-                    for parsed in _parse_anthropic_stream_event(event):
-                        yield parsed
-                    if kind == "error":
+                    if kind != "error":
+                        for parsed in _parse_anthropic_stream_event(event):
+                            yield parsed
+                    else:
+                        # Raised, not streamed: a retry or fallback may still answer.
                         raise RuntimeError(
                             f"Anthropic stream sse_error: {(event.get('error') or {}).get('message', 'Provider stream error')}"
                         )
@@ -475,7 +501,8 @@ class AnthropicProvider(LLMProvider):
         reasoning_config: ReasoningConfig | None, model: str = "claude-opus-5-5"
     ) -> dict[str, Any]:
         rc = reasoning_config or ReasoningConfig()
-        options = {"max_tokens": rc.max_tokens}
+        max_tokens = output_cap(model, rc.max_tokens)
+        options = {"max_tokens": max_tokens}
         adaptive = model.startswith(
             (
                 "claude-opus-5",
@@ -503,7 +530,7 @@ class AnthropicProvider(LLMProvider):
                     block_binding={"prefix_mismatch_behavior": "drop_block"},
                 )
         elif rc.thinking_budget:
-            if not 1024 <= rc.thinking_budget < rc.max_tokens:
+            if not 1024 <= rc.thinking_budget < max_tokens:
                 raise ValueError(
                     "Claude thinking budget must be at least 1024 and less than max_tokens"
                 )
@@ -706,6 +733,14 @@ def _message_content(message: AgentMessage | dict) -> Any:
     if isinstance(message, dict):
         return message.get("content")
     return getattr(message, "content", "")
+
+
+def _tool_calls(blocks: list[dict[str, Any]]) -> list[ToolCallContent]:
+    return [
+        ToolCallContent(id=block.get("id") or "", name=block.get("name") or "")
+        for block in blocks
+        if block.get("type") == "tool_use"
+    ]
 
 
 def _map_anthropic_stop_reason(reason: str | None) -> str:

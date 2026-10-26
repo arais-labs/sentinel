@@ -27,6 +27,7 @@ from sentral.llm.generic.types import (
 )
 from sentral.llm.http_pool import provider_http_client
 from sentral.llm.ids import ProviderId
+from sentral.llm.model_limits import output_cap
 from sentral.llm.pricing import openai_token_price
 from sentral.llm.providers.fast_mode import matches_model
 
@@ -137,7 +138,7 @@ class OpenAIProvider(LLMProvider):
             "model": model,
             "messages": self._to_openai_messages(messages),
             "temperature": temperature,
-            "max_completion_tokens": rc.max_tokens,
+            "max_completion_tokens": output_cap(model, rc.max_tokens),
             **self._payload_extras(),
             **self._speed_options(model, rc),
         }
@@ -161,6 +162,8 @@ class OpenAIProvider(LLMProvider):
         message = choice.get("message") or {}
         usage = data.get("usage") or {}
         content_blocks: list[TextContent | ThinkingContent | ToolCallContent] = []
+        cut: list[ToolCallContent] = []
+        cut_off = _map_openai_finish_reason(choice.get("finish_reason")) == "length"
 
         text_content = message.get("content")
         if isinstance(text_content, str) and text_content:
@@ -182,13 +185,16 @@ class OpenAIProvider(LLMProvider):
                 parsed_arguments = arguments
             else:
                 parsed_arguments = {}
-            content_blocks.append(
-                ToolCallContent(
-                    id=tool_call.get("id") or "",
-                    name=fn.get("name") or "",
-                    arguments=parsed_arguments,
-                )
+            call = ToolCallContent(
+                id=tool_call.get("id") or "",
+                name=fn.get("name") or "",
+                arguments=parsed_arguments,
             )
+            if cut_off and isinstance(arguments, str) and _parsed_arguments(arguments) is None:
+                # Arguments cut off by the output cap.
+                cut.append(call)
+            else:
+                content_blocks.append(call)
 
         return AssistantMessage(
             content=content_blocks,
@@ -199,6 +205,7 @@ class OpenAIProvider(LLMProvider):
                 output_tokens=int(usage.get("completion_tokens") or 0),
             ),
             stop_reason=_map_openai_finish_reason(choice.get("finish_reason")),
+            incomplete_tool_calls=cut,
         )
 
     async def stream(
@@ -223,7 +230,7 @@ class OpenAIProvider(LLMProvider):
             "messages": self._to_openai_messages(messages),
             "temperature": temperature,
             "stream": True,
-            "max_completion_tokens": rc.max_tokens,
+            "max_completion_tokens": output_cap(model, rc.max_tokens),
             **self._payload_extras(),
             **self._speed_options(model, rc),
         }
@@ -236,6 +243,7 @@ class OpenAIProvider(LLMProvider):
 
         started = False
         text_started = False
+        finished = False
         tool_started: set[int] = set()
 
         async with self._client_factory() as client:
@@ -258,9 +266,11 @@ class OpenAIProvider(LLMProvider):
                     if not data_blob:
                         continue
                     if data_blob == "[DONE]":
-                        if text_started:
-                            yield AgentEvent(type="text_end", content_index=0)
-                        yield AgentEvent(type="done", stop_reason="stop")
+                        # The finish_reason chunk already ended the reply.
+                        if not finished:
+                            if text_started:
+                                yield AgentEvent(type="text_end", content_index=0)
+                            yield AgentEvent(type="done", stop_reason="stop")
                         break
                     event = json.loads(data_blob)
 
@@ -317,6 +327,7 @@ class OpenAIProvider(LLMProvider):
                                 delta=arguments_delta,
                             )
 
+                    finished = finished or bool(finish_reason)
                     if finish_reason == "tool_calls":
                         for idx in sorted(tool_started):
                             yield AgentEvent(type="toolcall_end", content_index=idx)
@@ -421,6 +432,15 @@ class OpenAIProvider(LLMProvider):
         }
 
     def _responses_message(self, response, model, output):
+        cut = []
+        if (
+            response.get("status") == "incomplete"
+            and (response.get("incomplete_details") or {}).get("reason") == "max_output_tokens"
+        ):
+            # The output cap can stop a call mid-arguments: it is neither content nor
+            # replayable output (its call_id would expect a result).
+            cut = [item for item in output if _unfinished_call(item)]
+            output = [item for item in output if not _unfinished_call(item)]
         content = []
         for item in output:
             kind = item.get("type")
@@ -499,6 +519,12 @@ class OpenAIProvider(LLMProvider):
             stop_reason=reason,
             responses_output=copy.deepcopy(output),
             provider_usage=provider_usage,
+            incomplete_tool_calls=[
+                ToolCallContent(
+                    id=item.get("call_id") or item.get("id", ""), name=item.get("name", "")
+                )
+                for item in cut
+            ],
         )
 
     def _to_responses_input(self, messages):
@@ -624,7 +650,7 @@ class OpenAIProvider(LLMProvider):
             "tool_choice": tool_choice or "auto",
             "stream": True,
             "store": False,
-            "max_output_tokens": rc.max_tokens,
+            "max_output_tokens": output_cap(model, rc.max_tokens),
             **self._speed_options(model, rc),
             "include": ["reasoning.encrypted_content"],
         }
@@ -806,6 +832,22 @@ class OpenAIProvider(LLMProvider):
                             )
                             return
                 raise RuntimeError(f"{self.name} Responses stream ended before response completion")
+
+
+def _unfinished_call(item: dict[str, Any]) -> bool:
+    if item.get("type") != "function_call":
+        return False
+    if item.get("status", "completed") != "completed":
+        return True
+    return _parsed_arguments(item.get("arguments") or "{}") is None
+
+
+def _parsed_arguments(raw: str) -> dict[str, Any] | None:
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    return value if isinstance(value, dict) else None
 
 
 def _map_openai_finish_reason(reason: str | None) -> str:

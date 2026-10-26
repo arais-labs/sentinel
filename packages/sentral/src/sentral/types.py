@@ -44,6 +44,10 @@ AgentEventType = Literal[
     "toolcall_start",
     "toolcall_delta",
     "toolcall_end",
+    # The streamed call was not finished and will never run; displays drop it.
+    "toolcall_discard",
+    # A failed attempt's partial output is void; the same call restarts from scratch.
+    "stream_reset",
     "tool_result",
     "approval_required",
     "agent_progress",

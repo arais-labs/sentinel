@@ -313,6 +313,12 @@ export function VoicePage({ active = true, panelOpen = true, onPhaseChange, onOp
           if (event.tool_result) settleTool(event.tool_result as { tool_call_id?: string; is_error?: boolean; content?: unknown }, id);
           break;
         }
+        case 'toolcall_discard': {
+          // A cut-off or retried call never runs.
+          const id = String((event.tool_call as { id?: string } | undefined)?.id ?? '');
+          setTools(list => list.filter(item => item.id !== id));
+          break;
+        }
         case 'tool_result': settleTool(event.tool_result as { tool_call_id?: string; is_error?: boolean; content?: unknown } | undefined); break;
         case 'error': case 'agent_error':
           setError(String(event.error ?? event.message ?? 'Voice request failed.'));

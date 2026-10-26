@@ -42,6 +42,11 @@ def normalize_endpoint(value: str) -> str:
     return value
 
 
+# Local models run with a fixed context; a reply may use at most a quarter of it.
+_OLLAMA_CONTEXT_TOKENS = 32768
+_OLLAMA_OUTPUT_TOKENS = _OLLAMA_CONTEXT_TOKENS // 4
+
+
 class OllamaProvider(LLMProvider):
     def __init__(self, base_url: str, api_key: str | None = None, *, client_factory=None):
         self.base_url = normalize_endpoint(base_url)
@@ -58,9 +63,9 @@ class OllamaProvider(LLMProvider):
 
     def model_context(self, model):
         return {
-            "context_window_tokens": 32768,
-            "context_token_budget": 24576,
-            "output_reserve_tokens": 8192,
+            "context_window_tokens": _OLLAMA_CONTEXT_TOKENS,
+            "context_token_budget": _OLLAMA_CONTEXT_TOKENS - _OLLAMA_OUTPUT_TOKENS,
+            "output_reserve_tokens": _OLLAMA_OUTPUT_TOKENS,
         }
 
     async def discover_models(self):
@@ -144,8 +149,12 @@ class OllamaProvider(LLMProvider):
             "stream": stream,
             "options": {
                 "temperature": temperature,
-                "num_ctx": 32768,
-                "num_predict": (reasoning_config.max_tokens if reasoning_config else 8192),
+                "num_ctx": _OLLAMA_CONTEXT_TOKENS,
+                "num_predict": min(
+                    (reasoning_config.max_tokens if reasoning_config else None)
+                    or _OLLAMA_OUTPUT_TOKENS,
+                    _OLLAMA_OUTPUT_TOKENS,
+                ),
             },
         }
         if tools and tool_choice != "none":
@@ -213,10 +222,11 @@ class OllamaProvider(LLMProvider):
                 input_tokens=data.get("prompt_eval_count", 0),
                 output_tokens=data.get("eval_count", 0),
             ),
+            # Calls arrive whole, so they run; the output cap still ended the reply early.
             stop_reason=(
-                "tool_use"
-                if any(isinstance(b, ToolCallContent) for b in blocks)
-                else "length" if data.get("done_reason") == "length" else "stop"
+                "length"
+                if data.get("done_reason") == "length"
+                else "tool_use" if any(isinstance(b, ToolCallContent) for b in blocks) else "stop"
             ),
         )
 

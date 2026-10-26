@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
@@ -331,11 +330,7 @@ class SentinelRuntimeSupport:
                         {
                             "id": block.id,
                             "name": block.name,
-                            "arguments": (
-                                deepcopy(block.arguments)
-                                if block.name == "form"
-                                else self._sanitize_tool_call_arguments(block.arguments)
-                            ),
+                            "arguments": deepcopy(block.arguments),
                             "thought_signature": block.thought_signature,
                         }
                     )
@@ -386,16 +381,8 @@ class SentinelRuntimeSupport:
                     metadata,
                     generation=latest_assistant_generation or requested_generation,
                 )
-                # Forms are persisted UI state used to render questions and validate
-                # answers after reload, not a disposable tool-output preview.
-                if message.tool_name == "form" and not message.is_error:
-                    stored_content, truncation_meta = message.content or "", {}
-                else:
-                    stored_content, truncation_meta = self._truncate_tool_result_for_storage(
-                        message.content or ""
-                    )
-                if truncation_meta:
-                    metadata.update(truncation_meta)
+                # Stored as the model saw it: later requests replay the same bytes.
+                stored_content = message.content or ""
                 existing_record = None
                 if isinstance(persisted_message_id, str) and persisted_message_id.strip():
                     try:
@@ -659,31 +646,6 @@ class SentinelRuntimeSupport:
             block.text for block in message.content if isinstance(block, TextContent) and block.text
         ]
         return "\n".join(parts)
-
-    def _sanitize_tool_call_arguments(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        max_chars = max(200, int(settings.stored_tool_call_args_max_chars))
-        try:
-            serialized = json.dumps(arguments, ensure_ascii=False)
-        except Exception:
-            serialized = str(arguments)
-        if len(serialized) <= max_chars:
-            return arguments
-        return {
-            "_truncated": True,
-            "preview": serialized[:max_chars],
-            "original_chars": len(serialized),
-        }
-
-    def _truncate_tool_result_for_storage(self, content: str) -> tuple[str, dict[str, Any]]:
-        max_chars = max(200, int(settings.stored_tool_result_max_chars))
-        if len(content) <= max_chars:
-            return content, {}
-        truncated = content[:max_chars] + f"\n...[TRUNCATED_FOR_STORAGE - {len(content)} chars]"
-        return truncated, {
-            "storage_truncated": True,
-            "original_chars": len(content),
-            "stored_chars": len(truncated),
-        }
 
     @staticmethod
     def user_text(content: str | list[TextContent | ImageContent]) -> str:

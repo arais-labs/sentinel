@@ -201,7 +201,7 @@ class ContextBuilder:
         except Exception:
             logger.info("Machine environment unavailable for instance %s", self._instance_name)
             content = (
-                "No usable workspace is attached, or its machine is unavailable. Use runtime.workspace to inspect the attachment. If unattached, continue the conversation normally and ask the user to use Attach in the session toolbar before tools need files or commands. Do not invent a machine, OS, workspace path, "
+                "No usable workspace is attached, or its machine is unavailable. Use runtime.workspace to inspect the attachment. If unattached, continue the conversation normally and ask the user to use Attach in the session toolbar (or attach the workspace they name with the workspaces tool) before tools need files or commands. Do not invent a machine, OS, workspace path, "
                 "or connected terminal. Establish runtime availability before executing commands."
             )
         return SystemMessage(
@@ -254,8 +254,6 @@ class ContextBuilder:
         metadata = message.metadata_json if isinstance(message.metadata_json, dict) else {}
         source = str(metadata.get("source") or "").strip().lower()
         return source == "runtime_context"
-
-    _MAX_TOOL_RESULT_CHARS = 4000
 
     def _convert_message(self, message: Message) -> AgentMessage:
         return self._convert_message_with_options(message, include_tool_calls=True)
@@ -341,11 +339,10 @@ class ContextBuilder:
             )
         if message.role in {"tool", "tool_result"}:
             metadata = message.metadata_json or {}
-            content = self._truncate_tool_result(message.content or "")
             return ToolResultMessage(
                 tool_call_id=message.tool_call_id or "",
                 tool_name=message.tool_name or "",
-                content=content,
+                content=message.content or "",
                 is_error=bool(metadata.get("is_error")),
             )
         if message.role == "system":
@@ -374,25 +371,6 @@ class ContextBuilder:
             return UserMessage(content=blocks, metadata=dict(message.metadata_json or {}))
         return UserMessage(
             content=message.content or "", metadata=dict(message.metadata_json or {})
-        )
-
-    def _truncate_tool_result(self, content: str) -> str:
-        """Truncate large tool results (e.g. base64 screenshots) to avoid context overflow."""
-        if len(content) <= self._MAX_TOOL_RESULT_CHARS:
-            return content
-        # Try to parse as JSON and strip large base64 fields
-        try:
-            parsed = __import__("json").loads(content)
-            if isinstance(parsed, dict):
-                for key in list(parsed.keys()):
-                    val = parsed[key]
-                    if isinstance(val, str) and len(val) > 500:
-                        parsed[key] = f"[truncated: {len(val)} chars]"
-                return __import__("json").dumps(parsed)
-        except Exception:
-            pass
-        return (
-            content[: self._MAX_TOOL_RESULT_CHARS] + f"\n...[truncated from {len(content)} chars]"
         )
 
     def _word_count(self, text: str) -> int:
