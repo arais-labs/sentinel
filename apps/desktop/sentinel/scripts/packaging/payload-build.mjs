@@ -16,6 +16,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { readComponents } from './components.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const scriptDir = path.dirname(__filename);
@@ -200,6 +201,12 @@ async function buildPayload() {
   }
   const channel = resolveChannel();
   const version = await readVersion();
+  // The workspace runtime components this release offers (CI: the component workflows' artifacts).
+  // Read first: a release without them could not run a workspace.
+  const componentsDir = process.env.SENTINEL_COMPONENTS_DIR
+    ? path.resolve(process.env.SENTINEL_COMPONENTS_DIR)
+    : path.join(desktopDir, 'build/components');
+  const { components, files: componentFiles } = await readComponents(componentsDir);
   const commit = output('git', ['rev-parse', 'HEAD'], { cwd: repoRoot });
   const pythonVersion = output(bundledPython, ['-c', 'import sys; print("%d.%d.%d" % sys.version_info[:3])']);
 
@@ -233,6 +240,7 @@ async function buildPayload() {
   await writeManifest(stagingDir, manifest);
 
   await mkdir(distRoot, { recursive: true });
+  for (const { from, name } of componentFiles) await cp(from, path.join(distRoot, name));
   const tarName = `sentinel-payload-${channel}-${version}.tar.gz`;
   const tarPath = path.join(distRoot, tarName);
   await rm(tarPath, { force: true });
@@ -258,6 +266,7 @@ async function buildPayload() {
     file: tarName,
     sha256,
     alembicHeads: manifest.alembicHeads,
+    components,
   }, null, 2)}\n`);
 
   await rm(stagingDir, { recursive: true, force: true });

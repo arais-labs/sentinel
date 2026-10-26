@@ -4,11 +4,12 @@
 // DMG remains byte-for-byte identical. Only payload channel/commit metadata is
 // rewritten before the archive is repacked and hashed for its target index.
 import { createHash } from 'node:crypto';
-import { appendFile, cp, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { COMPONENT_NAMES, validateComponents } from '../packaging/components.mjs';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const desktopDir = path.resolve(scriptDir, '../..');
@@ -51,6 +52,14 @@ export function promoteIndex(source, targetChannel, targetCommit, targetFile, ta
     sha256: targetSha256,
   };
   delete promoted.url;
+  // Component tarballs are reused byte for byte; their URLs point at the target release once published.
+  if (source.components) {
+    promoted.components = { ...source.components };
+    for (const name of COMPONENT_NAMES) {
+      const { url: _url, ...entry } = source.components[name];
+      promoted.components[name] = entry;
+    }
+  }
   return promoted;
 }
 
@@ -81,7 +90,11 @@ async function main() {
     if (targetChannel !== 'stable') throw new Error('--check requires stable');
     const assets = output('gh', ['release', 'view', betaTag, '--repo', repoSlug,
       '--json', 'assets', '--jq', '.assets[].name']).split('\n');
-    for (const name of [dmgName, sourceTarName, 'latest-beta.json']) {
+    run('gh', ['release', 'download', betaTag, '--pattern', 'latest-beta.json', '--dir', os.tmpdir(),
+      '--clobber', '--repo', repoSlug]);
+    const betaIndex = JSON.parse(await readFile(path.join(os.tmpdir(), 'latest-beta.json'), 'utf8'));
+    const components = validateComponents(betaIndex.components);
+    for (const name of [dmgName, sourceTarName, 'latest-beta.json', ...COMPONENT_NAMES.map(n => components[n].file)]) {
       if (!assets.includes(name)) throw new Error(`${betaTag} is missing ${name}`);
     }
     console.log(`Verified tree-identical beta candidate ${betaTag}`);
@@ -95,7 +108,6 @@ async function main() {
     await mkdir(downloaded, { recursive: true });
     await mkdir(staging, { recursive: true });
     let sourceLabel;
-    let candidateRunId;
     let sourceMetadataCommit = sourceCommit;
     if (targetChannel === 'beta') {
       const runId = process.env.PROMOTION_RUN_ID || output('gh', [
@@ -111,7 +123,6 @@ async function main() {
       if (!isSuccessfulCandidateRun({ headSha, event, status, conclusion }, sourceCommit)) {
         throw new Error(`PR workflow run ${runId} is not the successful candidate being promoted.`);
       }
-      candidateRunId = runId;
       for (const artifact of ['desktop-installer', 'desktop-payload']) {
         run('gh', [
           'run', 'download', runId,
@@ -131,6 +142,8 @@ async function main() {
         '--pattern', dmgName,
         '--pattern', sourceTarName,
         '--pattern', 'latest-beta.json',
+        '--pattern', 'sentineld-*.tar.gz',
+        '--pattern', 'sentinel-workspace-*.tar.gz',
         '--dir', downloaded,
         '--repo', repoSlug,
       ]);
@@ -174,6 +187,14 @@ async function main() {
       env: { COPYFILE_DISABLE: '1' },
     });
     await cp(path.join(downloaded, dmgName), path.join(distRoot, dmgName));
+    const components = validateComponents(sourceIndex.components);
+    for (const name of COMPONENT_NAMES) {
+      const { file, sha256: expected } = components[name];
+      if (await sha256(path.join(downloaded, file)) !== expected) {
+        throw new Error(`${sourceLabel} ${name} component does not match its index.`);
+      }
+      await cp(path.join(downloaded, file), path.join(distRoot, file));
+    }
 
     const targetIndex = promoteIndex(
       sourceIndex, targetChannel, targetCommit, targetTarName, await sha256(targetTar),
@@ -186,9 +207,6 @@ async function main() {
     await writeFile(path.join(distRoot, 'TESTING.txt'),
       `Promoted from ${sourceLabel}.\nDMG reused byte-for-byte; payload code reused with ${targetChannel} metadata.\n`);
     console.log(`Promoted ${sourceLabel} assets to ${targetChannel} commit ${targetCommit.slice(0, 7)}.`);
-    if (candidateRunId && process.env.GITHUB_OUTPUT) {
-      await appendFile(process.env.GITHUB_OUTPUT, `candidate-run-id=${candidateRunId}\n`);
-    }
   } finally {
     await rm(temporary, { recursive: true, force: true });
   }

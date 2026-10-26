@@ -2,6 +2,7 @@ import type { WorkspaceSpec } from '../workspaceLifecycle.js';
 
 /** One metadata conversion; legacy tool IDs never enter normal provisioning. */
 export function migrateDesktopSelection(entry: WorkspaceSpec): void {
+  entry.distribution ??= 'alpine';  // the only distribution before it was recorded
   if (entry.desktop !== undefined) return;
   entry.desktop = entry.tools.includes('desktop') ? 'xfce' : 'none';
   entry.tools = entry.tools.filter(tool => tool !== 'desktop');

@@ -2,12 +2,11 @@ import http from 'node:http';
 import { Readable, pipeline } from 'node:stream';
 import type { ReadableStream as NodeReadableStream } from 'node:stream/web';
 import WebSocket from 'ws';
-import { DesktopStream } from './desktopStream.js';
 
 export const APP_URL = 'sentinel://app/';
 export function backendPath(url: string): string {
   const parsed = new URL(url, APP_URL);
-  if (!/^\/(api\/|ws\/|health(?:$|\/)|vnc\/)/.test(parsed.pathname)) {
+  if (!/^\/(api\/|ws\/|health(?:$|\/))/.test(parsed.pathname)) {
     throw new Error('Unsupported backend path');
   }
   return parsed.pathname + parsed.search;
@@ -58,17 +57,8 @@ export class LocalTransport {
     });
   }
 
-  connect(url: string): WebSocket | DesktopStream {
+  connect(url: string): WebSocket {
     const route = backendPath(url);
-    if (/^\/api\/v1\/instances\/[^/?]+\/runtime\/live-view\/[0-9a-f-]{36}\/stream$/.test(route)) {
-      return new DesktopStream(async signal => {
-        const response = await this.request(new Request(`sentinel://app${route}`, { method: 'POST', signal }));
-        if (!response.ok) throw new Error('Desktop unavailable');
-        const result = await response.json() as { socket?: unknown };
-        if (typeof result.socket !== 'string') throw new Error('Invalid desktop connection');
-        return result.socket;
-      });
-    }
     return new WebSocket(`ws+unix:${this.socketPath}:${route}`, {
       headers: { 'x-sentinel-desktop-token': this.token },
       maxPayload: 16 * 1024 * 1024,

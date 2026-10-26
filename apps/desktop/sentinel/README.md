@@ -64,10 +64,18 @@ npm run desktop:build -- --target macos-arm64
 npm run payload:build
 ```
 
-`runtime.lock.json` pins bundled inputs. Builds verify checksums, stage private
+`bundled-tools.lock.json` pins what the app bundles to run itself: Python for the
+backend, git and gh for the agents. Builds verify checksums, stage private
 dependencies, and check signing. The desktop build creates the shell app and DMG;
 the payload build creates the separately updatable backend and frontend. Both
 write distributable artifacts to `release/`.
+
+The workspace runtime is not bundled. sentineld (`packages/sentineld`) and the
+workspace VM process (`packages/sentinel-workspace`) are release components: each package builds its
+own tarball (`make release`), the release index lists them, and the app downloads
+whatever changed. sentineld installs each workspace distribution itself. Only the app is
+signed and notarized; it verifies each component against the index before
+installing it. Development uses the packages' `build/` directories directly.
 
 For internal ad-hoc signing, set `SENTINEL_INTERNAL_BUILD=1` for the desktop build.
 Public distribution requires the appropriate signing setup. Publishing is explicit

@@ -212,11 +212,11 @@ test('Unix WebSocket carries text, binary and close frames with the app credenti
 });
 
 test('backend routing allows supported paths and rejects UI or unrelated paths', options, async () => {
-  for (const pathname of ['/api/v1/items', '/ws/terminal', '/health', '/health/ready', '/vnc/session']) {
+  for (const pathname of ['/api/v1/items', '/ws/terminal', '/health', '/health/ready']) {
     assert.equal(backendPath(`sentinel://app${pathname}?x=1`), `${pathname}?x=1`);
   }
   const transport = new LocalTransport('/unused.sock', 'token');
-  for (const pathname of ['/', '/desktop', '/assets/app.js', '/healthcheck', '/api/../desktop']) {
+  for (const pathname of ['/', '/desktop', '/assets/app.js', '/healthcheck', '/api/../desktop', '/vnc/session']) {
     assert.throws(() => backendPath(pathname), /Unsupported backend path/);
     assert.throws(() => transport.connect(`sentinel://app${pathname}`), /Unsupported backend path/);
     await assert.rejects(transport.request(new Request(`sentinel://app${pathname}`)), /Unsupported backend path/);

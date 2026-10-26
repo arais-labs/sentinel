@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { EventEmitter } from 'node:events';
-import { mkdtemp, mkdir, writeFile, readFile, rm, access } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -16,7 +16,7 @@ function fake() {
     events: new EventEmitter(), isReady: false, preparationMessage: 'Downloading workspace image…',
     assertCompatible: () => {},
     start: async () => { calls.push('boot'); await gate.promise; runtime.isReady = true; },
-    request: async (action, value) => { calls.push([action, value]); return { exitCode: 0, distributions: ['alpine', 'ubuntu', 'debian'] }; },
+    request: async (action, value) => { calls.push([action, value]); return {}; },
     stop: async () => { gate.reject(new Error('stopped')); runtime.isReady = false; },
   };
   return { runtime, gate, calls };
@@ -32,6 +32,10 @@ async function fixture(t) {
   const root = await mkdtemp(path.join(tmpdir(), 'workspace-lifecycle-'));
   const f = fake();
   const lifecycle = new WorkspaceLifecycle(f.runtime, root);
+  // The backend names the distribution of a new workspace; these tests default to Alpine.
+  const prepare = lifecycle.prepare.bind(lifecycle);
+  lifecycle.prepare = (id, project, tools, reinstall, resources, context, distribution, ...rest) =>
+    prepare(id, project, tools, reinstall, resources, context, distribution ?? (lifecycle.status().states[id] ? undefined : 'alpine'), ...rest);
   t.after(async () => { await lifecycle.close(); await rm(root, { recursive: true, force: true }); });
   await lifecycle.load();
   return { ...f, root, lifecycle, id: randomUUID() };
@@ -68,7 +72,7 @@ test('explicit reinstall deletes only owned VM before rebuilding and preserves s
   assert.equal(operations[1][0], 'start');
   assert.equal(operations[1][1].project, '/kept-project');
   assert.equal(operations[1][1].cpus, 4);
-  assert.equal(operations[1][1].grow_disk, false);
+  assert.equal(operations[1][1].disk_gib, 64);
   assert.deepEqual(lifecycle.status().states[id].resources, resources);
 });
 
@@ -254,22 +258,20 @@ test('unfinished preparation resumes after app restart but completed workspaces 
   gate.resolve();
 });
 
-test('removing a dormant workspace deletes only its private disk without downloading', async t => {
-  const { lifecycle, root, calls, id } = await fixture(t);
-  const disk = path.join(root, 'store/containers', id);
+test('removing a workspace while sentineld is stopped starts it to delete the disk, never the project', async t => {
+  const { lifecycle, root, calls, gate, id } = await fixture(t);
   const project = path.join(root, 'project');
-  await mkdir(disk, { recursive: true });
   await mkdir(project);
-  await writeFile(path.join(disk, 'rootfs.ext4'), 'private');
   await writeFile(path.join(project, 'keep'), 'user file');
+  gate.resolve();
   await lifecycle.stop(id, true);
-  await assert.rejects(access(disk));
+  // sentineld owns the disks; starting it boots no VM.
+  assert.deepEqual(calls, ['boot', ['delete', { workspace: id }]]);
   assert.equal(await readFile(path.join(project, 'keep'), 'utf8'), 'user file');
-  assert.deepEqual(calls, []);
   await assert.rejects(lifecycle.stop('../project', true), /UUID/);
 });
 
-test('adding tools reuses the workspace and reports the same resources passed to the VM', async t => {
+test('adding tools restarts the same workspace so sentineld provisions them, with the same resources', async t => {
   const { lifecycle, calls, gate, id } = await fixture(t);
   await lifecycle.prepare(id, '/project', ['git']);
   gate.resolve();
@@ -278,29 +280,27 @@ test('adding tools reuses the workspace and reports the same resources passed to
   await until(() => lifecycle.status().states[id].state === 'running');
   const starts = calls.filter(value => value[0] === 'start');
   assert.equal(starts.length, 2);
-  assert.equal(calls.filter(value => value[0] === 'delete' || value[0] === 'stop').length, 0);
+  assert.equal(calls.filter(value => value[0] === 'delete').length, 0);
+  assert.equal(calls.filter(value => value[0] === 'stop').length, 1);
   assert.equal(starts[1][1].workspace, id);
+  assert.deepEqual(starts[1][1].tools, ['git', 'node']);
   assert.deepEqual(lifecycle.status().states[id].resources, { cpus: 2, memory_gib: 2, disk_gib: 32 });
   assert.equal(starts[1][1].disk_gib, 32);
-  assert.ok(calls.some(value => value[0] === 'exec' && value[1].arguments.includes('nodejs')));
+  assert.equal(calls.some(value => value[0] === 'exec'), false);
   await assert.rejects(lifecycle.prepare(id, '/project', ['git']), /kept/);
 });
 
-test('Desktop provisioning waits for Metal graphics and never marks a failed renderer ready', async t => {
-  const root = await mkdtemp(path.join(tmpdir(), 'workspace-metal-'));
-  const f = fake();
-  const graphicsGate = Promise.withResolvers();
-  const graphics = { install: async () => graphicsGate.promise, stop: async () => {}, close: async () => {} };
-  const lifecycle = new WorkspaceLifecycle(f.runtime, root, graphics);
-  t.after(async () => { await lifecycle.close(); await rm(root, { recursive: true, force: true }); });
-  await lifecycle.load();
-  const id = randomUUID();
-  await lifecycle.prepare(id, '/project', [], false, undefined, undefined, 'alpine', 'xfce'); f.gate.resolve();
-  await until(() => lifecycle.status().states[id].message === 'Preparing Metal desktop graphics…');
-  assert.equal(lifecycle.status().states[id].state, 'preparing');
-  graphicsGate.reject(new Error('graphics install failed'));
+test('a desktop is provisioned by the runtime as part of start, and a failed start never marks it ready', async t => {
+  const { lifecycle, calls, runtime, gate, id } = await fixture(t);
+  const real = runtime.request;
+  runtime.request = async (action, values) => {
+    if (action === 'start') { calls.push([action, values]); throw new Error('desktop session did not start'); }
+    return real(action, values);
+  };
+  await lifecycle.prepare(id, '/project', [], false, undefined, undefined, 'alpine', 'xfce'); gate.resolve();
   await until(() => lifecycle.status().states[id].state === 'failed');
-  assert.match(lifecycle.status().states[id].error, /graphics install failed/);
+  assert.match(lifecycle.status().states[id].error, /desktop session did not start/);
+  assert.equal(calls.find(value => value[0] === 'start')[1].desktop, 'xfce');
 });
 
 test('reinstall rebuilds a running workspace and applies normal fresh-install definitions', async t => {
@@ -313,10 +313,9 @@ test('reinstall rebuilds a running workspace and applies normal fresh-install de
   assert.equal(calls.length, count);
   await lifecycle.prepare(id, '/project', ['node'], true);
   await until(() => lifecycle.status().states[id].state === 'running');
-  const updates = calls.slice(count).filter(value => value[0] === 'exec');
-  assert.match(updates[0][1].arguments[2], /apk add --no-cache/);
-  assert.doesNotMatch(updates[0][1].arguments[2], /--upgrade/);
-  assert.equal(updates[0][1].workspace, id);
+  const start = calls.slice(count).find(value => value[0] === 'start');
+  assert.deepEqual(start[1].tools, ['node']);
+  assert.equal(start[1].workspace, id);
   assert.equal(calls.filter(value => value[0] === 'delete').length, 1);
   const saved = JSON.parse(await readFile(path.join(root, 'workspaces.json'), 'utf8'))[id];
   assert.equal(saved.project, '/project');
@@ -374,7 +373,7 @@ test('resizing a running workspace restarts it before applying resources and gro
   const operations = calls.filter(Array.isArray);
   assert.equal(operations[0][0], 'stop');
   assert.equal(operations[1][0], 'start');
-  assert.equal(operations[1][1].grow_disk, true);
+  assert.equal(operations[1][1].disk_gib, 64);  // sentineld grows the disk to the new size
   assert.equal(operations[1][1].memory_gib, 4);
 });
 
@@ -401,7 +400,7 @@ test('stopped size edits stay stopped and a failed resize retains its recovery i
   runtime.request = real;
   await lifecycle.prepare(id, '/project', []);
   await until(() => lifecycle.status().states[id].state === 'running');
-  assert.ok(calls.some(value => value[0] === 'start' && value[1].grow_disk === true));
+  assert.ok(calls.some(value => value[0] === 'start' && value[1].disk_gib === 64));
 });
 
 test('changing project remounts same workspace, preserving tools and resources', async t => {
@@ -426,16 +425,21 @@ test('changing project remounts same workspace, preserving tools and resources',
   assert.equal(calls.length, 0);
 });
 
-test('lifecycle publishes setup steps as they happen and preserves notification context', async t => {
-  const { lifecycle, gate, id, root } = await fixture(t);
+test('lifecycle publishes sentineld\'s provisioning steps as they happen and preserves notification context', async t => {
+  const { lifecycle, runtime, gate, id, root } = await fixture(t);
   const updates = [];
   lifecycle.events.on('changed', (workspace, entry) => updates.push({ workspace, ...entry }));
+  const request = runtime.request;
+  runtime.request = async (action, values) => {
+    if (action === 'start') runtime.events.emit('workspace-progress', id, 'Installing Node.js…');
+    return request(action, values);
+  };
   await lifecycle.prepare(id, '/project', ['node'], false, undefined, { instanceName: 'main', name: 'Demo' });
   assert.equal(updates.at(-1).state, 'preparing');
   gate.resolve();
   await until(() => updates.at(-1)?.state === 'running');
   assert.ok(updates.some(update => update.message?.includes('Starting')));
-  assert.ok(updates.filter(update => update.state === 'preparing').length > 2);
+  assert.ok(updates.some(update => update.state === 'preparing' && update.message === 'Installing Node.js…'));
   assert.equal(updates.at(-1).notificationContext.name, 'Demo');
   const stored = JSON.parse(await readFile(path.join(root, 'workspaces.json'), 'utf8'));
   assert.equal(stored[id].notificationContext.instanceName, 'main');
@@ -450,21 +454,24 @@ test('distribution survives restarts and cannot reinterpret an existing disk', a
   await lifecycle.stop(id);
   assert.equal(JSON.parse(await readFile(path.join(root, 'workspaces.json'), 'utf8'))[id].distribution, 'ubuntu');
   await assert.rejects(lifecycle.prepare(id, '/project', ['git'], false, undefined, undefined, 'debian'), /Reinstall this workspace to change its distribution/);
-  await assert.rejects(lifecycle.prepare(id, '/project', ['git', 'unknown']), /Unknown workspace tools/);
+  await assert.rejects(lifecycle.prepare(id, '/project', ['git', '../unknown']), /Unknown workspace tools/);
   await lifecycle.prepare(id, '/project', ['git']);
   await until(() => lifecycle.status().states[id].state === 'running');
   assert.equal(calls.filter(call => Array.isArray(call) && call[0] === 'start').at(-1)[1].distribution, 'ubuntu');
 });
 
-test('an older runtime cannot silently create Alpine for a requested Ubuntu workspace', async t => {
-  const { lifecycle, runtime, calls, gate, id } = await fixture(t);
-  const request = runtime.request;
-  runtime.request = async (action, value) => action === 'status' ? { states: {} } : request(action, value);
-  await lifecycle.prepare(id, '/project', ['git'], false, undefined, undefined, 'ubuntu');
+test('the browser and tools reach the runtime; sentineld installs them, the app runs nothing in the guest', async t => {
+  const { lifecycle, calls, gate, id } = await fixture(t);
+  await lifecycle.prepare(id, '/project', ['git'], false, undefined, undefined, 'debian', 'xfce', 'firefox');
   gate.resolve();
-  await until(() => lifecycle.status().states[id].state === 'failed');
-  assert.match(lifecycle.status().states[id].error, /Update Sentinel\./);
-  assert.ok(!calls.some(call => Array.isArray(call) && call[0] === 'start'));
+  await until(() => lifecycle.status().states[id].state === 'running');
+  const start = calls.find(call => Array.isArray(call) && call[0] === 'start')[1];
+  assert.deepEqual([start.distribution, start.desktop, start.tools, start.browser], ['debian', 'xfce', ['git'], 'firefox']);
+  assert.equal(calls.some(call => Array.isArray(call) && call[0] === 'exec'), false);
+  calls.length = 0;
+  await lifecycle.prepare(id, '/project', ['git'], false, undefined, undefined, undefined, undefined, 'chrome');
+  await until(() => lifecycle.status().states[id].state === 'running');
+  assert.deepEqual(calls.filter(Array.isArray).map(([action]) => action), ['stop', 'start']);
 });
 
 
@@ -540,24 +547,6 @@ test('failed disk repair stays stopped but permits explicitly confirmed reinstal
   assert.equal(lifecycle.status().states[id].recovery_available, false);
   assert.equal(lifecycle.status().states[id].recovery_backup, undefined);
   assert.ok(calls.some(call => call[0] === 'delete'));
-});
-
-test('offline removal deletes only this workspace disk, backups and recovery marker', async t => {
-  const { lifecycle, root, id, calls } = await fixture(t);
-  const other = randomUUID();
-  for (const workspace of [id, other]) {
-    for (const folder of [`store/containers/${workspace}`, `recovery/${workspace}`, 'recovery-required']) {
-      await mkdir(path.join(root, folder), { recursive: true });
-    }
-    await writeFile(path.join(root, 'recovery', workspace, 'backup'), 'backup');
-    await writeFile(path.join(root, 'recovery-required', workspace), 'failed');
-  }
-  await lifecycle.stop(id, true);
-  for (const folder of ['store/containers', 'recovery', 'recovery-required']) {
-    await assert.rejects(access(path.join(root, folder, id)), { code: 'ENOENT' });
-    await access(path.join(root, folder, other));
-  }
-  assert.equal(calls.length, 0);
 });
 
 test('reconnecting during native recovery follows completion without replaying workspace startup', async t => {

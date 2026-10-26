@@ -2,15 +2,17 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { WorkerClient } from '../../.test-dist/main/workspace/workerClient.js';
 
+// The runtime builds a spec from the catalog (workspace-runtime.test.mjs); here it echoes what it was given.
+const spec = async ({ browser, ...values }) => ({ ...values, tools: [...values.tools, ...(browser && browser !== 'chromium' ? [browser] : [])] });
 const record = { revision: 3, spec: { name: 'Remote', project: '/remote/project', tools: ['git'], distribution: 'ubuntu', desktop: 'none', resources: { cpus: 4, memory_gib: 8, disk_gib: 64 } } };
 
 test('reinstall edits require the reviewed revision and reject stale edits', async () => {
   const calls = [];
-  const client = new WorkerClient({ async request(action, values) {
+  const client = new WorkerClient({ spec, async request(action, values) {
     calls.push([action, values]);
     return action === 'workspaces' ? { workspaces: { example: record } } : { capabilities: ['workspace-reinstall-v1'] };
   } });
-  const edit = { workspace: 'example', confirmed: true, spec: { name: 'New name' } };
+  const edit = { workspace: 'example', confirmed: true, spec: { name: 'New name', browser: 'firefox' } };
   await assert.rejects(client.request('reinstall', edit), /Refresh workspace settings/);
   assert.equal(calls.length, 0);
   await assert.rejects(client.request('reinstall', { ...edit, revision: 2 }), /settings changed/);
@@ -22,6 +24,8 @@ test('reinstall edits require the reviewed revision and reject stale edits', asy
   assert.equal(request.spec.name, 'New name');
   assert.equal(request.spec.project, record.spec.project);
   assert.deepEqual(request.spec.resources, record.spec.resources);
+  assert.deepEqual(request.spec.tools, ['git', 'firefox']);
+  assert.equal('steps' in request.spec || 'browser' in request.spec, false);
 });
 
 test('a fresh client discovers worker-owned configuration and operation state', async () => {
@@ -45,22 +49,16 @@ test('starting by ID never pushes stale client configuration', async () => {
   assert.deepEqual(calls, [['workspace_start', { workspace: 'example' }]]);
 });
 
-test('browser settings cannot be silently lost by an older worker', async () => {
-  const client = new WorkerClient({ async request() { return { capabilities: [] }; } });
-  await assert.rejects(client.request('configure', { ...record.spec, browser: 'firefox' }), error => error.details.capability === 'workspace-browser-v1');
-});
-
-test('explicit edits carry an expected revision and a self-contained setup plan', async () => {
+test('explicit edits carry an expected revision and the catalog spec, the browser as a tool', async () => {
   const calls = [];
-  const client = new WorkerClient({ async request(...args) { calls.push(args); return { capabilities: ['workspace-browser-v1'] }; } });
+  const client = new WorkerClient({ spec, async request(...args) { calls.push(args); return {}; } });
   await client.request('configure', { workspace: 'example', revision: 3, ...record.spec, browser: 'firefox' });
-  const [action, request] = calls[1];
+  const [action, request] = calls[0];
   assert.equal(action, 'workspace_configure');
   assert.equal(request.revision, 3);
   assert.equal(request.spec.distribution, 'ubuntu');
-  assert.equal(request.spec.browser, 'firefox');
-  assert.ok(request.spec.steps.some(step => step.message === 'Installing Firefox…'));
-  assert.ok(request.spec.steps.length > 0);
+  assert.deepEqual(request.spec.tools, ['git', 'firefox']);
+  assert.equal('steps' in request.spec || 'browser' in request.spec, false);
   assert.deepEqual(request.spec.resources, record.spec.resources);
 });
 
@@ -76,7 +74,7 @@ test('reinstall uses the workers current tools, not the clients cached selection
   assert.equal(calls[2][0], 'workspace_reinstall');
   assert.equal(calls[2][1].revision, 3);
   assert.equal(calls[2][1].confirmed, true);
-  assert.ok(calls[2][1].steps.length);
+  assert.equal('spec' in calls[2][1] || 'steps' in calls[2][1], false);
 });
 
 test('older same-protocol workers require update instead of silently performing old reinstall behavior', async () => {

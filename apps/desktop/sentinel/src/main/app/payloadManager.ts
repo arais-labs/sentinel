@@ -6,6 +6,7 @@ import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import type { PayloadInfo, PayloadUpdate, ReleaseChannel } from '../../shared/ipc.js';
 import { execFileText } from './shell.js';
+import { validateComponents } from './components.js';
 import { shellUpdateFor } from './version.js';
 import {
   hostStateRoot,
@@ -43,6 +44,7 @@ interface ReleaseIndex {
   url?: string;
   sha256: string;
   alembicHeads: { manager: string[]; instance: string[] };
+  components?: unknown;
 }
 
 // Public repo, so release assets download without auth. The pointer release for
@@ -153,6 +155,24 @@ function localBaseUrl(): string | null {
   return base ? base.replace(/\/+$/, '') : null;
 }
 
+// The release's workspace runtime with absolute download URLs (the flat local layout serves the
+// tarballs next to the index).
+function releaseComponents(index: ReleaseIndex): PayloadUpdate['components'] {
+  if (index.components === undefined) return undefined;
+  const components = validateComponents(index.components);
+  const local = localBaseUrl();
+  for (const name of ['sentineld', 'sentinel-workspace'] as const) {
+    if (!components[name].url && local) components[name] = { ...components[name], url: `${local}/${components[name].file}` };
+  }
+  return components;
+}
+
+/** The workspace runtime the channel's newest release offers, whatever payload is installed. */
+export async function latestComponents(channel: ReleaseChannel): Promise<PayloadUpdate['components']> {
+  const index = await fetchReleaseIndex(channel);
+  return index ? releaseComponents(index) : undefined;
+}
+
 async function fetchReleaseIndex(channel: ReleaseChannel): Promise<ReleaseIndex | null> {
   const local = localBaseUrl();
   const url = local
@@ -196,6 +216,7 @@ export async function checkForUpdate(channel: ReleaseChannel, shellVersion: stri
     sha256: index.sha256,
     hasNewMigrations: installedHeads !== targetHeads,
     shellUpdate: shellUpdateFor(index, shellVersion),
+    components: releaseComponents(index),
   };
 }
 

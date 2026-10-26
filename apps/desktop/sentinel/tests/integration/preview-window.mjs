@@ -44,7 +44,7 @@ async function main() {
 try {
   await app.whenReady(); server.listen(0, '127.0.0.1'); await once(server, 'listening');
   const url = `http://127.0.0.1:${server.address().port}/`;
-  const link = '/api/v1/instances/demo/sessions/97394c11-0f16-465e-953f-8a1b6640d981/runtime/forwards/pf-bebf36e56cff/';
+  const link = '/api/v1/instances/demo/sessions/97394c11-0f16-465e-953f-8a1b6640d981/workspace/forwards/pf-bebf36e56cff/';
   await openPreviewWindow(link, {request: async request => {
     assert.equal(new URL(request.url).pathname, link.replace('/forwards/', '/forward-target/').replace(/\/$/, ''));
     return Response.json({url, label:'Preview test'});

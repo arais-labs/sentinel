@@ -1,16 +1,13 @@
 import { existsSync } from 'node:fs';
-import { cp, mkdir, readdir, rename, rm, readFile, writeFile } from 'node:fs/promises';
+import { cp, mkdir, readdir, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { stageWorkspaceImages, verifyWorkspaceImages, workspaceImageSource } from '../workspace-images/stage.mjs';
 
-export const runtimeBuildVersion = 7;
+export const runtimeBuildVersion = 9;
 
-export function workspaceRuntimeManifest(config, kernel, images) {
-  // Compiler containers are build inputs, never workspace boot requirements.
-  const { buildImage, glibcBuildImage, ...runtimeConfig } = config;
-  return { protocol: 1, ...runtimeConfig, ...kernel, workspaceImages: images };
-}
+// The app bundles only what runs the app itself: Python for the backend, git and gh for the
+// agents (bundled-tools.lock.json). The workspace runtime (sentineld, the workspace VM process) is
+// made of release components the app downloads and updates (src/main/app/components.ts).
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
@@ -65,22 +62,6 @@ export function verifyBuildTools() {
 
 export function runtimeRequirements() {
   return {
-    'workspace-runtime': ['sentinel-workspace-runtime', 'manifest.json', 'kernel',
-      'workspace-images/manifest.json',
-      ...['alpine', 'ubuntu', 'debian'].flatMap(name => [
-        `workspace-images/${name}/index.json`, `workspace-images/${name}/oci-layout`,
-      ]),
-      'graphics/sentinel-desktop-renderer',
-      'graphics/libEGL.dylib', 'graphics/libgallium-26.3.0-devel.dylib',
-      'graphics/libepoxy.0.dylib', 'graphics/libvirglrenderer.1.dylib',
-      'graphics/libvulkan_kosmickrisp.dylib', 'graphics/libvulkan.1.dylib',
-      'graphics/libSPIRV-Tools.dylib', 'graphics/icd.json',
-      'graphics/install-guest.py', 'graphics/gpu-start.sh',
-      'graphics/install-browser-graphics.py', 'graphics/gpu-2404.snap', 'graphics/gpu-2404.json',
-      'graphics/mesa-linux-arm64.tar.xz', 'graphics/mesa-linux-arm64.json',
-      'graphics/mesa-linux-arm64-glibc.tar.xz', 'graphics/mesa-linux-arm64-glibc.json',
-      'graphics/kernel-linux-arm64.tar.xz', 'graphics/kernel-linux-arm64.json',
-      'graphics/desktop-runtime.tar.xz', 'graphics/desktop-runtime.json'],
     'runtime-seed': [
       'python/bin/python3',
       'git/bin/git',
@@ -89,24 +70,8 @@ export function runtimeRequirements() {
   };
 }
 
-export function runtimeComponents({ config, paths }) {
-  const requirements = runtimeRequirements();
-  const images = workspaceImageSource(paths.desktopDir);
+export function runtimeComponents({ config }) {
   return [
-    {
-      name: 'workspace-runtime',
-      version: 2,
-      config: config.workspaceRuntime,
-      required: requirements['workspace-runtime'],
-      inputs: [
-        ...['native/macos/Package.swift', 'native/macos/Package.resolved', 'native/macos/Sources',
-          'native/graphics', 'scripts/packaging/graphics', 'native/workspace-images',
-          'scripts/packaging/workspace-images', 'runtime.lock.json',
-          'packaging/macos/workspace-runtime.plist'].map(file => path.join(paths.desktopDir, file)),
-        ...images.manifests,
-      ],
-      build: buildWorkspaceRuntime,
-    },
     {
       name: 'runtime-seed',
       config: {
@@ -114,78 +79,42 @@ export function runtimeComponents({ config, paths }) {
         git: gitRuntimeConfig(config),
         gh: ghRuntimeConfig(config),
       },
-      required: requirements['runtime-seed'],
+      required: runtimeRequirements()['runtime-seed'],
       inputs: [],
       build: buildRuntimeSeed,
     },
   ];
 }
 
-export async function buildWorkspaceRuntime({ config, paths, configuration = "release", workspaceImages, prepareWorkspaceImages }) {
-  const cfg = config.workspaceRuntime;
-  if (!cfg?.kernelFileSha256 || !cfg?.kernelSha256 || !cfg?.initImage) {
-    throw new Error('runtime.lock.json must pin the workspace runtime assets.');
-  }
-  // Packaging requires prebuilt, verified images. Development can prepare them
-  // after the helper and kernel exist, including on a fresh checkout.
-  const dest = path.join(paths.runtimeDir, 'workspace-runtime');
-  let images = prepareWorkspaceImages ? undefined : stageWorkspaceImages(paths.desktopDir, dest, workspaceImages);
-  const source = path.join(paths.desktopDir, 'native/macos');
-  const manifest = await readFile(path.join(source, 'Package.swift'), 'utf8');
-  if (!manifest.includes(`exact: "${cfg.containerizationVersion}"`)) {
-    throw new Error('The Swift package and runtime lock must pin the same Containerization release.');
-  }
-  const scratch = path.join(paths.targetDir, 'swift');
-  run('swift', ['build', '--package-path', source, '--scratch-path', scratch, '-c', configuration, '--jobs', '4', '--force-resolved-versions']);
-  const binDir = output('swift', ['build', '--package-path', source, '--scratch-path', scratch, '-c', configuration, '--show-bin-path']);
-  await mkdir(dest, { recursive: true });
-  const binary = path.join(dest, 'sentinel-workspace-runtime');
-  const staging = binary + '.next';
-  await cp(path.join(binDir, 'sentinel-workspace-runtime'), staging);
-  // Development verification needs this entitlement too. electron-builder signs
-  // the packaged helper again using the app's identity and matching entitlement.
-  run('codesign', ['--force', '--sign', '-', '--entitlements', path.join(paths.desktopDir, 'packaging/macos/workspace-runtime.plist'), staging]);
-  // A running VM keeps the previous signed executable until its owner exits.
-  await rename(staging, binary);
-  run('python3', [path.join(paths.desktopDir, 'scripts/packaging/graphics/build.py'), path.join(dest, 'graphics')]);
-  if (prepareWorkspaceImages) {
-    const source = await prepareWorkspaceImages(dest);
-    images = stageWorkspaceImages(paths.desktopDir, dest, source);
-  }
-  const kernel = JSON.parse(await readFile(path.join(dest, 'kernel-manifest.json'), 'utf8'));
-  await writeFile(path.join(dest, 'manifest.json'), JSON.stringify(workspaceRuntimeManifest(cfg, kernel, images), null, 2) + '\n');
-  assertNoExternalDylibs(dest, 'Workspace runtime');
-}
-
 function pythonRuntimeConfig(config) {
   if (!config.python || typeof config.python !== 'object') {
-    throw new Error('macos-arm64 runtime lock must define python.{version,buildTag,sourceUrl,sourceSha256}.');
+    throw new Error('macos-arm64 bundled-tools lock must define python.{version,buildTag,sourceUrl,sourceSha256}.');
   }
   for (const key of ['version', 'buildTag', 'sourceUrl', 'sourceSha256']) {
-    if (!config.python[key]) throw new Error(`macos-arm64 runtime lock is missing python.${key}.`);
+    if (!config.python[key]) throw new Error(`macos-arm64 bundled-tools lock is missing python.${key}.`);
   }
   return config.python;
 }
 
 function gitRuntimeConfig(config) {
   if (!config.git || typeof config.git !== 'object') {
-    throw new Error('macos-arm64 runtime lock must define git.{source,systemBinPath,...}.');
+    throw new Error('macos-arm64 bundled-tools lock must define git.{source,systemBinPath,...}.');
   }
   if (config.git.source !== 'system-vendored') {
     throw new Error('macos-arm64 git.source must be "system-vendored" (we copy from CLT, not download).');
   }
   for (const key of ['systemBinPath', 'systemLibexecPath', 'systemSharePath', 'expectedVersionPrefix']) {
-    if (!config.git[key]) throw new Error(`macos-arm64 runtime lock is missing git.${key}.`);
+    if (!config.git[key]) throw new Error(`macos-arm64 bundled-tools lock is missing git.${key}.`);
   }
   return config.git;
 }
 
 function ghRuntimeConfig(config) {
   if (!config.gh || typeof config.gh !== 'object') {
-    throw new Error('macos-arm64 runtime lock must define gh.{version,sourceUrl,sourceSha256}.');
+    throw new Error('macos-arm64 bundled-tools lock must define gh.{version,sourceUrl,sourceSha256}.');
   }
   for (const key of ['version', 'sourceUrl', 'sourceSha256']) {
-    if (!config.gh[key]) throw new Error(`macos-arm64 runtime lock is missing gh.${key}.`);
+    if (!config.gh[key]) throw new Error(`macos-arm64 bundled-tools lock is missing gh.${key}.`);
   }
   return config.gh;
 }
@@ -247,7 +176,7 @@ async function stagePython(pythonCfg, outputDir, cacheDir, workDir) {
   assertNoExternalDylibs(path.join(outputDir, 'python'), 'Python runtime');
 }
 
-// runtime.lock.json pins git to the Command Line Tools layout. GitHub's macOS
+// bundled-tools.lock.json pins git to the Command Line Tools layout. GitHub's macOS
 // runners ship full Xcode whose active developer dir is elsewhere (and the bare
 // CLT path may be absent), so when the pinned paths don't exist we fall back to
 // `xcode-select -p`. Both layouts expose the same usr/{bin,libexec,share} tree
@@ -359,8 +288,8 @@ async function stageGh(ghCfg, outputDir, cacheDir, workDir) {
 async function downloadWithSha(url, expectedSha, archivePath, label) {
   if (!expectedSha || expectedSha.startsWith('TODO')) {
     throw new Error(
-      `[${label}] runtime.lock.json has no pinned sha256. Look up the SHA from the ` +
-      `upstream release and commit it into runtime.lock.json before building.`,
+      `[${label}] bundled-tools.lock.json has no pinned sha256. Look up the SHA from the ` +
+      `upstream release and commit it into bundled-tools.lock.json before building.`,
     );
   }
   await mkdir(path.dirname(archivePath), { recursive: true });
@@ -439,8 +368,6 @@ function verifyPythonSQLite(python) {
 
 export async function verifyRuntime({ paths }) {
   const runtimeDir = paths.runtimeDir;
-  // Cached component stamps cannot detect removed/corrupted OCI layer bytes.
-  verifyWorkspaceImages(paths.desktopDir, path.join(runtimeDir, 'workspace-runtime'));
   const pythonDir = path.join(runtimeDir, 'runtime-seed/python');
   if (existsSync(pythonDir)) {
     verifyPythonSQLite(path.join(pythonDir, 'bin/python3'));
@@ -463,7 +390,7 @@ export async function verifyRuntime({ paths }) {
 
 export function electronBuilderConfig({ paths, baseConfig }) {
   const extraResources = (baseConfig.extraResources || []).filter(
-    (resource) => resource?.to !== 'backend' && resource?.to !== 'runtime-seed' && resource?.to !== 'workspace-runtime',
+    (resource) => resource?.to !== 'backend' && resource?.to !== 'runtime-seed',
   );
   return {
     ...baseConfig,
@@ -474,7 +401,6 @@ export function electronBuilderConfig({ paths, baseConfig }) {
     afterSign: path.join(paths.desktopDir, 'scripts/publishing/verify-app-signature.cjs'),
     extraResources: [
       ...extraResources,
-      { from: path.join(paths.runtimeDir, 'workspace-runtime'), to: 'workspace-runtime' },
       {
         from: path.join(paths.runtimeDir, 'runtime-seed'),
         to: 'runtime-seed',
@@ -490,7 +416,6 @@ export function electronBuilderConfig({ paths, baseConfig }) {
       // other data files. These are sealed as resources by the app signature;
       // only executable code needs an individual signature.
       signIgnore: ['\\.(pyc|pyo|whl|gif|ico|png|pickle|exe|gz|xz|pak|dat|asar|icns|woff2?|ttf)$'],
-      binaries: ['Contents/Resources/workspace-runtime/sentinel-workspace-runtime', 'Contents/Resources/workspace-runtime/graphics/sentinel-desktop-renderer'],
       extendInfo: { ...(baseConfig.mac?.extendInfo || {}), LSMinimumSystemVersion: '26.0' },
     },
     dmg: {

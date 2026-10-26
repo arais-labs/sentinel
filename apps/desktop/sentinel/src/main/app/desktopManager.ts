@@ -3,7 +3,7 @@ import { NotificationCenter } from './notifications.js';
 import { app, safeStorage, shell } from 'electron';
 import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type {
   DesktopStatus,
@@ -17,11 +17,13 @@ import type {
   ShellUpdate,
 } from '../../shared/ipc.js';
 import * as payload from './payloadManager.js';
+import { ComponentStore, download, type Components } from './components.js';
 import { assertShellCompatible } from './version.js';
 import {
   hostStateRoot,
   backendPath,
   resourceRoot,
+  repoRoot,
 } from '../paths.js';
 import { execFileText } from './shell.js';
 import { ProcessSupervisor } from './supervisor.js';
@@ -36,9 +38,7 @@ import {
 } from './desktopConfig.js';
 import { DailyLogWriter } from './logWriter.js';
 import { WorkspaceLifecycle } from '../workspace/workspaceLifecycle.js';
-import { WorkspaceGraphics } from '../workspace/workspaceGraphics.js';
 import { WorkspaceRuntime } from '../workspace/workspaceRuntime.js';
-import { WorkspaceKernel, type KernelManifest } from '../workspace/workspaceKernel.js';
 import { openWorkspaceRuntimeBridge } from '../transport/workspaceRuntimeBridge.js';
 
 interface DesktopOwnerFile {
@@ -88,8 +88,8 @@ export class DesktopManager {
   }
   private startupError?: string;
   private workspaceLifecycle?: WorkspaceLifecycle;
-  private workspaceGraphics?: WorkspaceGraphics;
   private workspaceRuntime?: WorkspaceRuntime;
+  private componentStore?: ComponentStore;
   private workspaceRuntimeBridge?: Awaited<ReturnType<typeof openWorkspaceRuntimeBridge>>;
 
   async prepareUI(): Promise<string> {
@@ -114,6 +114,8 @@ export class DesktopManager {
     this.payloadProgress = undefined;
     try {
       await this.emitStatus();
+      // The workspace runtime starts with the services: make sure a runtime is installed first.
+      if (app.isPackaged && payload.isInstalled()) await this.ensureComponents();
       const status = await this.startServices();
       if (app.isPackaged && !status.payload.installed) {
         if (!await this.autoInstallLatest()) throw new Error('Could not find a Sentinel release. Check your connection and retry.');
@@ -176,7 +178,6 @@ export class DesktopManager {
     this.workspaceRuntimeBridge = undefined;
     await this.workspaceLifecycle?.close();
     this.workspaceLifecycle = undefined;
-    this.workspaceGraphics = undefined;
     this.workspaceRuntime = undefined;
     await this.clearPidFile('backend');
     this.operation = undefined;
@@ -303,6 +304,15 @@ export class DesktopManager {
       });
       this.emitPayloadProgress('verify', 'Verifying download…');
       await payload.verifySha256(scratch, update.sha256);
+      if (update.components) {
+        await this.installComponents(update.components, async (_name, entry, destination) => {
+          if (!entry.url) throw new Error(`The release has no download URL for ${entry.file}.`);
+          await download(entry.url, destination, fraction => {
+            this.payloadProgress = { phase: 'download', message: 'Downloading the workspace runtime…', fractionComplete: fraction };
+            void this.emitStatus();
+          });
+        });
+      }
       await this.applyPayloadFromTarball(scratch);
     } finally {
       await rm(scratch, { force: true });
@@ -342,9 +352,52 @@ export class DesktopManager {
     return false;
   }
 
-  // Installs a payload tarball already on disk (the "Install from file" path).
+  // Installs a payload tarball already on disk (the "Install from file" path). A PR build's
+  // artifact carries its release index and runtime components beside the tarball: those install too.
   async installPayloadFromFile(tarPath: string): Promise<void> {
+    const directory = path.dirname(tarPath);
+    const indexName = ['latest-beta.json', 'latest-stable.json'].find(name => existsSync(path.join(directory, name)));
+    if (indexName) {
+      const index = JSON.parse(await readFile(path.join(directory, indexName), 'utf8')) as { components?: Components };
+      if (index.components) {
+        await this.installComponents(index.components, async (_name, entry, destination) => {
+          await copyFile(path.join(directory, path.basename(entry.file)), destination);
+        });
+      }
+    } else {
+      this.supervisor.appendManagerLog(`No release index beside ${tarPath}: the workspace runtime is unchanged.`);
+    }
     await this.applyPayloadFromTarball(tarPath);
+  }
+
+  private components(): ComponentStore {
+    return this.componentStore ??= new ComponentStore(path.join(hostStateRoot(), 'components'));
+  }
+
+  private async installComponents(components: Components, fetch: Parameters<ComponentStore['install']>[1]): Promise<void> {
+    this.emitPayloadProgress('download', 'Preparing the workspace runtime…');
+    const changed = await this.components().install(components, fetch);
+    // A running sentineld keeps its version until the app starts the new one (its VMs stay up).
+    if (changed && this.workspaceRuntime) {
+      this.supervisor.appendManagerLog('A workspace runtime update is installed; it starts with Sentinel\'s next launch.');
+    }
+  }
+
+  // Installs the runtime the installed channel offers when none is active (a fresh install that
+  // predates components, or a removed directory). Workspaces stay unavailable if this fails.
+  private async ensureComponents(): Promise<void> {
+    if (await this.components().active()) return;
+    try {
+      const channel = (await payload.readPayloadInfo()).channel ?? 'stable';
+      const components = await payload.latestComponents(channel);
+      if (!components) throw new Error(`the ${channel} channel lists no workspace runtime`);
+      await this.installComponents(components, async (_name, entry, destination) => {
+        if (!entry.url) throw new Error(`The release has no download URL for ${entry.file}.`);
+        await download(entry.url, destination);
+      });
+    } catch (error) {
+      this.supervisor.appendManagerLog(`Workspace runtime install failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   private async applyPayloadFromTarball(tarPath: string): Promise<void> {
@@ -389,7 +442,6 @@ export class DesktopManager {
     this.workspaceRuntimeBridge = undefined;
     await this.workspaceLifecycle?.close();
     this.workspaceLifecycle = undefined;
-    this.workspaceGraphics = undefined;
     this.workspaceRuntime = undefined;
     if (this.socketDirectory) await rm(this.socketDirectory, { recursive: true, force: true });
     await this.clearPidFile('backend');
@@ -398,34 +450,34 @@ export class DesktopManager {
   }
 
   private async openWorkspaceServices(): Promise<void> {
-    // Development uses the same privately owned helper as the packaged app.
     if (process.platform !== 'darwin') return;
     if (!this.workspaceRuntime) {
-      const resources = app.isPackaged ? path.join(resourceRoot(), 'workspace-runtime')
-        : path.join(resourceRoot(), 'apps/desktop/sentinel/build/macos-arm64/runtime/workspace-runtime');
-      const manifest = JSON.parse(await readFile(path.join(resources, 'manifest.json'), 'utf8')) as KernelManifest & {
-        protocol: number; initImage: string;
-      };
-      if (manifest.protocol !== 1 || !manifest.initImage) {
-        throw new Error('The bundled workspace runtime is incomplete. Reinstall Sentinel.');
+      // sentineld and the workspace VM process: the installed release components, or in development the
+      // make outputs in packages/ (scripts/dev/workspace-runtime-dev.mjs builds them).
+      let sentineld: string, workspace: string;
+      if (app.isPackaged) {
+        const active = await this.components().active();
+        if (!active) throw new Error('the workspace runtime is not installed yet');
+        // Nothing runs from other versions yet: this is the sentineld about to start.
+        await this.components().prune(active);
+        ({ sentineld, workspace } = active);
+      } else {
+        sentineld = path.join(repoRoot(), 'packages/sentineld/build');
+        workspace = path.join(repoRoot(), 'packages/sentinel-workspace/build');
       }
-      const kernel = new WorkspaceKernel(resources, manifest,
-        message => this.supervisor.appendManagerLog(message));
-      // Verify the bundled kernel without starting a VM or downloading anything.
-      void kernel.ensure().catch(error => this.supervisor.appendManagerLog(`Workspace kernel unavailable: ${String(error)}`));
+      const state = path.join(hostStateRoot(), 'sentineld');
       this.workspaceRuntime = new WorkspaceRuntime({
-        prepare: () => kernel.ensure(),
-        cancelPreparation: () => kernel.cancel(),
-        command: path.join(resources, 'sentinel-workspace-runtime'),
-        args: [path.join(hostStateRoot(), 'workspace-runtime'), kernel.file, manifest.initImage],
+        daemon: { command: path.join(sentineld, 'bin/sentineld'), args: ['--state', state, '--lifeline', '--workspace', workspace] },
+        release: { sentineld, workspace },
+        socket: path.join(state, 'sentineld.sock'),
+        root: state,
         onProgress: message => this.supervisor.appendManagerLog(message),
         onFailure: message => this.supervisor.appendManagerLog(message),
         log: message => this.supervisor.appendManagerLog(message),
       });
     }
     if (!this.workspaceLifecycle) {
-      this.workspaceGraphics = new WorkspaceGraphics(this.workspaceRuntime);
-      this.workspaceLifecycle = new WorkspaceLifecycle(this.workspaceRuntime, path.join(hostStateRoot(), 'workspace-runtime'), this.workspaceGraphics);
+      this.workspaceLifecycle = new WorkspaceLifecycle(this.workspaceRuntime, path.join(hostStateRoot(), 'workspace-runtime'));
       this.workspaceLifecycle.events.on('changed', (id, entry) => {
         try { publishWorkspaceNotification(this.notifications, id, entry); }
         catch (error) { this.supervisor.appendManagerLog(`Notification could not be saved: ${error}`); }
@@ -439,6 +491,8 @@ export class DesktopManager {
       });
       await this.workspaceLifecycle.load();
     }
+    // sentineld runs with the app: the catalog and workspace states come from it from the first screen.
+    await this.workspaceRuntime.start().catch(error => this.supervisor.appendManagerLog(`Workspace runtime did not start: ${error}`));
     this.workspaceRuntimeBridge ??= await openWorkspaceRuntimeBridge(
       this.workspaceRuntime, path.join(this.socketDirectory!, 'workspaces.sock'), this.secrets!.desktopToken, this.workspaceLifecycle, this.notifications,
     );

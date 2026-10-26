@@ -18,6 +18,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { COMPONENT_NAMES, sha256File, validateComponents } from '../packaging/components.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const desktopDir = path.resolve(path.dirname(__filename), '../..');
@@ -128,9 +129,28 @@ async function main() {
 
   assertPayloadClean(tarPath);
 
-  // Absolute URL the asset will have once attached to the versioned release.
-  const tarUrl = `https://github.com/${repoSlug}/releases/download/${versionedTag}/${path.basename(tarPath)}`;
-  const enrichedIndex = { ...index, url: tarUrl };
+  // Absolute URLs the assets will have once attached to the versioned release.
+  const assetUrl = (name) => `https://github.com/${repoSlug}/releases/download/${versionedTag}/${name}`;
+  const tarUrl = assetUrl(path.basename(tarPath));
+  // The workspace runtime components ride the same immutable release; the app downloads the ones
+  // whose sha256 changed.
+  const components = validateComponents(index.components);
+  const componentPaths = [];
+  for (const name of COMPONENT_NAMES) {
+    const componentPath = path.join(distRoot, components[name].file);
+    if (!existsSync(componentPath) || await sha256File(componentPath) !== components[name].sha256) {
+      throw new Error(`Refusing to publish: ${name} component ${componentPath} is missing or does not match the index.`);
+    }
+    componentPaths.push(componentPath);
+  }
+  const enrichedIndex = {
+    ...index,
+    url: tarUrl,
+    components: {
+      ...components,
+      ...Object.fromEntries(COMPONENT_NAMES.map(name => [name, { ...components[name], url: assetUrl(components[name].file) }])),
+    },
+  };
 
   // Write the enriched index to a temp file so the pointer release carries the
   // absolute tarball URL (the build only knows the relative filename).
@@ -142,12 +162,12 @@ async function main() {
   // 1. Versioned release: immutable record of this exact build.
   if (releaseExists(versionedTag)) {
     console.log(`Release ${versionedTag} already exists; re-uploading assets with --clobber.`);
-    run('gh', ['release', 'upload', versionedTag, dmgPath, tarPath, pointerIndexPath, '--clobber', '--repo', repoSlug]);
+    run('gh', ['release', 'upload', versionedTag, dmgPath, tarPath, ...componentPaths, pointerIndexPath, '--clobber', '--repo', repoSlug]);
     run('gh', ['release', 'edit', versionedTag, prerelease, '--repo', repoSlug]);
   } else {
     run('gh', [
       'release', 'create', versionedTag,
-      dmgPath, tarPath, pointerIndexPath,
+      dmgPath, tarPath, ...componentPaths, pointerIndexPath,
       '--repo', repoSlug,
       '--target', commit,
       '--title', `Sentinel ${version} (${channel}) ${shortSha}`,
