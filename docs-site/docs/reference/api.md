@@ -135,12 +135,19 @@ session prefix:
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/sessions/{id}/runtime/files` | List workspace files |
-| `GET` | `/sessions/{id}/runtime/file` | Preview a file |
-| `GET` | `/sessions/{id}/runtime/download` | Download a file |
-| `GET` | `/sessions/{id}/runtime/git/roots` | Git repo roots in the workspace |
-| `GET` | `/sessions/{id}/runtime/git/changed` | Changed files |
-| `GET` | `/sessions/{id}/runtime/git/diff` | Diff (with context lines) |
+| `GET` | `/sessions/{id}/workspace/files` | List workspace files |
+| `GET` | `/sessions/{id}/workspace/file` | Preview a file |
+| `GET` | `/sessions/{id}/workspace/download` | Download a file |
+| `GET` | `/sessions/{id}/workspace/git/roots` | Git repo roots in the workspace |
+| `GET` | `/sessions/{id}/workspace/git/changed` | Changed files |
+| `GET` | `/sessions/{id}/workspace/git/diff` | Diff (with context lines) |
+| `GET` | `/sessions/{id}/workspace/status` | Workspace checks for the session |
+| `GET` | `/sessions/{id}/workspace/desktop` | Desktop state (runs with the workspace) |
+| `POST` | `/sessions/{id}/workspace/desktop/viewer` | Single-use WebTransport ticket for the desktop viewer |
+| `POST` | `/sessions/{id}/workspace/desktop/wallpaper` | Choose the desktop wallpaper |
+| `POST` | `/sessions/{id}/workspace/desktop/clipboard` | Read or write the desktop clipboard |
+| `POST` | `/sessions/{id}/workspace/browser/reset` | Reset the session's browser |
+| `POST` | `/sessions/{id}/workspace/reset` | Reset the session's shell state |
 | `DELETE` | `/sessions/{id}/terminals/{terminal_id}` | Close a terminal |
 
 ### Memory
@@ -328,7 +335,7 @@ dedicated prefix:
 | Path | Description |
 |---|---|
 | `WS /ws/instances/{instance_name}/sessions/{id}/stream` | Stream agent run events for a session |
-| `WS /ws/instances/{instance_name}/sessions/{id}/terminals/{terminal_id}` | Attach to a runtime terminal |
+| `WS /ws/instances/{instance_name}/sessions/{id}/terminals/{terminal_id}` | Attach to a workspace terminal |
 
 Electron bridges these streams over the private backend socket. Renderer code
 uses the desktop IPC channel; there are no session cookies or token query

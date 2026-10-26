@@ -6,14 +6,15 @@ title: Workspace Runtime
 # Workspace Runtime
 
 The `runtime` tool executes commands in the session's attached workspace: a
-persistent Linux container managed by Sentinel. On Apple silicon Macs, Sentinel
-uses Apple Containerization. It does not execute agent commands in the host shell.
+persistent Linux VM managed by Sentinel. On Apple silicon Macs, sentineld runs each
+workspace in its own lightweight VM (libkrun on Hypervisor.framework). It does not
+execute agent commands in the host shell.
 
 ## Project paths
 
 The selected project folder is mounted at **the same absolute path** inside the
-container. For example, `/Users/developer/Projects/app` is the project directory on both
-the Mac and in the container. New terminals start there. There is no `/workspace`
+workspace. For example, `/Users/developer/Projects/app` is the project directory on both
+the Mac and in the workspace. New terminals start there. There is no `/workspace`
 alias or per-tool path translation.
 
 Absolute symlinks and Git worktree metadata can resolve naturally when their
@@ -21,28 +22,28 @@ targets are within the shared folder. A worktree whose metadata or files are
 outside that folder is not automatically shared. Select a common parent folder
 when the repository and its worktrees need to be available together.
 
-The parent directories of the mount are container directories. Preserving the
+The parent directories of the mount are directories of the workspace. Preserving the
 project's path does not expose the host's home directory or neighboring projects.
 
 ## Filesystem and tool installation
 
-The project folder is shared read/write with the host. The rest of the container's
+The project folder is shared read/write with the host. The rest of the workspace's
 filesystem is private to that workspace:
 
 | Location | Storage |
 |---|---|
 | Selected project path | Shared host project folder |
-| `/root` (administrative commands) | Workspace's persistent container disk |
-| `/home/sentinel` (desktop applications) | Workspace's persistent container disk |
-| `/tmp` (`TMPDIR`) | Inside the workspace container |
-| Installed packages and caches | Workspace's persistent container disk |
+| `/root` (administrative commands) | Workspace's persistent disk |
+| `/home/sentinel` (desktop applications) | Workspace's persistent disk |
+| `/tmp` (`TMPDIR`) | Inside the workspace |
+| Installed packages and caches | Workspace's persistent disk |
 | Docker images and volumes, when Docker is installed | Workspace's private Docker engine |
 
 Agents can install missing packages with the distribution’s package manager
 (`apk` on Alpine, `apt` on Ubuntu or Debian) or put local executables in
 `$HOME/.local/bin`, which is on the terminal PATH. These are Linux programs; a
 macOS executable in the shared project does not become a Linux executable.
-Container root is not host root. No host Docker socket is shared.
+Root in the VM is not host root. No host Docker socket is shared.
 Desktop applications run as an ordinary Linux user with sudo available, while
 administrative agent operations retain root access. Docker and Kubernetes are
 optional tools, not requirements for booting a workspace.
@@ -61,7 +62,7 @@ optional tools, not requirements for booting a workspace.
 Use the pane IDs returned by `terminal_list`; the UI's selected pane is independent
 of the agent's target. When multiple panes exist, `exec` requires `pane_id`.
 Omit `cwd` to retain the shell's current directory. An explicit `cwd` refers to a
-path inside the container.
+path inside the workspace.
 
 `exec` waits up to **20 seconds** for a result. Longer commands automatically
 continue in the background, returning `job_id`, `pane_id` and `window_id` with
@@ -86,8 +87,8 @@ agent. Coordinate concurrent edits or use separate Git worktrees.
 
 ## Lifecycle
 
-Stopping a workspace stops its container and terminals while retaining its disk.
-Removing it deletes its private container data and detaches linked sessions when
+Stopping a workspace stops its VM and terminals while retaining its disk.
+Removing it deletes its private disk and detaches linked sessions when
 requested; the selected host project folder is preserved. Active agents must stop
 before their workspace can be removed.
 

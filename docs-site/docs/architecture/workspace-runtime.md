@@ -4,9 +4,9 @@ title: Workspace runtime
 
 # Workspace runtime
 
-Sentinel embeds Apple's Containerization library in its native macOS helper.
-The packaged app owns that helper and its assets; it does not manage Docker
-Desktop, Colima, or Apple's shared `container` CLI. Workspace execution currently
+Each workspace is a Linux VM. sentineld supervises one sentinel-workspace process per VM
+(libkrun on Hypervisor.framework); the app downloads both as release components. It does
+not manage Docker Desktop, Colima, or Apple's `container` CLI. Workspace execution currently
 requires a supported Apple Silicon Mac, locally or reached through SSH.
 
 ## Ownership and transport
@@ -14,7 +14,7 @@ requires a supported Apple Silicon Mac, locally or reached through SSH.
 ```text
 Electron → authenticated local service socket → workspace lifecycle
                                                   ↓
-                                     native helper / remote SSH runtime
+                                 sentineld (local, or a remote Mac over SSH)
                                                   ↓
                                        persistent Linux workspace
 ```
@@ -31,17 +31,18 @@ and backend runtime services.
 ## Linux boot and desktop sessions
 
 ```text
-Apple Virtualization.framework / Containerization
-  → Linux kernel + selected OCI root filesystem
+sentinel-workspace (libkrun on Hypervisor.framework, one process per VM)
+  → EFI firmware → the distribution's boot loader → its kernel + installed root disk
     → distro init (systemd on Ubuntu/Debian; OpenRC on Alpine)
       → D-Bus, udev, login/seat services
         → greetd / PAM → ordinary-user desktop session
 ```
 
-OCI describes how the root filesystem is packaged; it does not imply a Docker
-daemon inside the workspace. Docker and k3s are optional development tools.
-Compiler containers used to build runtime assets are separate from workspace
-boot dependencies.
+sentineld installs each distribution once per machine from the distribution's
+install recipe (pinned sources, a VM boot that finishes the system), then clones
+that base for every workspace. Docker and k3s are optional development tools
+inside a workspace; compiler containers that build runtime assets are separate
+from workspace boot dependencies.
 
 The graphical session and its applications run as the `sentinel` user, with
 sudo available. Sentinel's administrative guest operations retain root access.
@@ -50,8 +51,7 @@ with the required device permissions; this does not run desktop applications as
 root. Other sessions use their native compositor/login contracts.
 
 Desktop installation runs inside a live Linux system. Distribution package
-scripts must be allowed to reload services and register new service accounts;
-the offline image builder's service-start suppression does not apply here.
+scripts must be allowed to reload services and register new service accounts.
 Stopping a desktop ends its owned graphical session, not the workspace or all
 of that user's background services.
 
@@ -75,13 +75,13 @@ this failure separately rather than treating a retry as a passing first copy.
 - The selected project directory is the host folder shared into the guest.
 - Each workspace has a private persistent Linux filesystem for its home, packages,
   caches, and nested Docker data.
-- Kernel and image caches are machine runtime assets shared across workspaces.
+- Installed base disks are machine runtime caches shared across workspaces.
 - Instance databases, provider settings, and conversation attachments belong to
   Sentinel's application storage, not the guest disk.
 
-The native helper holds an exclusive storage ownership lock. Two helpers cannot
-open the same runtime store concurrently. Stopping or replacing a helper does not
-justify deleting workspace files.
+sentineld holds an exclusive lock on its state directory. Two sentineld processes cannot
+open the same store concurrently. Stopping or replacing sentineld does not justify
+deleting workspace files.
 
 ## Runtime update transaction
 
@@ -101,7 +101,7 @@ Interrupted commands and provisioning are not replayed blindly.
 
 ## Guest commands
 
-`app/services/runtime/guest_commands` contains code executed inside the workspace:
+`app/services/workspaces/guest_commands` contains code executed inside the workspace:
 
 | Directory | Responsibility |
 | --- | --- |
@@ -139,5 +139,5 @@ disk instead of collecting their contents in backend memory. Cancellation closes
 the reader. Electron forwards the existing application protocol and credentials;
 credentials do not appear in file URLs.
 
-The file boundary is the workspace container, not the selected project directory.
-Absolute guest paths and symlinks can refer to other locations within that container.
+The file boundary is the workspace VM, not the selected project directory.
+Absolute guest paths and symlinks can refer to other locations within that VM.
