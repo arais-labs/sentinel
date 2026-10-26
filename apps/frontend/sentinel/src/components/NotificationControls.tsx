@@ -3,7 +3,7 @@ import { Popover } from '@mui/material';
 import { useNavigate } from 'react-router-dom';
 import { Bell, Check, CheckCheck, ChevronRight, Loader2, Play, Settings2, X } from 'lucide-react';
 import { playCompletionSound } from '../lib/completion-sound';
-import { openWorkspaceTab } from '../lib/workspace-navigation';
+import { openMcpSignIn, openWorkspaceTab } from '../lib/workspace-navigation';
 import { saveNotificationSettings, updateNotification, useNotificationStore } from '../lib/notifications';
 import type { CompletionSound, NotificationSettings } from '../../../../desktop/sentinel/src/shared/ipc';
 import type { AppNotification } from '../../../../desktop/sentinel/src/shared/notifications';
@@ -50,7 +50,8 @@ export function NotificationsPanel({ onNavigate }: { onNavigate?: () => void }) 
     const target = item.target;
     if (!target?.instanceName) return;
     void update(item.id, 'read');
-    openWorkspaceTab(navigate, target.instanceName, target.sessionId ? 'sessions' : 'workspaces', { sessionId: target.sessionId });
+    if (target.mcpServerId) openMcpSignIn(navigate, target.instanceName, target.mcpServerId);
+    else openWorkspaceTab(navigate, target.instanceName, target.sessionId ? 'sessions' : 'workspaces', { sessionId: target.sessionId });
     onNavigate?.();
   }
   const visible = items.filter(item => !item.dismissed && (filter === 'all' || !item.read));
@@ -70,7 +71,7 @@ export function NotificationsPanel({ onNavigate }: { onNavigate?: () => void }) 
           <div className="notification-content"><div className="notification-meta"><span>{item.source.replace(/[-_]/g, ' ')}{item.severity === 'urgent' ? ' · Urgent' : ''}</span><time dateTime={item.updatedAt} title={new Date(item.updatedAt).toLocaleString()}>{new Date(item.updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time></div>
             <h3>{item.title}</h3>{item.message && <p>{item.message}</p>}
             {item.progress && <div className="notification-progress" aria-label="In progress"><span /></div>}
-            <div className="notification-actions">{item.target?.instanceName && <button onClick={() => openNotification(item)}>{item.target.sessionId ? 'Open session' : 'Open workspace'}<ChevronRight size={13} /></button>}{!item.read && <button onClick={() => void update(item.id, 'read')}>Mark read</button>}</div>
+            <div className="notification-actions">{item.target?.instanceName && <button onClick={() => openNotification(item)}>{item.target.mcpServerId ? 'Sign in' : item.target.sessionId ? 'Open session' : 'Open workspace'}<ChevronRight size={13} /></button>}{!item.read && <button onClick={() => void update(item.id, 'read')}>Mark read</button>}</div>
           </div><button className="notification-dismiss" title="Dismiss" aria-label={`Dismiss ${item.title}`} onClick={() => void update(item.id, 'dismiss')}><X size={14} /></button>
         </article>)}
       </div>

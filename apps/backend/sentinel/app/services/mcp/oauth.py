@@ -1,7 +1,10 @@
 """Browser authorization and encrypted token storage for instance MCP servers."""
 
 import asyncio
+import json
+import logging
 import secrets
+import weakref
 from contextlib import suppress
 from time import time
 from urllib.parse import parse_qs, urlsplit
@@ -19,11 +22,61 @@ from mcp.shared.auth import (
 
 from app.models.mcp import MCPServer
 from app.schemas.mcp import MCPConnection
+from app.services.mcp import signin
 from app.services.mcp.errors import SignInRequired, connection_message
+
+logger = logging.getLogger(__name__)
+
+
+# One refresh at a time per server, across every session and the settings check: providers that
+# rotate refresh tokens accept each one once, so two clients refreshing together sign one out.
+# Held only while a refresh runs: an idle server's lock drops out on its own.
+_refresh_locks: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()
 
 
 class SentinelOAuthClientProvider(OAuthClientProvider):
     """Keep OAuth subrequests identifiable to strict provider gateways."""
+
+    async def _sync_tokens(self):
+        """Adopt the newest stored tokens. The SDK reads storage once, so a long-lived session would
+        keep a refresh token another client has since rotated, and fail with a sign-in prompt
+        although storage holds working tokens. Expiry comes from when they were saved: the SDK sets
+        none for loaded tokens and would only notice at a 401, which it treats as a full sign-in."""
+        storage = self.context.storage
+        stored = await storage.get_tokens()
+        self.context.client_info = await storage.get_client_info() or self.context.client_info
+        current = self.context.current_tokens
+        if stored and (
+            current is None
+            or stored.access_token != current.access_token
+            or stored.refresh_token != current.refresh_token
+        ):
+            self.context.current_tokens = stored
+            saved_at = (
+                (await storage.read()).oauth.get("saved_at") if hasattr(storage, "read") else None
+            )
+            self.context.token_expiry_time = (
+                saved_at + stored.expires_in if saved_at and stored.expires_in else None
+            )
+        self._initialized = True
+
+    async def _handle_refresh_response(self, response):
+        # The SDK logs only the status. The provider's OAuth error (RFC 6749 §5.2: error,
+        # error_description, and a trace id some providers add) says why; it carries no secrets.
+        if response.status_code != 200:
+            try:
+                body = json.loads(await response.aread())
+            except ValueError:
+                body = {}
+            logger.warning(
+                "MCP token refresh refused by %s: HTTP %s error=%s description=%s trace=%s",
+                response.request.url.host,
+                response.status_code,
+                body.get("error"),
+                body.get("error_description"),
+                body.get("traceId") or body.get("trace_id"),
+            )
+        return await super()._handle_refresh_response(response)
 
     async def async_auth_flow(self, request):
         if self.context.oauth_metadata is None:
@@ -56,6 +109,14 @@ class SentinelOAuthClientProvider(OAuthClientProvider):
                     self.context.auth_server_url = issuer
                     await self.context.storage.set_oauth_metadata(metadata)
                     break
+        async with _refresh_locks.setdefault(self.context.server_url, asyncio.Lock()):
+            await self._sync_tokens()
+            if not self.context.is_token_valid() and self.context.can_refresh_token():
+                refresh = await self._refresh_token()
+                refresh.headers.setdefault("User-Agent", "Sentinel/2.0 MCP")
+                refresh.headers.setdefault("Accept", "application/json")
+                if not await self._handle_refresh_response((yield refresh)):
+                    self._initialized = False
         flow = super().async_auth_flow(request)
         try:
             outgoing = await anext(flow)
@@ -275,6 +336,8 @@ class Login:
                         tools = await self.completed(config, auth, store)
                 self.status = "connected"
                 self.message = f"{len(tools)} tools available"
+                # Calls waiting for this server's sign-in continue now.
+                await signin.completed(self.factory, self.server_id)
         except asyncio.CancelledError:
             self.status = "cancelled"
             raise
