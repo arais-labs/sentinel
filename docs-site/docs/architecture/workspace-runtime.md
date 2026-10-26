@@ -4,8 +4,9 @@ title: Workspace runtime
 
 # Workspace runtime
 
-Each workspace is a Linux VM. sentineld supervises one sentinel-workspace process per VM
-(libkrun on Hypervisor.framework); the app downloads both as release components. It does
+Each workspace is a VM. sentineld runs each one in its own child process, `sentineld vm`
+(libkrun on Hypervisor.framework); the app downloads sentineld, with the VM's libraries, as
+one release component. It does
 not manage Docker Desktop, Colima, or Apple's `container` CLI. Workspace execution currently
 requires a supported Apple Silicon Mac, locally or reached through SSH.
 
@@ -24,14 +25,14 @@ own VM lifecycle policy. Backend reloads and pane switches are separate from the
 workspace service. Status checks observe state rather than booting a stopped VM.
 
 Local and remote machines use the same guest setup and tool recipes. The
-macOS-specific native implementation lives under
-`apps/desktop/sentinel/native/macos`; shared orchestration lives in the desktop
-and backend runtime services.
+native runtime lives in `packages/sentineld` (the VM process in `macos/vm`) and
+its libraries in `packages/sentinel-workspace`; shared orchestration lives in the
+desktop and backend runtime services.
 
 ## Linux boot and desktop sessions
 
 ```text
-sentinel-workspace (libkrun on Hypervisor.framework, one process per VM)
+sentineld vm (libkrun on Hypervisor.framework, one process per VM)
   → EFI firmware → the distribution's boot loader → its kernel + installed root disk
     → distro init (systemd on Ubuntu/Debian; OpenRC on Alpine)
       → D-Bus, udev, login/seat services

@@ -1,8 +1,8 @@
 name: CI
 # PRs test source and build candidates. Release only promotes tested artifacts.
-# A candidate is the app (installer + payload) and the workspace runtime components it downloads:
-# each component has its own workflow (sentineld.yml, sentinel-workspace.yml), which
-# reuses its last build when its sources are unchanged.
+# A candidate is the app (installer + payload) and the workspace runtime component it downloads:
+# sentineld, built by its own workflow (sentineld.yml), which reuses its last build when its
+# sources are unchanged.
 on:
   pull_request:
     types: [opened, synchronize, reopened]
@@ -106,13 +106,9 @@ jobs:
     name: sentineld
     uses: ./.github/workflows/sentineld.yml
 
-  sentinel-workspace:
-    name: sentinel-workspace
-    uses: ./.github/workflows/sentinel-workspace.yml
-
   desktop-installer:
     name: Build desktop installer
-    # The app bundles no runtime component: it never waits for them.
+    # The app bundles no runtime component: it never waits for it.
     needs: [version, frontend-build]
     runs-on: macos-26
     timeout-minutes: 60
@@ -185,14 +181,14 @@ jobs:
 
   desktop-payload:
     name: Build desktop payload
-    # Its release index lists the runtime components, so it waits for their workflows.
-    needs: [version, frontend-build, sentineld, sentinel-workspace]
+    # Its release index lists the runtime component, so it waits for its workflow.
+    needs: [version, frontend-build, sentineld]
     runs-on: macos-26
     timeout-minutes: 60
     env:
       SENTINEL_BUILD_CHANNEL: beta
       SENTINEL_FRONTEND_DIST: ${{ github.workspace }}/apps/frontend/sentinel/dist
-      # The payload's release index lists the runtime components (payload-build.mjs).
+      # The payload's release index lists the runtime component (payload-build.mjs).
       SENTINEL_COMPONENTS_DIR: ${{ github.workspace }}/apps/desktop/sentinel/build/components
       SENTINEL_INTERNAL_BUILD: '1'
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
@@ -246,8 +242,7 @@ jobs:
           path: apps/frontend/sentinel/dist
       - uses: actions/download-artifact@v8
         with:
-          pattern: '{sentineld-release,sentinel-workspace-release}'
-          merge-multiple: true
+          name: sentineld-release
           path: apps/desktop/sentinel/build/components
       - name: Prepare runtime
         run: npm run desktop:prepare
@@ -259,7 +254,6 @@ jobs:
           path: |
             apps/desktop/sentinel/release/sentinel-payload-*.tar.gz
             apps/desktop/sentinel/release/sentineld-*.tar.gz
-            apps/desktop/sentinel/release/sentinel-workspace-*.tar.gz
             apps/desktop/sentinel/release/latest-*.json
           compression-level: 0
           if-no-files-found: error
