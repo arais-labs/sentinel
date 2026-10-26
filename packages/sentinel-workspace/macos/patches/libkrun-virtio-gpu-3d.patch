@@ -1,0 +1,549 @@
+libkrun: the 3D virtio GPU of a Windows guest (viogpu3d): virgl and Neptune contexts beside Venus.
+- Flags for virglrenderer's GL renderer on EGL/GLES (ANGLE on macOS), Neptune (capset 7, Direct3D)
+  and native scanout textures; rutabaga is told about Neptune (patched rutabaga_gfx).
+- vrend fences retire only when the renderer is polled (no fence thread on macOS): the worker polls
+  every millisecond while the guest waits for a fence.
+- A device reset frees what the guest made (scanouts, blobs mapped into its window, resources,
+  contexts, pending fences) and the worker waits for the next activation: the renderer starts once
+  per process. Windows resets the GPU on every driver restart and power-down and waits for it.
+- Display events (VIRTIO_GPU_EVENT_DISPLAY, events_read/events_clear): while the guest shows a
+  scanout at another size than the display's, one every few seconds, so it takes the display's size
+  (viogpu3d boots at 1280x1024 and applies the host's size only on that event).
+
+--- a/src/devices/src/virtio/gpu/device.rs
++++ b/src/devices/src/virtio/gpu/device.rs
+@@ -1,5 +1,5 @@
+ use std::io::Write;
+-use std::sync::atomic::{AtomicBool, Ordering};
++use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+ use std::sync::{Arc, Mutex};
+ use std::thread::JoinHandle;
+ use std::os::fd::{AsRawFd, BorrowedFd};
+@@ -21,7 +21,7 @@
+ use super::defs::uapi;
+ use super::defs::uapi::virtio_gpu_config;
+ use super::virtio_gpu::virgl_flags_to_capsets;
+-use super::worker::Worker;
++use super::worker::{Activation, Worker};
+ use crate::display::DisplayInfo;
+ use crate::virtio::InterruptTransport;
+ use krun_display::DisplayBackend;
+@@ -59,8 +59,17 @@
+     blob_alignment: u32,
+     // The active device's threads (the worker, the cursor queue) and how to end them.
+     threads: Option<Threads>,
++    // A 3D GPU's worker, which outlives device resets: its renderer starts once per process.
++    parked_worker: Option<ParkedWorker>,
++    // The config space's events_read (VIRTIO_GPU_EVENT_DISPLAY), raised by the worker.
++    events: Arc<AtomicU32>,
+ }
+ 
++struct ParkedWorker {
++    activate: std::sync::mpsc::Sender<Activation>,
++    parked: std::sync::mpsc::Receiver<()>,
++}
++
+ struct Threads {
+     stop: Arc<AtomicBool>,
+     wake: Vec<Arc<EventFd>>,
+@@ -93,6 +102,8 @@
+             #[cfg(not(target_os = "macos"))]
+             blob_alignment: unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as u32,
+             threads: None,
++            parked_worker: None,
++            events: Arc::new(AtomicU32::new(0)),
+         })
+     }
+ 
+@@ -200,7 +211,7 @@
+ 
+     fn read_config(&self, offset: u64, mut data: &mut [u8]) {
+         let config = virtio_gpu_config {
+-            events_read: 0,
++            events_read: self.events.load(Ordering::Acquire),
+             events_clear: 0,
+             num_scanouts: self.displays.len() as u32,
+             num_capsets: if self.shm_region.is_some() {
+@@ -225,6 +236,13 @@
+     }
+ 
+     fn write_config(&mut self, offset: u64, data: &[u8]) {
++        // events_clear: the driver acknowledges the events it read.
++        if offset == std::mem::offset_of!(virtio_gpu_config, events_clear) as u64
++            && let Ok(bits) = <[u8; 4]>::try_from(data)
++        {
++            self.events.fetch_and(!u32::from_le_bytes(bits), Ordering::AcqRel);
++            return;
++        }
+         warn!(
+             "gpu: guest driver attempted to write device config (offset={:x}, len={:x})",
+             offset,
+@@ -306,25 +324,52 @@
+                 .unwrap()
+         };
+ 
+-        let worker = Worker::new(
+-            control_q,
+-            mem.clone(),
+-            interrupt.clone(),
+-            shm_region,
+-            self.virgl_flags,
+-            #[cfg(target_os = "macos")]
+-            self.map_sender.clone(),
+-            self.export_table.take(),
+-            self.displays.clone(),
+-            self.display_backend,
+-            cursor,
+-            stop.clone(),
+-        );
+-        let worker_thread = worker.run();
++        let mut handles = vec![cursor_thread];
++        if let Some(parked_worker) = &self.parked_worker {
++            // A 3D GPU again after a reset: its worker resumes with the new queue.
++            let activation = Activation {
++                control_q,
++                interrupt: interrupt.clone(),
++                cursor,
++                stop: stop.clone(),
++            };
++            if parked_worker.activate.send(activation).is_err() {
++                error!("gpu: the worker is gone");
++                return Err(ActivateError::BadActivate);
++            }
++        } else {
++            let park = shm_region.is_some().then(|| {
++                let (activate, activations) = std::sync::mpsc::channel();
++                let (parked_sender, parked) = std::sync::mpsc::channel();
++                self.parked_worker = Some(ParkedWorker { activate, parked });
++                (parked_sender, activations)
++            });
++            let worker = Worker::new(
++                control_q,
++                mem.clone(),
++                interrupt.clone(),
++                shm_region,
++                self.virgl_flags,
++                #[cfg(target_os = "macos")]
++                self.map_sender.clone(),
++                self.export_table.take(),
++                self.displays.clone(),
++                self.display_backend,
++                cursor,
++                stop.clone(),
++                park,
++                self.events.clone(),
++            );
++            let worker_thread = worker.run();
++            // A 3D GPU's worker is not joined on a reset; it lives as long as the device.
++            if self.parked_worker.is_none() {
++                handles.push(worker_thread);
++            }
++        }
+         self.threads = Some(Threads {
+             stop,
+             wake,
+-            handles: vec![worker_thread, cursor_thread],
++            handles,
+         });
+ 
+         self.device_state = DeviceState::Activated(mem, interrupt);
+@@ -336,16 +381,15 @@
+         self.device_state.is_activated()
+     }
+ 
+-    // A driver resets the device before letting it go and waits for it (Windows' viogpudo, on a
+-    // driver restart or power-down). A 2D GPU ends its threads and resources and starts afresh on
+-    // the next activation; a 3D one does not reset: its blobs stay mapped into the guest.
++    // A driver resets the device before letting it go and waits for it (Windows' display drivers,
++    // on a driver restart or power-down). A 2D GPU ends its threads and resources and starts afresh
++    // on the next activation; a 3D one's worker frees what the guest made (its blobs leave the
++    // guest's window) and waits for the next activation.
+     fn reset(&mut self) -> bool {
+-        if self.shm_region.is_some() {
+-            return false;
+-        }
+         let Some(threads) = self.threads.take() else {
+             return false;
+         };
++        self.events.store(0, Ordering::Release);
+         threads.stop.store(true, Ordering::Release);
+         for evt in &threads.wake {
+             if let Err(e) = evt.write(1) {
+@@ -357,6 +401,12 @@
+                 error!("gpu: a thread panicked");
+             }
+         }
++        if let Some(parked_worker) = &self.parked_worker
++            && parked_worker.parked.recv().is_err()
++        {
++            error!("gpu: the worker ended on a reset");
++            self.parked_worker = None;
++        }
+         self.device_state = DeviceState::Inactive;
+         true
+     }
+--- a/src/devices/src/virtio/gpu/worker.rs
++++ b/src/devices/src/virtio/gpu/worker.rs
+@@ -1,8 +1,10 @@
+ use std::io::Read;
+ use std::os::fd::{AsRawFd, BorrowedFd};
+-use std::sync::atomic::{AtomicBool, Ordering};
++use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
++use std::sync::mpsc::{Receiver, Sender as ParkSender};
+ use std::sync::{Arc, Mutex};
+ use std::thread;
++use std::time::{Duration, Instant};
+ 
+ use nix::fcntl::{FcntlArg, OFlag, fcntl};
+ use utils::eventfd::EventFd;
+@@ -20,8 +22,8 @@
+ use super::super::descriptor_utils::{Reader, Writer};
+ use super::super::{DeviceQueue, GpuError, Queue as VirtQueue};
+ use super::protocol::{
+-    GpuCommand, GpuResponse, VirtioGpuResult, virtio_gpu_ctrl_hdr, virtio_gpu_mem_entry,
+-    virtio_gpu_update_cursor,
++    GpuCommand, GpuResponse, VIRTIO_GPU_EVENT_DISPLAY, VirtioGpuResult, virtio_gpu_ctrl_hdr,
++    virtio_gpu_mem_entry, virtio_gpu_update_cursor,
+ };
+ use super::virtio_gpu::VirtioGpu;
+ use crate::display::DisplayInfo;
+@@ -46,10 +48,33 @@
+     display_backend: DisplayBackend<'static>,
+     // The newest cursor update from the cursor queue (device.rs), applied here.
+     cursor: Arc<Mutex<Option<virtio_gpu_update_cursor>>>,
+-    // Set on a device reset: the worker ends (and its resources with it) at its next wake-up.
++    // Set on a device reset: at its next wake-up the worker ends (and its resources with it), or,
++    // when it parks, resets its resources, reports it, and waits for the next activation.
+     stop: Arc<AtomicBool>,
++    park: Option<(ParkSender<()>, Receiver<Activation>)>,
++    // The config space's pending events (device.rs), and when a display event was last raised.
++    events: Arc<AtomicU32>,
++    display_event: Option<Instant>,
+ }
+ 
++/// What a parked worker resumes with: the next activation's queue and state.
++pub struct Activation {
++    pub control_q: DeviceQueue,
++    pub interrupt: InterruptTransport,
++    pub cursor: Arc<Mutex<Option<virtio_gpu_update_cursor>>>,
++    pub stop: Arc<AtomicBool>,
++}
++
++// The control queue's event, blocking: the worker sleeps on it.
++fn blocking_event(control_q: &DeviceQueue) -> EventFd {
++    let control_evt = control_q.event.try_clone().unwrap();
++    // SAFETY: control_evt is valid for the duration of the fcntl calls.
++    let fd = unsafe { BorrowedFd::borrow_raw(control_evt.as_raw_fd()) };
++    let flags = OFlag::from_bits_retain(fcntl(fd, FcntlArg::F_GETFL).unwrap()) & !OFlag::O_NONBLOCK;
++    fcntl(fd, FcntlArg::F_SETFL(flags)).unwrap();
++    control_evt
++}
++
+ impl Worker {
+     #[allow(clippy::too_many_arguments)]
+     pub fn new(
+@@ -64,14 +89,10 @@
+         display_backend: DisplayBackend<'static>,
+         cursor: Arc<Mutex<Option<virtio_gpu_update_cursor>>>,
+         stop: Arc<AtomicBool>,
++        park: Option<(ParkSender<()>, Receiver<Activation>)>,
++        events: Arc<AtomicU32>,
+     ) -> Self {
+-        // Clone the eventfd so we have our own file description, then set it to blocking mode.
+-        let control_evt = control_q.event.try_clone().unwrap();
+-        // SAFETY: control_evt is valid for the duration of the fcntl calls.
+-        let fd = unsafe { BorrowedFd::borrow_raw(control_evt.as_raw_fd()) };
+-        let flags =
+-            OFlag::from_bits_retain(fcntl(fd, FcntlArg::F_GETFL).unwrap()) & !OFlag::O_NONBLOCK;
+-        fcntl(fd, FcntlArg::F_SETFL(flags)).unwrap();
++        let control_evt = blocking_event(&control_q);
+ 
+         Self {
+             control_evt,
+@@ -87,9 +108,36 @@
+             display_backend,
+             cursor,
+             stop,
++            park,
++            events,
++            display_event: None,
+         }
+     }
+ 
++    /// A scanout the guest shows at another size than the display's: raises a display event
++    /// (VIRTIO_GPU_EVENT_DISPLAY), at most every few seconds while it lasts, so the guest reads the
++    /// display's size again and takes it. Windows' viogpu3d boots at a size of its own and applies
++    /// the display's only on that event, through its agent in the signed-in user's session.
++    fn follow_display(&mut self, scanout_id: u32, resource_id: u32, width: u32, height: u32) {
++        const INTERVAL: Duration = Duration::from_secs(3);
++        let Some(display) = self.displays.get(scanout_id as usize) else {
++            return;
++        };
++        if resource_id == 0 || (display.width, display.height) == (width, height) {
++            return;
++        }
++        if self.display_event.is_some_and(|t| t.elapsed() < INTERVAL) {
++            return;
++        }
++        self.display_event = Some(Instant::now());
++        debug!(
++            "gpu: scanout {scanout_id} at {width}x{height}, the display is {}x{}: display event",
++            display.width, display.height
++        );
++        self.events.fetch_or(VIRTIO_GPU_EVENT_DISPLAY, Ordering::AcqRel);
++        self.interrupt.signal_config_change();
++    }
++
+     pub fn run(self) -> thread::JoinHandle<()> {
+         thread::Builder::new()
+             .name("gpu worker".into())
+@@ -112,12 +160,44 @@
+         );
+ 
+         loop {
++            // The GL renderer's fences (vrend) retire only when it is polled (on macOS it has no
++            // fence thread): while the guest waits for one, poll every millisecond.
++            if virtio_gpu.fences_pending() {
++                let mut pfd = libc::pollfd {
++                    fd: self.control_evt.as_raw_fd(),
++                    events: libc::POLLIN,
++                    revents: 0,
++                };
++                // SAFETY: pfd is a valid pollfd for the duration of the call.
++                if unsafe { libc::poll(&mut pfd, 1, 1) } == 0 {
++                    virtio_gpu.event_poll();
++                    continue;
++                }
++            }
+             if let Err(e) = self.control_evt.read() {
+                 error!("Failed to read control_evt: {e:?}");
+                 continue;
+             }
+             if self.stop.load(Ordering::Acquire) {
+-                return;
++                let Some((parked, activations)) = &self.park else {
++                    return;
++                };
++                virtio_gpu.reset(self.shm_region.as_ref());
++                if parked.send(()).is_err() {
++                    return;
++                }
++                let Ok(next) = activations.recv() else {
++                    return;
++                };
++                // The renderer's fence handler holds the same queue and interrupt: the new
++                // queue goes in place of the old one, and a transport's interrupt is the same
++                // object from one activation to the next.
++                self.control_evt = blocking_event(&next.control_q);
++                *self.control_queue.lock().unwrap() = next.control_q.queue;
++                self.interrupt = next.interrupt;
++                self.cursor = next.cursor;
++                self.stop = next.stop;
++                continue;
+             }
+             if let Some(info) = self.cursor.lock().unwrap().take() {
+                 virtio_gpu.update_cursor(
+@@ -132,6 +212,9 @@
+             {
+                 error!("Error signaling queue: {e:?}");
+             }
++            if virtio_gpu.fences_pending() {
++                virtio_gpu.event_poll();
++            }
+         }
+     }
+ 
+@@ -145,6 +228,16 @@
+     ) -> VirtioGpuResult {
+         virtio_gpu.force_ctx_0();
+ 
++        match &cmd {
++            GpuCommand::SetScanout(info) => {
++                self.follow_display(info.scanout_id, info.resource_id, info.r.width, info.r.height)
++            }
++            GpuCommand::SetScanoutBlob(info) => {
++                self.follow_display(info.scanout_id, info.resource_id, info.r.width, info.r.height)
++            }
++            _ => {}
++        }
++
+         match cmd {
+             GpuCommand::GetDisplayInfo => virtio_gpu.display_info(),
+             GpuCommand::GetEdid(info) => virtio_gpu.get_edid(info.scanout),
+--- a/src/devices/src/virtio/gpu/virtio_gpu.rs
++++ b/src/devices/src/virtio/gpu/virtio_gpu.rs
+@@ -1,4 +1,4 @@
+-use std::collections::BTreeMap;
++use std::collections::{BTreeMap, BTreeSet};
+ use std::env;
+ use std::io::IoSliceMut;
+ #[cfg(target_os = "linux")]
+@@ -55,6 +55,9 @@
+ const VIRGLRENDERER_NO_VIRGL: u32 = 1 << 7;
+ const VIRGLRENDERER_RENDER_SERVER: u32 = 1 << 9;
+ const VIRGLRENDERER_DRM: u32 = 1 << 10;
++const VIRGLRENDERER_USE_SURFACELESS: u32 = 1 << 3;
++const VIRGLRENDERER_NATIVE_SHARE_TEXTURE: u32 = 1 << 12;
++const VIRGLRENDERER_NEPTUNE: u32 = 1 << 15;
+ 
+ struct ExportTableLookup {
+     table: ExportTable,
+@@ -199,6 +202,8 @@
+ pub struct VirtioGpu {
+     rutabaga: Rutabaga,
+     resources: BTreeMap<u32, VirtioGpuResource>,
++    // The guest's contexts, destroyed with it on a device reset.
++    contexts: BTreeSet<u32>,
+     fence_state: Arc<Mutex<FenceState>>,
+     #[cfg(target_os = "macos")]
+     map_sender: Sender<WorkerMessage>,
+@@ -326,11 +331,15 @@
+         let use_egl = virgl_flags & VIRGLRENDERER_USE_EGL != 0;
+         let use_gles = virgl_flags & VIRGLRENDERER_USE_GLES != 0;
+         let use_render_server = virgl_flags & VIRGLRENDERER_RENDER_SERVER != 0;
++        let use_surfaceless = virgl_flags & VIRGLRENDERER_USE_SURFACELESS != 0;
++        let native_share_texture = virgl_flags & VIRGLRENDERER_NATIVE_SHARE_TEXTURE != 0;
+ 
+         let mut builder = RutabagaBuilder::new(capset_mask, fence)
+             .set_default_component(rutabaga_gfx::RutabagaComponentType::VirglRenderer)
+             .set_use_egl(use_egl)
+             .set_use_gles(use_gles)
++            .set_use_surfaceless(use_surfaceless)
++            .set_use_native_share_texture(native_share_texture)
+             .set_rutabaga_paths(Some(rutabaga_paths))
+             .set_use_render_server(use_render_server);
+ 
+@@ -428,6 +437,7 @@
+         Self {
+             rutabaga,
+             resources: Default::default(),
++            contexts: Default::default(),
+             fence_state,
+             scanouts: Default::default(),
+             displays,
+@@ -459,8 +469,18 @@
+             }
+             Err(_) => OkNoData,
+         }
++    }
++
++    /// Whether the guest waits for fences the renderer has yet to retire.
++    pub fn fences_pending(&self) -> bool {
++        !self.fence_state.lock().unwrap().descs.is_empty()
+     }
+ 
++    /// Lets the renderer retire what completed (fences it signals only when polled).
++    pub fn event_poll(&self) {
++        self.rutabaga.event_poll();
++    }
++
+     pub fn force_ctx_0(&self) {
+         self.rutabaga.force_ctx_0()
+     }
+@@ -918,15 +938,53 @@
+     ) -> VirtioGpuResult {
+         self.rutabaga
+             .create_context(ctx_id, context_init, context_name)?;
++        self.contexts.insert(ctx_id);
+         Ok(OkNoData)
+     }
+ 
+     /// Destroys a rutabaga context.
+     pub fn destroy_context(&mut self, ctx_id: u32) -> VirtioGpuResult {
+         self.rutabaga.destroy_context(ctx_id)?;
++        self.contexts.remove(&ctx_id);
+         Ok(OkNoData)
+     }
+ 
++    /// A device reset: everything the guest made goes (scanouts, blobs mapped into its window,
++    /// resources, contexts, fences it waits for), as at power on. The renderer itself stays: it
++    /// starts once per process.
++    pub fn reset(&mut self, shm_region: Option<&VirtioShmRegion>) {
++        for scanout_id in 0..self.scanouts.len() as u32 {
++            if self.scanouts[scanout_id as usize].take().is_some()
++                && let Err(e) = self.display_backend.disable_scanout(scanout_id)
++            {
++                warn!("gpu: reset: cannot disable scanout {scanout_id}: {e:?}");
++            }
++        }
++        let ids: Vec<u32> = self.resources.keys().copied().collect();
++        for resource_id in ids {
++            if let Some(shm_region) = shm_region
++                && self.resources[&resource_id].shmem_offset.is_some()
++                && let Err(e) = self.resource_unmap_blob(resource_id, shm_region)
++            {
++                warn!("gpu: reset: cannot unmap resource {resource_id}: {e:?}");
++            }
++            if let Some(resource) = self.resources.get_mut(&resource_id) {
++                resource.scanouts = Default::default();
++            }
++            if let Err(e) = self.unref_resource(resource_id) {
++                warn!("gpu: reset: cannot free resource {resource_id}: {e:?}");
++            }
++        }
++        for ctx_id in std::mem::take(&mut self.contexts) {
++            if let Err(e) = self.rutabaga.destroy_context(ctx_id) {
++                warn!("gpu: reset: cannot destroy context {ctx_id}: {e}");
++            }
++        }
++        let mut fence_state = self.fence_state.lock().unwrap();
++        fence_state.descs.clear();
++        fence_state.completed_fences.clear();
++    }
++
+     /// Attaches a resource to a rutabaga context.
+     pub fn context_attach_resource(&mut self, ctx_id: u32, resource_id: u32) -> VirtioGpuResult {
+         self.rutabaga.context_attach_resource(ctx_id, resource_id)?;
+@@ -1391,6 +1449,11 @@
+         capset_mask |= 1 << rutabaga_gfx::RUTABAGA_CAPSET_VENUS;
+     }
+ 
++    // Neptune (Direct3D) contexts
++    if flags & VIRGLRENDERER_NEPTUNE != 0 {
++        capset_mask |= 1 << rutabaga_gfx::RUTABAGA_CAPSET_NEPTUNE;
++    }
++
+     // Enable DRM native context if requested (in-process mode)
+     if flags & VIRGLRENDERER_DRM != 0 {
+         capset_mask |= 1 << rutabaga_gfx::RUTABAGA_CAPSET_DRM;
+--- a/src/libkrun/src/api/device_builders.rs
++++ b/src/libkrun/src/api/device_builders.rs
+@@ -1826,11 +1826,16 @@
+     bitflags::bitflags! {
+         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+         pub struct VirglRendererFlags: u32 {
+-            const USE_EGL            = 0x001;
+-            const THREAD_SYNC        = 0x002;
+-            const VENUS              = 0x040;
+-            const USE_ASYNC_FENCE_CB = 0x100;
+-            const RENDER_SERVER      = 0x200;
++            const USE_EGL              = 0x001;
++            const THREAD_SYNC          = 0x002;
++            const USE_SURFACELESS      = 0x008;
++            const USE_GLES             = 0x010;
++            const VENUS                = 0x040;
++            const NO_VIRGL             = 0x080;
++            const USE_ASYNC_FENCE_CB   = 0x100;
++            const RENDER_SERVER        = 0x200;
++            const NATIVE_SHARE_TEXTURE = 0x1000;
++            const NEPTUNE              = 0x8000;
+         }
+     }
+ }
+--- a/include/libkrun.h
++++ b/include/libkrun.h
+@@ -170,9 +170,14 @@
+ 
+ #define KRUN_VIRGL_RENDERER_FLAGS_USE_EGL 1
+ #define KRUN_VIRGL_RENDERER_FLAGS_THREAD_SYNC 2
++#define KRUN_VIRGL_RENDERER_FLAGS_USE_SURFACELESS 8
++#define KRUN_VIRGL_RENDERER_FLAGS_USE_GLES 16
+ #define KRUN_VIRGL_RENDERER_FLAGS_VENUS 64
++#define KRUN_VIRGL_RENDERER_FLAGS_NO_VIRGL 128
+ #define KRUN_VIRGL_RENDERER_FLAGS_USE_ASYNC_FENCE_CB 256
+ #define KRUN_VIRGL_RENDERER_FLAGS_RENDER_SERVER 512
++#define KRUN_VIRGL_RENDERER_FLAGS_NATIVE_SHARE_TEXTURE 4096
++#define KRUN_VIRGL_RENDERER_FLAGS_NEPTUNE 32768
+ 
+ /* NetFlags ---------------------------------------------------------- */
+ 

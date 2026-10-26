@@ -1,0 +1,371 @@
+diff -ruN a/include/libkrun.h b/include/libkrun.h
+--- a/include/libkrun.h	2026-10-12 22:13:04
++++ b/include/libkrun.h	2026-10-12 22:06:42
+@@ -29,6 +29,7 @@
+ typedef void* KrunVhostUserDevice;
+ typedef void* KrunDisplayBackend;
+ typedef void* KrunGpuDevice;
++typedef void* KrunRamfbDevice;
+ typedef void* KrunInputDevice;
+ typedef void* KrunAttachDevice; /* KrunFsDevice | KrunConsoleDevice | KrunBlockDevice | KrunNetDevice | KrunGpuDevice | KrunInputDevice | KrunVhostUserDevice | KrunBalloonDevice | KrunRngDevice | KrunSoundDevice | KrunVsockDevice */
+ typedef void* KrunDeviceManager; /* KrunMmioDeviceManager | KrunPciDeviceManager */
+@@ -621,6 +622,7 @@
+ /* GpuDevice --------------------------------------------------------- */
+ 
+ KrunGpuDevice krun_gpu_device_new(uint32_t virgl_flags, KrunDisplayBackend backend);
++KrunRamfbDevice krun_ramfb_device_new(KrunDisplayBackend backend);
+ typedef KrunGpuDevice (*krun_gpu_device_new_fn)(uint32_t virgl_flags, KrunDisplayBackend backend);
+ void krun_gpu_device_shm_size(KrunGpuDevice* handle, size_t size);
+ typedef void (*krun_gpu_device_shm_size_fn)(KrunGpuDevice* handle, size_t size);
+diff -ruN a/src/arch/src/aarch64/layout.rs b/src/arch/src/aarch64/layout.rs
+--- a/src/arch/src/aarch64/layout.rs	2026-10-12 22:13:04
++++ b/src/arch/src/aarch64/layout.rs	2026-10-12 22:06:42
+@@ -88,6 +88,9 @@
+ /// Below this address will reside the GIC, above this address will reside the MMIO devices.
+ pub const MAPPED_IO_START: u64 = 0x0a00_0000;
+ 
++/// The boot framebuffer's register page (devices::ramfb).
++pub const RAMFB_START: u64 = 0x0900_0000;
++
+ /// PCI: 32-bit BAR window, then the ECAM configuration space of bus 0.
+ pub const PCI_BAR_START: u64 = 0x1000_0000;
+ pub const PCI_BAR_END: u64 = 0x3f00_0000;
+diff -ruN a/src/devices/src/fdt/aarch64.rs b/src/devices/src/fdt/aarch64.rs
+--- a/src/devices/src/fdt/aarch64.rs	2026-10-12 22:13:04
++++ b/src/devices/src/fdt/aarch64.rs	2026-10-12 22:06:42
+@@ -78,6 +78,7 @@
+     gic_device: &IrqChip,
+     initrd: &Option<InitrdConfig>,
+     pci: Option<&arch::aarch64::PciHostInfo>,
++    ramfb: Option<u64>,
+ ) -> Result<Vec<u8>> {
+     // Alocate stuff necessary for the holding the blob.
+     let mut fdt = FdtWriter::new()?;
+@@ -106,6 +107,13 @@
+     create_devices_node(&mut fdt, device_info)?;
+     if let Some(pci) = pci {
+         create_pci_node(&mut fdt, pci)?;
++    }
++    if let Some(base) = ramfb {
++        // The boot framebuffer's register page, for the firmware (devices::ramfb).
++        let node = fdt.begin_node(&format!("ramfb@{base:x}"))?;
++        fdt.property_string("compatible", "sentinel,ramfb")?;
++        fdt.property("reg", &generate_prop64(&[base, 0x1000]))?;
++        fdt.end_node(node)?;
+     }
+ 
+     // End Header node.
+diff -ruN a/src/devices/src/lib.rs b/src/devices/src/lib.rs
+--- a/src/devices/src/lib.rs	2026-10-12 22:13:04
++++ b/src/devices/src/lib.rs	2026-10-12 22:06:42
+@@ -19,6 +19,8 @@
+ pub mod fdt;
+ pub mod legacy;
+ pub mod pci;
++#[cfg(all(feature = "gpu", target_os = "macos", target_arch = "aarch64"))]
++pub mod ramfb;
+ pub mod virtio;
+ 
+ pub use self::bus::{Bus, BusDevice, Error as BusError};
+diff -ruN a/src/devices/src/ramfb.rs b/src/devices/src/ramfb.rs
+--- a/src/devices/src/ramfb.rs	1969-12-31 18:00:00
++++ b/src/devices/src/ramfb.rs	2026-10-12 22:06:42
+@@ -0,0 +1,173 @@
++// SPDX-License-Identifier: Apache-2.0
++
++//! A boot framebuffer (QEMU's ramfb model): the guest firmware allocates the framebuffer in guest
++//! RAM and programs its address and geometry through a register page; its pixels are then shown on
++//! the display backend's first scanout, from a presenter thread, about 60 times a second. An OS
++//! without a GPU driver keeps drawing into the same memory (Windows' basic display driver).
++
++use std::sync::{Arc, Mutex};
++use std::thread;
++use std::time::Duration;
++
++use krun_display::{DisplayBackend, DisplayBackendBasicFramebuffer, ResourceFormat};
++use log::{debug, warn};
++use vm_memory::{Bytes, GuestAddress, GuestMemoryMmap};
++
++use crate::bus::BusDevice;
++
++/// The register page: written by the firmware, `ENABLE` last; `MAX_*` tell it the display's size.
++pub const RAMFB_REGS_SIZE: u64 = 0x1000;
++const ADDRESS_LOW: u64 = 0x00;
++const ADDRESS_HIGH: u64 = 0x04;
++const WIDTH: u64 = 0x08;
++const HEIGHT: u64 = 0x0c;
++const STRIDE: u64 = 0x10;
++const FORMAT: u64 = 0x14;
++const ENABLE: u64 = 0x18;
++const MAX_WIDTH: u64 = 0x20;
++const MAX_HEIGHT: u64 = 0x24;
++/// DRM_FORMAT_XRGB8888: B, G, R, X bytes in memory (UEFI's PixelBlueGreenRedReserved8BitPerColor).
++const FOURCC_XRGB8888: u32 = 0x3432_5258;
++const FRAME_INTERVAL: Duration = Duration::from_millis(16);
++
++#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
++struct Config {
++    address: u64,
++    width: u32,
++    height: u32,
++    stride: u32,
++    format: u32,
++}
++
++pub struct Ramfb {
++    staged: Config,
++    max_width: u32,
++    max_height: u32,
++    shown: Arc<Mutex<Option<Config>>>,
++    presenter: Option<(DisplayBackend<'static>, GuestMemoryMmap)>,
++}
++
++impl Ramfb {
++    pub fn new(backend: DisplayBackend<'static>, mem: GuestMemoryMmap, max_width: u32, max_height: u32) -> Self {
++        Self {
++            staged: Config::default(),
++            max_width,
++            max_height,
++            shown: Arc::new(Mutex::new(None)),
++            presenter: Some((backend, mem)),
++        }
++    }
++
++    fn enable(&mut self) {
++        let c = self.staged;
++        if c.format != FOURCC_XRGB8888
++            || c.width == 0
++            || c.height == 0
++            || c.width > self.max_width
++            || c.height > self.max_height
++            || (c.stride as u64) < c.width as u64 * 4
++        {
++            warn!("ramfb: unsupported configuration {c:?}");
++            return;
++        }
++        debug!("ramfb: {c:?}");
++        *self.shown.lock().unwrap() = Some(c);
++        if let Some((backend, mem)) = self.presenter.take() {
++            let shown = self.shown.clone();
++            let (max_width, max_height) = (self.max_width, self.max_height);
++            thread::Builder::new()
++                .name("ramfb".into())
++                .spawn(move || present(backend, mem, shown, max_width, max_height))
++                .expect("ramfb presenter thread");
++        }
++    }
++}
++
++// Shows the framebuffer whenever its pixels change; the backend instance lives on this thread.
++fn present(
++    backend: DisplayBackend<'static>,
++    mem: GuestMemoryMmap,
++    shown: Arc<Mutex<Option<Config>>>,
++    max_width: u32,
++    max_height: u32,
++) {
++    let mut display = match backend.create_instance() {
++        Ok(display) => display,
++        Err(e) => return warn!("ramfb: no display backend instance: {e:?}"),
++    };
++    let mut configured = None;
++    let mut pixels = Vec::new();
++    let mut last = Vec::new();
++    loop {
++        thread::sleep(FRAME_INTERVAL);
++        let Some(c) = *shown.lock().unwrap() else { continue };
++        if configured != Some(c) {
++            if let Err(e) = display.configure_scanout(0, max_width, max_height, c.width, c.height, ResourceFormat::BGRX) {
++                warn!("ramfb: configure scanout: {e:?}");
++                continue;
++            }
++            configured = Some(c);
++            last.clear();
++        }
++        let row = c.width as usize * 4;
++        pixels.resize(row * c.height as usize, 0);
++        let mut readable = true;
++        for y in 0..c.height as usize {
++            let at = GuestAddress(c.address + y as u64 * c.stride as u64);
++            if mem.read_slice(&mut pixels[y * row..(y + 1) * row], at).is_err() {
++                readable = false;
++                break;
++            }
++        }
++        if !readable || pixels == last {
++            continue;
++        }
++        match display.alloc_frame(0) {
++            Ok((frame, buffer)) => {
++                let n = buffer.len().min(pixels.len());
++                buffer[..n].copy_from_slice(&pixels[..n]);
++                if let Err(e) = display.present_frame(0, frame, None) {
++                    warn!("ramfb: present: {e:?}");
++                }
++                std::mem::swap(&mut last, &mut pixels);
++            }
++            Err(e) => debug!("ramfb: no frame: {e:?}"),
++        }
++    }
++}
++
++impl BusDevice for Ramfb {
++    fn read(&mut self, _vcpuid: u64, offset: u64, data: &mut [u8]) {
++        let value = match offset {
++            ADDRESS_LOW => self.staged.address as u32,
++            ADDRESS_HIGH => (self.staged.address >> 32) as u32,
++            WIDTH => self.staged.width,
++            HEIGHT => self.staged.height,
++            STRIDE => self.staged.stride,
++            FORMAT => self.staged.format,
++            MAX_WIDTH => self.max_width,
++            MAX_HEIGHT => self.max_height,
++            _ => 0,
++        };
++        let bytes = value.to_le_bytes();
++        let n = data.len().min(4);
++        data[..n].copy_from_slice(&bytes[..n]);
++    }
++
++    fn write(&mut self, _vcpuid: u64, offset: u64, data: &[u8]) {
++        if data.len() != 4 {
++            return;
++        }
++        let value = u32::from_le_bytes(data.try_into().unwrap());
++        match offset {
++            ADDRESS_LOW => self.staged.address = (self.staged.address & !0xffff_ffff) | value as u64,
++            ADDRESS_HIGH => self.staged.address = (self.staged.address & 0xffff_ffff) | (value as u64) << 32,
++            WIDTH => self.staged.width = value,
++            HEIGHT => self.staged.height = value,
++            STRIDE => self.staged.stride = value,
++            FORMAT => self.staged.format = value,
++            ENABLE if value == 1 => self.enable(),
++            _ => {}
++        }
++    }
++}
+diff -ruN a/src/devices/src/virtio/snd/device.rs b/src/devices/src/virtio/snd/device.rs
+--- a/src/devices/src/virtio/snd/device.rs	2026-10-12 22:13:04
++++ b/src/devices/src/virtio/snd/device.rs	2026-10-12 22:11:46
+@@ -193,6 +193,10 @@
+         &QUEUE_CONFIG
+     }
+ 
++    fn config_len(&self) -> Option<u32> {
++        Some(12)
++    }
++
+     fn read_config(&self, offset: u64, data: &mut [u8]) {
+         // jacks, streams, chmaps
+         let config: Vec<u8> = [0u32, 1, 1].iter().flat_map(|v| v.to_le_bytes()).collect();
+diff -ruN a/src/libkrun/src/api/device_builders.rs b/src/libkrun/src/api/device_builders.rs
+--- a/src/libkrun/src/api/device_builders.rs	2026-10-12 22:13:04
++++ b/src/libkrun/src/api/device_builders.rs	2026-10-12 22:06:42
+@@ -1830,6 +1830,53 @@
+     }
+ }
+ 
++/// A boot framebuffer (devices::ramfb) shown on the backend's first display: the screen of a guest
++/// without a virtio-gpu driver, programmed by the firmware.
++#[cfg(all(feature = "gpu", target_os = "macos", target_arch = "aarch64"))]
++pub struct RamfbDevice {
++    backend: DisplayBackend,
++}
++
++#[cfg_attr(feature = "ffi", ffier::export(cfg = "all(feature = \"gpu\", target_os = \"macos\", target_arch = \"aarch64\")"))]
++#[cfg_attr(not(feature = "ffi"), cfg(all(feature = "gpu", target_os = "macos", target_arch = "aarch64")))]
++impl RamfbDevice {
++    pub fn new(backend: DisplayBackend) -> Self {
++        Self { backend }
++    }
++}
++
++#[cfg_attr(feature = "ffi", ffier::export(cfg = "all(feature = \"gpu\", target_os = \"macos\", target_arch = \"aarch64\")"))]
++#[cfg_attr(not(feature = "ffi"), cfg(all(feature = "gpu", target_os = "macos", target_arch = "aarch64")))]
++impl<'a> AttachDevice<'a> for RamfbDevice {
++    #[cfg_attr(feature = "ffi", ffier(skip))]
++    fn requirements(&self) -> DeviceRequirements {
++        DeviceRequirements::default()
++    }
++
++    #[cfg_attr(feature = "ffi", ffier(skip))]
++    fn attach(self: Box<Self>, ctx: &mut AttachContext) -> Result<(), VmmError> {
++        let display = self
++            .backend
++            .displays
++            .first()
++            .ok_or_else(|| VmmError::Internal("ramfb: the display backend has no display".into()))?;
++        let ramfb = devices::ramfb::Ramfb::new(
++            self.backend.inner,
++            ctx.guest_memory().clone(),
++            display.width,
++            display.height,
++        );
++        let base = arch::aarch64::layout::RAMFB_START;
++        ctx.vmm
++            .mmio_device_manager
++            .bus
++            .insert(Arc::new(Mutex::new(ramfb)), base, devices::ramfb::RAMFB_REGS_SIZE)
++            .map_err(|e| VmmError::Internal(format!("ramfb: {e:?}")))?;
++        ctx.vmm.ramfb = Some(base);
++        Ok(())
++    }
++}
++
+ /// A virtio GPU device with virgl 3D acceleration.
+ #[cfg(feature = "gpu")]
+ pub struct GpuDevice {
+diff -ruN a/src/libkrun/src/api/mod.rs b/src/libkrun/src/api/mod.rs
+--- a/src/libkrun/src/api/mod.rs	2026-10-12 22:13:04
++++ b/src/libkrun/src/api/mod.rs	2026-10-12 22:06:42
+@@ -50,6 +50,8 @@
+ pub use device_builders::{DisplayBackend, DisplayInfoBuilder};
+ #[cfg(feature = "gpu")]
+ pub use device_builders::{GpuDevice, VirglRendererFlags};
++#[cfg(all(feature = "gpu", target_os = "macos", target_arch = "aarch64"))]
++pub use device_builders::RamfbDevice;
+ #[cfg(feature = "blk")]
+ pub use devices::virtio::block::{DiskFormat, SyncMode};
+ pub use error::VmmError;
+@@ -108,6 +110,10 @@
+     crate::api::device_builders::VhostUserDevice = 20,
+     #[cfg(any(feature = "gpu", feature = "vhost-user"))]
+     crate::api::device_builders::DisplayBackend = 22,
++    #[cfg(all(feature = "gpu", target_os = "macos", target_arch = "aarch64"))]
++    crate::api::device_builders::RamfbDevice = 28,
++    #[cfg(all(feature = "gpu", target_os = "macos", target_arch = "aarch64"))]
++    crate::api::device_builders::AttachDevice for crate::api::device_builders::RamfbDevice,
+     #[cfg(feature = "gpu")]
+     crate::api::device_builders::GpuDevice = 23,
+     #[cfg(feature = "gpu")]
+diff -ruN a/src/libkrun/src/vmm/builder.rs b/src/libkrun/src/vmm/builder.rs
+--- a/src/libkrun/src/vmm/builder.rs	2026-10-12 22:13:04
++++ b/src/libkrun/src/vmm/builder.rs	2026-10-12 22:06:42
+@@ -1312,6 +1312,7 @@
+         mmio_device_manager,
+         #[cfg(any(all(target_arch = "x86_64", target_os = "linux"), all(target_arch = "aarch64", target_os = "macos")))]
+         pci_device_manager,
++        ramfb: None,
+         #[cfg(target_os = "macos")]
+         vm_ctl_tx,
+         #[cfg(target_os = "macos")]
+diff -ruN a/src/libkrun/src/vmm/mod.rs b/src/libkrun/src/vmm/mod.rs
+--- a/src/libkrun/src/vmm/mod.rs	2026-10-12 22:13:04
++++ b/src/libkrun/src/vmm/mod.rs	2026-10-12 22:06:42
+@@ -163,6 +163,8 @@
+     pub(crate) mmio_device_manager: MMIODeviceManager,
+     #[cfg(any(all(target_arch = "x86_64", target_os = "linux"), all(target_arch = "aarch64", target_os = "macos")))]
+     pub(crate) pci_device_manager: Option<PciHostManager>,
++    /// The boot framebuffer's register page, when the VM has one (aarch64 macOS).
++    pub(crate) ramfb: Option<u64>,
+ 
+     // Out-of-band live pause/resume requests: the C API sends `VmCtl` from
+     // another thread; the event loop freezes or wakes the vCPUs. A single
+@@ -370,6 +372,7 @@
+                 self.pci_device_manager.as_ref().and_then(|pci| pci.host_info()).as_ref(),
+                 #[cfg(not(target_os = "macos"))]
+                 None,
++                self.ramfb,
+             )
+             .map_err(Error::SetupFDT)?;
+         }

@@ -1,0 +1,5169 @@
+diff -ruN a/bindings/libkrun-via-cdylib-weak/ffier-krun.json b/bindings/libkrun-via-cdylib-weak/ffier-krun.json
+--- a/bindings/libkrun-via-cdylib-weak/ffier-krun.json	2026-10-09 07:35:04
++++ b/bindings/libkrun-via-cdylib-weak/ffier-krun.json	2026-10-12 21:50:21
+@@ -68,6 +68,17 @@
+         "a"
+       ]
+     },
++    "DeviceManager": {
++      "kind": {
++        "trait": {
++          "c_name": "KrunDeviceManager"
++        }
++      },
++      "type_tag": 16777242,
++      "lifetime_params": [
++        "a"
++      ]
++    },
+     "DiskFormat": {
+       "kind": {
+         "enum": {
+@@ -251,6 +262,17 @@
+       },
+       "type_tag": 16777224
+     },
++    "PciDeviceManager": {
++      "kind": {
++        "handle": {
++          "c_name": "KrunPciDeviceManager"
++        }
++      },
++      "type_tag": 16777241,
++      "lifetime_params": [
++        "a"
++      ]
++    },
+     "PushStr": {
+       "kind": {
+         "trait": {
+@@ -446,34 +468,29 @@
+             ]
+           },
+           "ffi_name": "krun_mmio_device_manager_new"
+-        },
++        }
++      ]
++    },
++    {
++      "name": "PciDeviceManager",
++      "destroy_ffi_name": "krun_pci_device_manager_destroy",
++      "is_builder_type": false,
++      "methods": [
+         {
+-          "name": "add",
+-          "doc": [
+-            " Add a device to this manager.",
+-            "",
+-            " Devices are attached in the order they are added. The device must",
+-            " implement [`AttachDevice`] — all built-in device types",
+-            " (`FsDevice`, `ConsoleDevice`, etc.) implement this trait."
+-          ],
+-          "receiver": "mut",
+-          "params": [
+-            {
+-              "name": "device",
+-              "param_kind": "impl_trait",
+-              "trait_name": "AttachDevice",
+-              "type_args": [
+-                "a"
+-              ]
+-            }
+-          ],
++          "name": "new",
++          "receiver": "none",
++          "params": [],
+           "ret": {
+             "return_kind": "value",
+-            "type": "Self"
++            "type": "PciDeviceManager",
++            "type_args": [
++              "a"
++            ]
+           },
+-          "ffi_name": "krun_mmio_device_manager_add"
++          "ffi_name": "krun_pci_device_manager_new"
+         }
+-      ]
++      ],
++      "cfg": "all(target_arch = \"x86_64\", target_os = \"linux\")"
+     },
+     {
+       "name": "FsDevice",
+@@ -1330,12 +1347,17 @@
+         },
+         {
+           "name": "devices",
++          "doc": [
++            " Add devices using their manager's transport.",
++            "",
++            " PCI devices require ACPI to be enabled with [`VmmBuilder::acpi`]."
++          ],
+           "receiver": "value",
+           "params": [
+             {
+               "name": "devices",
+-              "param_kind": "regular",
+-              "type": "MmioDeviceManager",
++              "param_kind": "impl_trait",
++              "trait_name": "DeviceManager",
+               "type_args": [
+                 "a"
+               ]
+@@ -1450,8 +1472,8 @@
+             " Enable ACPI table generation for x86_64 guests.",
+             "",
+             " When disabled (the default), virtio-mmio devices are passed on the kernel",
+-            " command line and SMP uses the MP table. When enabled, devices are described",
+-            " in the ACPI DSDT and the RSDP is published in boot parameters."
++            " command line and SMP uses the MP table. When enabled, devices and the PCI",
++            " host bridge are described in ACPI and the RSDP is published in boot parameters."
+           ],
+           "receiver": "value",
+           "params": [
+@@ -2780,6 +2802,45 @@
+   ],
+   "traits": [
+     {
++      "name": "DeviceManager",
++      "destroy_ffi_name": "krun_device_manager_destroy",
++      "type_tag_constant": "KRUN_DEVICE_MANAGER_TYPE_TAG",
++      "vtable_struct_c_name": "KrunDeviceManagerVtable",
++      "wrapper_c_name": "KrunVtableDeviceManager",
++      "vtable_struct_name": "DeviceManagerVtable",
++      "wrapper_name": "VtableDeviceManager",
++      "methods": [
++        {
++          "name": "add",
++          "doc": [
++            " Add a device to this manager, preserving the order devices are added."
++          ],
++          "receiver": "mut",
++          "params": [
++            {
++              "name": "device",
++              "param_kind": "impl_trait",
++              "trait_name": "AttachDevice",
++              "type_args": [
++                "a"
++              ]
++            }
++          ],
++          "ret": {
++            "return_kind": "void"
++          },
++          "ffi_name": "krun_device_manager_add",
++          "trait_definition": {
++            "index": 0,
++            "has_default": false
++          }
++        }
++      ],
++      "own_method_count": 1,
++      "max_vtable_slot": 0,
++      "no_vtable": true
++    },
++    {
+       "name": "PushStr",
+       "destroy_ffi_name": "krun_push_str_destroy",
+       "type_tag_constant": "KRUN_PUSH_STR_TYPE_TAG",
+@@ -2875,6 +2936,73 @@
+     }
+   ],
+   "trait_impls": [
++    {
++      "trait_name": "DeviceManager",
++      "struct_name": "MmioDeviceManager",
++      "lifetimes": [
++        "a"
++      ],
++      "trait_lifetime_args": [
++        "a"
++      ],
++      "struct_lifetime_args": [
++        "a"
++      ],
++      "methods": [
++        {
++          "name": "add",
++          "receiver": "mut",
++          "params": [
++            {
++              "name": "device",
++              "param_kind": "impl_trait",
++              "trait_name": "AttachDevice",
++              "type_args": [
++                "a"
++              ]
++            }
++          ],
++          "ret": {
++            "return_kind": "void"
++          },
++          "ffi_name": "krun_mmio_device_manager_add"
++        }
++      ]
++    },
++    {
++      "trait_name": "DeviceManager",
++      "struct_name": "PciDeviceManager",
++      "lifetimes": [
++        "a"
++      ],
++      "trait_lifetime_args": [
++        "a"
++      ],
++      "struct_lifetime_args": [
++        "a"
++      ],
++      "methods": [
++        {
++          "name": "add",
++          "receiver": "mut",
++          "params": [
++            {
++              "name": "device",
++              "param_kind": "impl_trait",
++              "trait_name": "AttachDevice",
++              "type_args": [
++                "a"
++              ]
++            }
++          ],
++          "ret": {
++            "return_kind": "void"
++          },
++          "ffi_name": "krun_pci_device_manager_add"
++        }
++      ],
++      "cfg": "all(target_arch = \"x86_64\", target_os = \"linux\")"
++    },
+     {
+       "trait_name": "AttachDevice",
+       "struct_name": "FsDevice",
+diff -ruN a/include/libkrun.h b/include/libkrun.h
+--- a/include/libkrun.h	2026-10-12 21:49:57
++++ b/include/libkrun.h	2026-10-12 21:50:21
+@@ -9,6 +9,7 @@
+ 
+ typedef void* KrunVmmError;
+ typedef void* KrunMmioDeviceManager;
++typedef void* KrunPciDeviceManager;
+ typedef void* KrunFsDevice;
+ typedef void* KrunConsoleDevice;
+ typedef void* KrunConsoleBuilder;
+@@ -192,18 +193,16 @@
+ /** Create an empty device manager. */
+ KrunMmioDeviceManager krun_mmio_device_manager_new();
+ typedef KrunMmioDeviceManager (*krun_mmio_device_manager_new_fn)();
+-/**
+- * Add a device to this manager.
+- *
+- * Devices are attached in the order they are added. The device must
+- * implement [`AttachDevice`] — all built-in device types
+- * (`FsDevice`, `ConsoleDevice`, etc.) implement this trait.
+- */
+-void krun_mmio_device_manager_add(KrunMmioDeviceManager handle, KrunAttachDevice device);
+-typedef void (*krun_mmio_device_manager_add_fn)(KrunMmioDeviceManager handle, KrunAttachDevice device);
+ void krun_mmio_device_manager_destroy(KrunMmioDeviceManager handle);
+ typedef void (*krun_mmio_device_manager_destroy_fn)(KrunMmioDeviceManager handle);
+ 
++/* PciDeviceManager -------------------------------------------------- */
++
++KrunPciDeviceManager krun_pci_device_manager_new();
++typedef KrunPciDeviceManager (*krun_pci_device_manager_new_fn)();
++void krun_pci_device_manager_destroy(KrunPciDeviceManager handle);
++typedef void (*krun_pci_device_manager_destroy_fn)(KrunPciDeviceManager handle);
++
+ /* FsDevice ---------------------------------------------------------- */
+ 
+ /**
+@@ -384,8 +383,13 @@
+ typedef KrunResult (*krun_vmm_builder_ram_mib_fn)(KrunVmmBuilder* handle, uint32_t mib, KrunError* err_out);
+ void krun_vmm_builder_payload(KrunVmmBuilder* handle, KrunPayload payload);
+ typedef void (*krun_vmm_builder_payload_fn)(KrunVmmBuilder* handle, KrunPayload payload);
+-void krun_vmm_builder_devices(KrunVmmBuilder* handle, KrunMmioDeviceManager devices);
+-typedef void (*krun_vmm_builder_devices_fn)(KrunVmmBuilder* handle, KrunMmioDeviceManager devices);
++/**
++ * Add devices using their manager's transport.
++ *
++ * PCI devices require ACPI to be enabled with [`VmmBuilder::acpi`].
++ */
++void krun_vmm_builder_devices(KrunVmmBuilder* handle, KrunDeviceManager devices);
++typedef void (*krun_vmm_builder_devices_fn)(KrunVmmBuilder* handle, KrunDeviceManager devices);
+ void krun_vmm_builder_set_kernel_console(KrunVmmBuilder* handle, KrunStr console);
+ typedef void (*krun_vmm_builder_set_kernel_console_fn)(KrunVmmBuilder* handle, KrunStr console);
+ /**
+@@ -408,8 +412,8 @@
+  * Enable ACPI table generation for x86_64 guests.
+  *
+  * When disabled (the default), virtio-mmio devices are passed on the kernel
+- * command line and SMP uses the MP table. When enabled, devices are described
+- * in the ACPI DSDT and the RSDP is published in boot parameters.
++ * command line and SMP uses the MP table. When enabled, devices and the PCI
++ * host bridge are described in ACPI and the RSDP is published in boot parameters.
+  */
+ KrunResult krun_vmm_builder_acpi(KrunVmmBuilder* handle, bool enabled, KrunError* err_out);
+ typedef KrunResult (*krun_vmm_builder_acpi_fn)(KrunVmmBuilder* handle, bool enabled, KrunError* err_out);
+@@ -648,6 +652,14 @@
+ void krun_input_device_destroy(KrunInputDevice handle);
+ typedef void (*krun_input_device_destroy_fn)(KrunInputDevice handle);
+ 
++/* DeviceManager (dispatch) ------------------------------------------ */
++
++/** Add a device to this manager, preserving the order devices are added. */
++void krun_device_manager_add(KrunDeviceManager handle, KrunAttachDevice device);
++typedef void (*krun_device_manager_add_fn)(KrunDeviceManager handle, KrunAttachDevice device);
++void krun_device_manager_destroy(KrunDeviceManager handle);
++typedef void (*krun_device_manager_destroy_fn)(KrunDeviceManager handle);
++
+ /* KrunPushStrVtable ------------------------------------------------- */
+ 
+ #define KRUN_PUSH_STR_TYPE_TAG 16777228
+@@ -685,6 +697,10 @@
+ typedef uint64_t (*krun_error_result_fn)(KrunError handle);
+ void krun_error_destroy(KrunError handle);
+ typedef void (*krun_error_destroy_fn)(KrunError handle);
++void krun_mmio_device_manager_add(KrunMmioDeviceManager handle, KrunAttachDevice device);
++typedef void (*krun_mmio_device_manager_add_fn)(KrunMmioDeviceManager handle, KrunAttachDevice device);
++void krun_pci_device_manager_add(KrunPciDeviceManager handle, KrunAttachDevice device);
++typedef void (*krun_pci_device_manager_add_fn)(KrunPciDeviceManager handle, KrunAttachDevice device);
+ uint32_t krun_vmm_error_code(KrunVmmError handle);
+ typedef uint32_t (*krun_vmm_error_code_fn)(KrunVmmError handle);
+ void krun_vmm_error_message(KrunVmmError handle, KrunPushStr writer);
+diff -ruN a/src/arch/src/x86_64/acpi.rs b/src/arch/src/x86_64/acpi.rs
+--- a/src/arch/src/x86_64/acpi.rs	2026-10-09 07:35:04
++++ b/src/arch/src/x86_64/acpi.rs	2026-10-12 21:50:21
+@@ -5,12 +5,14 @@
+ 
+ use acpi_tables::Aml;
+ use acpi_tables::aml::{
+-    Device, EISAName, IO, Interrupt, Memory32Fixed, Name, Path, ResourceTemplate, Scope,
++    AddressSpace, AddressSpaceCacheable, Device, EISAName, IO, Interrupt, Memory32Fixed, Name,
++    PackageBuilder, Path, ResourceTemplate, Scope, ZERO,
+ };
+ use acpi_tables::fadt::{FADTBuilder, Flags};
+ use acpi_tables::madt::{
+     EnabledStatus, IoApic, LocalInterruptController, MADT, ProcessorLocalApic,
+ };
++use acpi_tables::mcfg::MCFG;
+ use acpi_tables::rsdp::Rsdp;
+ use acpi_tables::sdt::Sdt;
+ use acpi_tables::xsdt::XSDT;
+@@ -30,12 +32,27 @@
+ /// IAPC_BOOT_ARCH bit 1: 8042 present on ports 0x60/0x64 (`ACPI_FADT_8042`).
+ const IAPC_BOOT_ARCH_8042: u16 = 1 << 1;
+ 
++#[derive(Clone, Copy, Debug, Eq, PartialEq)]
++pub struct PciFunctionInfo {
++    pub device: u8,
++    pub function: u8,
++    pub gsi: u32,
++}
++
++#[derive(Clone, Debug)]
++pub struct PciHostInfo {
++    pub ecam_base: u64,
++    pub bar_start: u64,
++    pub bar_size: u64,
++    pub functions: Vec<PciFunctionInfo>,
++}
++
+ /// Builds a 36-byte ACPI 2.0+ RSDP pointing at the given XSDT address.
+ fn build_rsdp(xsdt_addr: u64) -> Vec<u8> {
+     Rsdp::new(*b"LIBKRN", xsdt_addr).as_bytes().to_vec()
+ }
+ 
+-fn build_dsdt(virtio_mmio_devices: &[(u64, u32)]) -> Vec<u8> {
++fn build_dsdt(virtio_mmio_devices: &[(u64, u32)], pci_host: Option<&PciHostInfo>) -> Vec<u8> {
+     let mut aml_body = Vec::new();
+ 
+     // (io_base, irq, acpi_device_name) — PC/AT standard COM port assignments
+@@ -83,6 +100,45 @@
+         Device::new(Path::new(&name), vec![&hid, &uid, &crs]).to_aml_bytes(&mut aml_body);
+     }
+ 
++    if let Some(pci_host) = pci_host {
++        let hid = Name::new(Path::new("_HID"), &EISAName::new("PNP0A08"));
++        let cid = Name::new(Path::new("_CID"), &EISAName::new("PNP0A03"));
++        let seg = Name::new(Path::new("_SEG"), &0u32);
++        let bbn = Name::new(Path::new("_BBN"), &0u32);
++        let uid = Name::new(Path::new("_UID"), &0u32);
++        let buses = AddressSpace::new_bus_number(0u16, 0u16);
++        let memory = AddressSpace::new_memory(
++            AddressSpaceCacheable::NotCacheable,
++            true,
++            pci_host.bar_start,
++            pci_host.bar_start + pci_host.bar_size - 1,
++            None,
++        );
++        let crs = Name::new(
++            Path::new("_CRS"),
++            &ResourceTemplate::new(vec![&buses, &memory]),
++        );
++
++        let mut prt = PackageBuilder::new();
++        for function in &pci_host.functions {
++            let mut route = PackageBuilder::new();
++            let address = (u32::from(function.device) << 16) | u32::from(function.function);
++            let pin = 0u32;
++            let gsi = function.gsi;
++            route.add_element(&address);
++            route.add_element(&pin);
++            route.add_element(&ZERO);
++            route.add_element(&gsi);
++            prt.add_element(&route);
++        }
++        let prt_name = Name::new(Path::new("_PRT"), &prt);
++        Device::new(
++            Path::new("PCI0"),
++            vec![&hid, &cid, &seg, &bbn, &uid, &crs, &prt_name],
++        )
++        .to_aml_bytes(&mut aml_body);
++    }
++
+     let scope_bytes = Scope::raw(Path::new("\\_SB_"), aml_body);
+ 
+     let mut dsdt = Sdt::new(*b"DSDT", 36, 2, *b"LIBKRN", *b"KRUNDSDT", 1);
+@@ -143,6 +199,14 @@
+     bytes
+ }
+ 
++fn build_mcfg(pci_host: &PciHostInfo) -> Vec<u8> {
++    let mut mcfg = MCFG::new(*b"LIBKRN", *b"KRUNMCFG", 1);
++    mcfg.add_ecam(pci_host.ecam_base, 0, 0, 0);
++    let mut bytes = Vec::new();
++    mcfg.to_aml_bytes(&mut bytes);
++    bytes
++}
++
+ #[derive(Debug, Eq, PartialEq)]
+ pub enum Error {
+     /// The reserved ACPI window (RSDP_ADDR..HIMEM_START) is too small to
+@@ -156,22 +220,25 @@
+ 
+ pub type Result<T> = result::Result<T, Error>;
+ 
+-/// Builds and writes RSDP, XSDT, FADT, DSDT, and MADT into guest memory
++/// Builds and writes RSDP, XSDT, FADT, DSDT, MCFG (if PCI is enabled) and MADT into guest memory
+ /// starting at `RSDP_ADDR`.
+ pub fn setup_acpi(
+     mem: &GuestMemoryMmap,
+     num_cpus: u8,
+     virtio_mmio_devices: &[(u64, u32)],
++    pci_host: Option<&PciHostInfo>,
+ ) -> Result<()> {
+     if u32::from(num_cpus) > MAX_SUPPORTED_CPUS {
+         return Err(Error::TooManyCpus);
+     }
+ 
+-    let dsdt = build_dsdt(virtio_mmio_devices);
++    let dsdt = build_dsdt(virtio_mmio_devices, pci_host);
+     let madt = build_madt(num_cpus);
++    let mcfg = pci_host.map(build_mcfg);
+ 
+     const RSDP_SIZE: u64 = 36;
+-    let xsdt_size = 36 + 2 * 8; // fixed SDT header + 2 entries (FADT + MADT)
++    let xsdt_entries = 2 + if mcfg.is_some() { 1 } else { 0 };
++    let xsdt_size = 36 + xsdt_entries * 8;
+     let fadt_size_placeholder = build_fadt(0).len() as u64;
+ 
+     let rsdp_addr = RSDP_ADDR;
+@@ -179,16 +246,22 @@
+     let fadt_addr = xsdt_addr + xsdt_size as u64;
+     let dsdt_addr = fadt_addr + fadt_size_placeholder;
+     let madt_addr = dsdt_addr + dsdt.len() as u64;
++    let mcfg_addr = madt_addr + madt.len() as u64;
+ 
+     let fadt = build_fadt(dsdt_addr);
+-    let xsdt = build_xsdt(&[fadt_addr, madt_addr]);
++    let mut xsdt_entries = vec![fadt_addr, madt_addr];
++    if mcfg.is_some() {
++        xsdt_entries.push(mcfg_addr);
++    }
++    let xsdt = build_xsdt(&xsdt_entries);
+     let rsdp = build_rsdp(xsdt_addr);
+ 
+     let total_size = rsdp.len() as u64
+         + xsdt.len() as u64
+         + fadt.len() as u64
+         + dsdt.len() as u64
+-        + madt.len() as u64;
++        + madt.len() as u64
++        + mcfg.as_ref().map_or(0, |table| table.len() as u64);
+     if rsdp_addr + total_size > HIMEM_START
+         || !mem.check_range(
+             GuestAddress(rsdp_addr),
+@@ -209,6 +282,10 @@
+         .map_err(|_| Error::WriteFailed)?;
+     mem.write_slice(&madt, GuestAddress(madt_addr))
+         .map_err(|_| Error::WriteFailed)?;
++    if let Some(mcfg) = mcfg {
++        mem.write_slice(&mcfg, GuestAddress(mcfg_addr))
++            .map_err(|_| Error::WriteFailed)?;
++    }
+ 
+     Ok(())
+ }
+@@ -263,7 +340,7 @@
+     #[test]
+     fn dsdt_contains_device_nodes() {
+         let devices = vec![(0xd000_0000u64, 5u32), (0xd000_1000, 6)];
+-        let bytes = build_dsdt(&devices);
++        let bytes = build_dsdt(&devices, None);
+ 
+         assert_eq!(&bytes[..4], b"DSDT");
+ 
+@@ -278,7 +355,7 @@
+ 
+     #[test]
+     fn dsdt_empty_devices() {
+-        let bytes = build_dsdt(&[]);
++        let bytes = build_dsdt(&[], None);
+ 
+         assert_eq!(&bytes[..4], b"DSDT");
+         let sum: u8 = bytes.iter().fold(0u8, |a, &b| a.wrapping_add(b));
+@@ -306,6 +383,52 @@
+     }
+ 
+     #[test]
++    fn pci_dsdt_contains_root_bridge_and_interrupt_routes() {
++        let pci_host = PciHostInfo {
++            ecam_base: 0xe000_0000,
++            bar_start: 0xe010_0000,
++            bar_size: 0x1eb0_0000,
++            functions: vec![PciFunctionInfo {
++                device: 1,
++                function: 0,
++                gsi: 5,
++            }],
++        };
++        let bytes = build_dsdt(&[], Some(&pci_host));
++
++        assert!(bytes.windows(4).any(|part| part == b"PCI0"));
++        assert!(bytes.windows(4).any(|part| part == b"_PRT"));
++        assert_eq!(
++            bytes.iter().fold(0u8, |sum, byte| sum.wrapping_add(*byte)),
++            0
++        );
++    }
++
++    #[test]
++    fn mcfg_contains_bus_zero_ecam_and_valid_checksum() {
++        let pci_host = PciHostInfo {
++            ecam_base: 0xe000_0000,
++            bar_start: 0xe010_0000,
++            bar_size: 0x1eb0_0000,
++            functions: Vec::new(),
++        };
++        let bytes = build_mcfg(&pci_host);
++
++        assert_eq!(&bytes[..4], b"MCFG");
++        assert_eq!(
++            bytes.iter().fold(0u8, |sum, byte| sum.wrapping_add(*byte)),
++            0
++        );
++        assert_eq!(
++            u64::from_le_bytes(bytes[44..52].try_into().unwrap()),
++            pci_host.ecam_base
++        );
++        assert_eq!(u16::from_le_bytes(bytes[52..54].try_into().unwrap()), 0);
++        assert_eq!(bytes[54], 0);
++        assert_eq!(bytes[55], 0);
++    }
++
++    #[test]
+     fn fadt_has_hw_reduced_flag() {
+         let bytes = build_fadt(0x000e_1100);
+ 
+@@ -349,7 +472,7 @@
+         let window_size = (HIMEM_START - RSDP_ADDR) as usize;
+         let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(RSDP_ADDR), window_size)]).unwrap();
+ 
+-        setup_acpi(&mem, 4, &[]).unwrap();
++        setup_acpi(&mem, 4, &[], None).unwrap();
+ 
+         let rsdp: [u8; 8] = {
+             let mut buf = [0u8; 8];
+@@ -360,9 +483,41 @@
+     }
+ 
+     #[test]
++    fn setup_acpi_adds_mcfg_to_xsdt() {
++        let window_size = (HIMEM_START - RSDP_ADDR) as usize;
++        let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(RSDP_ADDR), window_size)]).unwrap();
++        let pci_host = PciHostInfo {
++            ecam_base: 0xe000_0000,
++            bar_start: 0xe010_0000,
++            bar_size: 0x1eb0_0000,
++            functions: Vec::new(),
++        };
++
++        setup_acpi(&mem, 1, &[], Some(&pci_host)).unwrap();
++
++        let mut rsdp = [0; 36];
++        mem.read_slice(&mut rsdp, GuestAddress(RSDP_ADDR)).unwrap();
++        let xsdt_addr = u64::from_le_bytes(rsdp[24..32].try_into().unwrap());
++        let mut xsdt_header = [0; 36];
++        mem.read_slice(&mut xsdt_header, GuestAddress(xsdt_addr))
++            .unwrap();
++        let xsdt_len = u32::from_le_bytes(xsdt_header[4..8].try_into().unwrap()) as usize;
++        assert_eq!((xsdt_len - 36) / 8, 3);
++
++        let mut entries = [0; 24];
++        mem.read_slice(&mut entries, GuestAddress(xsdt_addr + 36))
++            .unwrap();
++        let mcfg_addr = u64::from_le_bytes(entries[16..24].try_into().unwrap());
++        let mut signature = [0; 4];
++        mem.read_slice(&mut signature, GuestAddress(mcfg_addr))
++            .unwrap();
++        assert_eq!(&signature, b"MCFG");
++    }
++
++    #[test]
+     fn setup_acpi_fails_if_window_too_small() {
+         let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(RSDP_ADDR), 8)]).unwrap();
+-        assert!(setup_acpi(&mem, 4, &[]).is_err());
++        assert!(setup_acpi(&mem, 4, &[], None).is_err());
+     }
+ 
+     #[test]
+@@ -370,6 +525,6 @@
+         let window_size = (HIMEM_START - RSDP_ADDR) as usize;
+         let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(RSDP_ADDR), window_size)]).unwrap();
+ 
+-        assert_eq!(setup_acpi(&mem, 255, &[]), Err(Error::TooManyCpus));
++        assert_eq!(setup_acpi(&mem, 255, &[], None), Err(Error::TooManyCpus));
+     }
+ }
+diff -ruN a/src/arch/src/x86_64/layout.rs b/src/arch/src/x86_64/layout.rs
+--- a/src/arch/src/x86_64/layout.rs	2026-10-09 07:35:04
++++ b/src/arch/src/x86_64/layout.rs	2026-10-12 21:50:21
+@@ -80,3 +80,13 @@
+ pub const FIRST_ADDR_PAST_32BITS: u64 = 1 << 32;
+ pub const MEM_32BIT_GAP_SIZE: u64 = 768 << 20;
+ pub const MMIO_MEM_START: u64 = FIRST_ADDR_PAST_32BITS - MEM_32BIT_GAP_SIZE;
++
++/// Start of the PCI Express ECAM window for bus 0.
++pub const PCI_ECAM_START: u64 = 0xe000_0000;
++/// ECAM exposes 4 KiB of configuration space for each of 256 PCI buses.
++/// This VM exposes bus 0 only.
++pub const PCI_ECAM_SIZE: u64 = 1 << 20;
++/// Start of the PCI memory BAR allocation window.
++pub const PCI_BAR_START: u64 = PCI_ECAM_START + PCI_ECAM_SIZE;
++/// Exclusive end of the PCI memory BAR allocation window, below the IOAPIC.
++pub const PCI_BAR_END: u64 = 0xfec0_0000;
+diff -ruN a/src/arch/src/x86_64/mod.rs b/src/arch/src/x86_64/mod.rs
+--- a/src/arch/src/x86_64/mod.rs	2026-10-09 07:35:04
++++ b/src/arch/src/x86_64/mod.rs	2026-10-12 21:50:21
+@@ -6,6 +6,7 @@
+ // found in the THIRD-PARTY file.
+ 
+ mod acpi;
++pub use self::acpi::{PciFunctionInfo, PciHostInfo};
+ mod gdt;
+ /// Contains logic for setting up Advanced Programmable Interrupt Controller (local version).
+ pub mod interrupts;
+@@ -297,6 +298,7 @@
+ /// * `initrd` - Information about where the ramdisk image was loaded in the `guest_mem`.
+ /// * `num_cpus` - Number of virtual CPUs the guest will have.
+ /// * `pvh` - Whether to use the PVH boot protocol.
++/// * `pci_host` - The PCI host configuration if enabled.
+ #[allow(unused_variables, clippy::too_many_arguments)]
+ pub fn configure_system(
+     guest_mem: &GuestMemoryMmap,
+@@ -308,9 +310,11 @@
+     pvh: bool,
+     acpi_enabled: bool,
+     virtio_mmio_devices: &[(u64, u32)],
++    pci_host: Option<&PciHostInfo>,
+ ) -> super::Result<()> {
+     if acpi_enabled {
+-        acpi::setup_acpi(guest_mem, num_cpus, virtio_mmio_devices).map_err(Error::AcpiSetup)?;
++        acpi::setup_acpi(guest_mem, num_cpus, virtio_mmio_devices, pci_host)
++            .map_err(Error::AcpiSetup)?;
+     } else {
+         // Note that this puts the mptable at the last 1k of Linux's 640k base RAM
+         #[cfg(not(feature = "tee"))]
+@@ -633,8 +637,18 @@
+         let no_vcpus = 4;
+         let gm = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x10000)]).unwrap();
+         let info = ArchMemoryInfo::default();
+-        let config_err =
+-            configure_system(&gm, &info, GuestAddress(0), 0, &None, 1, false, false, &[]);
++        let config_err = configure_system(
++            &gm,
++            &info,
++            GuestAddress(0),
++            0,
++            &None,
++            1,
++            false,
++            false,
++            &[],
++            None,
++        );
+         assert!(config_err.is_err());
+         #[cfg(not(feature = "tee"))]
+         assert_eq!(
+@@ -657,6 +671,7 @@
+             false,
+             false,
+             &[],
++            None,
+         )
+         .unwrap();
+ 
+@@ -675,6 +690,7 @@
+             false,
+             false,
+             &[],
++            None,
+         )
+         .unwrap();
+ 
+@@ -693,6 +709,7 @@
+             false,
+             false,
+             &[],
++            None,
+         )
+         .unwrap();
+     }
+diff -ruN a/src/devices/src/lib.rs b/src/devices/src/lib.rs
+--- a/src/devices/src/lib.rs	2026-10-09 07:35:04
++++ b/src/devices/src/lib.rs	2026-10-12 21:50:21
+@@ -18,6 +18,7 @@
+ #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+ pub mod fdt;
+ pub mod legacy;
++pub mod pci;
+ pub mod virtio;
+ 
+ pub use self::bus::{Bus, BusDevice, Error as BusError};
+diff -ruN a/src/devices/src/pci.rs b/src/devices/src/pci.rs
+--- a/src/devices/src/pci.rs	1969-12-31 18:00:00
++++ b/src/devices/src/pci.rs	2026-10-12 21:50:21
+@@ -0,0 +1,504 @@
++// SPDX-License-Identifier: Apache-2.0
++
++//! PCI configuration and BAR access routing.
++
++use std::collections::BTreeMap;
++use std::fmt::{Display, Formatter};
++use std::io;
++use std::sync::{Arc, Mutex};
++
++use crate::bus::BusDevice;
++
++pub const PCI_CONVENTIONAL_CONFIG_SPACE_SIZE: usize = 256;
++pub const PCI_EXTENDED_CONFIG_SPACE_SIZE: u64 = 1 << 12;
++pub(crate) const PCI_UNIMPLEMENTED_READ_BYTE: u8 = u8::MAX;
++
++pub const CONFIG_MECHANISM_1_ADDRESS: u64 = 0xcf8;
++pub const CONFIG_MECHANISM_1_SIZE: u64 = 8;
++
++const CONFIG_ADDRESS_ENABLE_BIT: u32 = 1 << 31;
++const CONFIG_ADDRESS_BUS_SHIFT: u32 = 16;
++const CONFIG_ADDRESS_DEVICE_SHIFT: u32 = 11;
++const CONFIG_ADDRESS_FUNCTION_SHIFT: u32 = 8;
++const CONFIG_ADDRESS_REGISTER_MASK: u32 = 0xfc;
++const PCI_DEVICE_NUMBER_BITS: u32 = 5;
++const PCI_FUNCTION_NUMBER_BITS: u32 = 3;
++const PCI_DEVICE_NUMBER_MASK: u32 = (1 << PCI_DEVICE_NUMBER_BITS) - 1;
++const PCI_FUNCTION_NUMBER_MASK: u32 = (1 << PCI_FUNCTION_NUMBER_BITS) - 1;
++
++const CONFIG_MECHANISM_1_ADDRESS_PORT_SIZE: u64 = std::mem::size_of::<u32>() as u64;
++pub(crate) const CONFIG_MECHANISM_1_DATA_PORT_OFFSET: u64 = CONFIG_MECHANISM_1_ADDRESS_PORT_SIZE;
++#[cfg(test)]
++pub(crate) const CONFIG_MECHANISM_1_ADDRESS_PORT_OFFSET: u64 = 0;
++
++const ECAM_BUS_SHIFT: u32 = 20;
++const ECAM_DEVICE_SHIFT: u32 = 15;
++const ECAM_FUNCTION_SHIFT: u32 = 12;
++const ECAM_REGISTER_OFFSET_MASK: u64 = PCI_EXTENDED_CONFIG_SPACE_SIZE - 1;
++const PCI_FUNCTIONS_PER_BUS: u64 = (1 << PCI_DEVICE_NUMBER_BITS) * (1 << PCI_FUNCTION_NUMBER_BITS);
++pub const ECAM_SIZE_BUS0: u64 = PCI_EXTENDED_CONFIG_SPACE_SIZE * PCI_FUNCTIONS_PER_BUS;
++
++pub type SharedPciRoot = Arc<Mutex<PciRoot>>;
++
++#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
++pub struct PciAddress {
++    pub bus: u8,
++    pub device: u8,
++    pub function: u8,
++}
++
++impl PciAddress {
++    pub const fn new(bus: u8, device: u8, function: u8) -> Self {
++        Self {
++            bus,
++            device,
++            function,
++        }
++    }
++
++    #[cfg(test)]
++    pub(crate) const fn config_mechanism_1_selector(self, register_offset: u16) -> u32 {
++        CONFIG_ADDRESS_ENABLE_BIT
++            | ((self.bus as u32) << CONFIG_ADDRESS_BUS_SHIFT)
++            | ((self.device as u32) << CONFIG_ADDRESS_DEVICE_SHIFT)
++            | ((self.function as u32) << CONFIG_ADDRESS_FUNCTION_SHIFT)
++            | ((register_offset as u32) & CONFIG_ADDRESS_REGISTER_MASK)
++    }
++
++    #[cfg(test)]
++    pub(crate) const fn ecam_offset(self, register_offset: u16) -> u64 {
++        ((self.bus as u64) << ECAM_BUS_SHIFT)
++            | ((self.device as u64) << ECAM_DEVICE_SHIFT)
++            | ((self.function as u64) << ECAM_FUNCTION_SHIFT)
++            | ((register_offset as u64) & ECAM_REGISTER_OFFSET_MASK)
++    }
++}
++
++pub trait PciFunction: Send {
++    fn read_config(&mut self, offset: u16, data: &mut [u8]);
++    fn write_config(&mut self, offset: u16, data: &[u8]);
++    fn read_bar(&mut self, address: u64, data: &mut [u8]) -> PciBarAccess;
++    fn write_bar(&mut self, address: u64, data: &[u8]) -> PciBarAccess;
++}
++
++/// Whether a PCI function claimed an access to its BAR window.
++#[derive(Clone, Copy, Debug, Eq, PartialEq)]
++pub enum PciBarAccess {
++    /// The function consumed the access; device semantics may still ignore a write.
++    Handled,
++    /// The function does not decode this address, so the root may try another function.
++    Unhandled,
++}
++
++pub trait PciIntxLine: Send + Sync {
++    fn set_level(&self, asserted: bool) -> io::Result<()>;
++}
++
++#[derive(Debug, Eq, PartialEq)]
++pub enum PciRootError {
++    DuplicateFunction(PciAddress),
++}
++
++impl Display for PciRootError {
++    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
++        match self {
++            Self::DuplicateFunction(address) => write!(
++                f,
++                "PCI function {:02x}:{:02x}.{} is already registered",
++                address.bus, address.device, address.function
++            ),
++        }
++    }
++}
++
++impl std::error::Error for PciRootError {}
++
++#[derive(Default)]
++pub struct PciRoot {
++    functions: BTreeMap<PciAddress, Arc<Mutex<dyn PciFunction>>>,
++}
++
++impl PciRoot {
++    pub fn new() -> Self {
++        Self::default()
++    }
++
++    pub fn shared() -> SharedPciRoot {
++        Arc::new(Mutex::new(Self::new()))
++    }
++
++    pub fn insert(
++        &mut self,
++        address: PciAddress,
++        function: Arc<Mutex<dyn PciFunction>>,
++    ) -> Result<(), PciRootError> {
++        if self.functions.contains_key(&address) {
++            return Err(PciRootError::DuplicateFunction(address));
++        }
++        self.functions.insert(address, function);
++        Ok(())
++    }
++
++    fn read_config(&mut self, address: PciAddress, offset: u16, data: &mut [u8]) {
++        match self.functions.get(&address) {
++            Some(function) => function
++                .lock()
++                .expect("Poisoned PCI function lock")
++                .read_config(offset, data),
++            None => data.fill(PCI_UNIMPLEMENTED_READ_BYTE),
++        }
++    }
++
++    fn write_config(&mut self, address: PciAddress, offset: u16, data: &[u8]) {
++        if let Some(function) = self.functions.get(&address) {
++            function
++                .lock()
++                .expect("Poisoned PCI function lock")
++                .write_config(offset, data);
++        }
++    }
++
++    fn read_bar(&mut self, address: u64, data: &mut [u8]) {
++        for function in self.functions.values() {
++            if function
++                .lock()
++                .expect("Poisoned PCI function lock")
++                .read_bar(address, data)
++                == PciBarAccess::Handled
++            {
++                return;
++            }
++        }
++        data.fill(PCI_UNIMPLEMENTED_READ_BYTE);
++    }
++
++    fn write_bar(&mut self, address: u64, data: &[u8]) {
++        for function in self.functions.values() {
++            if function
++                .lock()
++                .expect("Poisoned PCI function lock")
++                .write_bar(address, data)
++                == PciBarAccess::Handled
++            {
++                return;
++            }
++        }
++    }
++}
++
++pub struct ConfigMechanism1 {
++    root: SharedPciRoot,
++    address: u32,
++}
++
++impl ConfigMechanism1 {
++    pub fn new(root: SharedPciRoot) -> Self {
++        Self { root, address: 0 }
++    }
++
++    fn config_address(&self, data_offset: u64) -> Option<(PciAddress, u16)> {
++        if self.address & CONFIG_ADDRESS_ENABLE_BIT == 0 {
++            return None;
++        }
++
++        Some((
++            PciAddress::new(
++                (self.address >> CONFIG_ADDRESS_BUS_SHIFT) as u8,
++                ((self.address >> CONFIG_ADDRESS_DEVICE_SHIFT) & PCI_DEVICE_NUMBER_MASK) as u8,
++                ((self.address >> CONFIG_ADDRESS_FUNCTION_SHIFT) & PCI_FUNCTION_NUMBER_MASK) as u8,
++            ),
++            ((self.address & CONFIG_ADDRESS_REGISTER_MASK) + data_offset as u32) as u16,
++        ))
++    }
++}
++
++impl BusDevice for ConfigMechanism1 {
++    fn read(&mut self, _vcpuid: u64, offset: u64, data: &mut [u8]) {
++        if offset + data.len() as u64 > CONFIG_MECHANISM_1_SIZE {
++            return;
++        }
++
++        if offset < CONFIG_MECHANISM_1_ADDRESS_PORT_SIZE {
++            if offset + data.len() as u64 > CONFIG_MECHANISM_1_ADDRESS_PORT_SIZE {
++                return;
++            }
++            let address = self.address.to_le_bytes();
++            let start = offset as usize;
++            let end = start + data.len();
++            let Some(source) = address.get(start..end) else {
++                return;
++            };
++            data.copy_from_slice(source);
++            return;
++        }
++
++        let Some((address, config_offset)) =
++            self.config_address(offset - CONFIG_MECHANISM_1_DATA_PORT_OFFSET)
++        else {
++            data.fill(PCI_UNIMPLEMENTED_READ_BYTE);
++            return;
++        };
++        self.root
++            .lock()
++            .expect("Poisoned PCI root lock")
++            .read_config(address, config_offset, data);
++    }
++
++    fn write(&mut self, _vcpuid: u64, offset: u64, data: &[u8]) {
++        if offset + data.len() as u64 > CONFIG_MECHANISM_1_SIZE {
++            return;
++        }
++
++        if offset < CONFIG_MECHANISM_1_ADDRESS_PORT_SIZE {
++            if offset + data.len() as u64 > CONFIG_MECHANISM_1_ADDRESS_PORT_SIZE {
++                return;
++            }
++            let mut address = self.address.to_le_bytes();
++            let start = offset as usize;
++            let end = start + data.len();
++            let Some(destination) = address.get_mut(start..end) else {
++                return;
++            };
++            destination.copy_from_slice(data);
++            self.address = u32::from_le_bytes(address);
++            return;
++        }
++
++        let Some((address, config_offset)) =
++            self.config_address(offset - CONFIG_MECHANISM_1_DATA_PORT_OFFSET)
++        else {
++            return;
++        };
++        self.root
++            .lock()
++            .expect("Poisoned PCI root lock")
++            .write_config(address, config_offset, data);
++    }
++}
++
++pub struct Ecam {
++    root: SharedPciRoot,
++}
++
++impl Ecam {
++    pub fn new(root: SharedPciRoot) -> Self {
++        Self { root }
++    }
++
++    fn decode(offset: u64) -> PciAddress {
++        PciAddress::new(
++            (offset >> ECAM_BUS_SHIFT) as u8,
++            ((offset >> ECAM_DEVICE_SHIFT) & u64::from(PCI_DEVICE_NUMBER_MASK)) as u8,
++            ((offset >> ECAM_FUNCTION_SHIFT) & u64::from(PCI_FUNCTION_NUMBER_MASK)) as u8,
++        )
++    }
++}
++
++impl BusDevice for Ecam {
++    fn read(&mut self, _vcpuid: u64, offset: u64, data: &mut [u8]) {
++        let address = Self::decode(offset);
++        if address.bus != 0 {
++            data.fill(PCI_UNIMPLEMENTED_READ_BYTE);
++            return;
++        }
++
++        self.root
++            .lock()
++            .expect("Poisoned PCI root lock")
++            .read_config(address, (offset & ECAM_REGISTER_OFFSET_MASK) as u16, data);
++    }
++
++    fn write(&mut self, _vcpuid: u64, offset: u64, data: &[u8]) {
++        let address = Self::decode(offset);
++        if address.bus != 0 {
++            return;
++        }
++
++        self.root
++            .lock()
++            .expect("Poisoned PCI root lock")
++            .write_config(address, (offset & ECAM_REGISTER_OFFSET_MASK) as u16, data);
++    }
++}
++
++pub struct BarWindow {
++    root: SharedPciRoot,
++    base: u64,
++}
++
++impl BarWindow {
++    pub fn new(root: SharedPciRoot, base: u64) -> Self {
++        Self { root, base }
++    }
++}
++
++impl BusDevice for BarWindow {
++    fn read(&mut self, _vcpuid: u64, offset: u64, data: &mut [u8]) {
++        self.root
++            .lock()
++            .expect("Poisoned PCI root lock")
++            .read_bar(self.base + offset, data);
++    }
++
++    fn write(&mut self, _vcpuid: u64, offset: u64, data: &[u8]) {
++        self.root
++            .lock()
++            .expect("Poisoned PCI root lock")
++            .write_bar(self.base + offset, data);
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    const TEST_PCI_ADDRESS: PciAddress = PciAddress {
++        bus: 0,
++        device: 1,
++        function: 0,
++    };
++    const ABSENT_PCI_ADDRESS: PciAddress = PciAddress {
++        bus: 0,
++        device: 0,
++        function: 0,
++    };
++    const TEST_BAR_BASE: u64 = 0x1000;
++    const TEST_BAR_ACCESS_OFFSET: u64 = 4;
++    const TEST_REGISTER_OFFSET: u16 = 0;
++
++    struct DummyFunction {
++        config: [u8; PCI_CONVENTIONAL_CONFIG_SPACE_SIZE],
++        bar_base: u64,
++        bar: [u8; 16],
++    }
++
++    impl DummyFunction {
++        fn new() -> Self {
++            Self {
++                config: [0; PCI_CONVENTIONAL_CONFIG_SPACE_SIZE],
++                bar_base: TEST_BAR_BASE,
++                bar: [0; 16],
++            }
++        }
++    }
++
++    impl PciFunction for DummyFunction {
++        fn read_config(&mut self, offset: u16, data: &mut [u8]) {
++            let start = usize::from(offset);
++            let end = start + data.len();
++            let source = self
++                .config
++                .get(start..end)
++                .expect("test PCI config read is in bounds");
++            data.copy_from_slice(source);
++        }
++
++        fn write_config(&mut self, offset: u16, data: &[u8]) {
++            let start = usize::from(offset);
++            let end = start + data.len();
++            let destination = self
++                .config
++                .get_mut(start..end)
++                .expect("test PCI config write is in bounds");
++            destination.copy_from_slice(data);
++        }
++
++        fn read_bar(&mut self, address: u64, data: &mut [u8]) -> PciBarAccess {
++            let Some(offset) = address.checked_sub(self.bar_base) else {
++                return PciBarAccess::Unhandled;
++            };
++            let start = offset as usize;
++            let Some(end) = start.checked_add(data.len()) else {
++                return PciBarAccess::Unhandled;
++            };
++            let Some(source) = self.bar.get(start..end) else {
++                return PciBarAccess::Unhandled;
++            };
++            data.copy_from_slice(source);
++            PciBarAccess::Handled
++        }
++
++        fn write_bar(&mut self, address: u64, data: &[u8]) -> PciBarAccess {
++            let Some(offset) = address.checked_sub(self.bar_base) else {
++                return PciBarAccess::Unhandled;
++            };
++            let start = offset as usize;
++            let Some(end) = start.checked_add(data.len()) else {
++                return PciBarAccess::Unhandled;
++            };
++            let Some(destination) = self.bar.get_mut(start..end) else {
++                return PciBarAccess::Unhandled;
++            };
++            destination.copy_from_slice(data);
++            PciBarAccess::Handled
++        }
++    }
++
++    fn test_root() -> SharedPciRoot {
++        let root = PciRoot::shared();
++        root.lock()
++            .unwrap()
++            .insert(TEST_PCI_ADDRESS, Arc::new(Mutex::new(DummyFunction::new())))
++            .unwrap();
++        root
++    }
++
++    #[test]
++    fn config_mechanism_1_reads_and_writes_config_space() {
++        let root = test_root();
++        let mut config = ConfigMechanism1::new(root);
++        let selector = TEST_PCI_ADDRESS.config_mechanism_1_selector(TEST_REGISTER_OFFSET);
++        config.write(
++            0,
++            CONFIG_MECHANISM_1_ADDRESS_PORT_OFFSET,
++            &selector.to_le_bytes(),
++        );
++        config.write(0, CONFIG_MECHANISM_1_DATA_PORT_OFFSET, &[0x34, 0x12]);
++
++        let mut value = [0; 2];
++        config.read(0, CONFIG_MECHANISM_1_DATA_PORT_OFFSET, &mut value);
++        assert_eq!(value, [0x34, 0x12]);
++    }
++
++    #[test]
++    fn ecam_decodes_bus_device_function_and_register() {
++        let root = test_root();
++        let mut ecam = Ecam::new(root);
++        let offset = TEST_PCI_ADDRESS.ecam_offset(TEST_REGISTER_OFFSET);
++        ecam.write(0, offset, &[0xab]);
++
++        let mut value = [0; 1];
++        ecam.read(0, offset, &mut value);
++        assert_eq!(value, [0xab]);
++    }
++
++    #[test]
++    fn bar_window_routes_accesses_to_current_function_bar() {
++        let root = test_root();
++        let mut bars = BarWindow::new(root, TEST_BAR_BASE);
++        bars.write(0, TEST_BAR_ACCESS_OFFSET, &[1, 2, 3, 4]);
++
++        let mut value = [0; 4];
++        bars.read(0, TEST_BAR_ACCESS_OFFSET, &mut value);
++        assert_eq!(value, [1, 2, 3, 4]);
++    }
++
++    #[test]
++    fn config_mechanism_1_returns_all_ones_for_missing_functions() {
++        let root = PciRoot::shared();
++        let mut config = ConfigMechanism1::new(root);
++        let absent_function = ABSENT_PCI_ADDRESS.config_mechanism_1_selector(TEST_REGISTER_OFFSET);
++        config.write(
++            0,
++            CONFIG_MECHANISM_1_ADDRESS_PORT_OFFSET,
++            &absent_function.to_le_bytes(),
++        );
++
++        let mut value = [0; 4];
++        config.read(0, CONFIG_MECHANISM_1_DATA_PORT_OFFSET, &mut value);
++        assert_eq!(
++            value,
++            [PCI_UNIMPLEMENTED_READ_BYTE; std::mem::size_of::<u32>()]
++        );
++    }
++}
+diff -ruN a/src/devices/src/virtio/balloon/device.rs b/src/devices/src/virtio/balloon/device.rs
+--- a/src/devices/src/virtio/balloon/device.rs	2026-10-12 21:49:57
++++ b/src/devices/src/virtio/balloon/device.rs	2026-10-12 21:50:21
+@@ -2,6 +2,7 @@
+ #[cfg(not(target_os = "windows"))]
+ use std::convert::TryInto;
+ use std::io::Write;
++use std::mem::size_of;
+ 
+ use utils::eventfd::EventFd;
+ use vm_memory::{ByteValued, GuestMemoryBackend, GuestMemoryMmap};
+@@ -178,6 +179,10 @@
+ 
+     fn queue_config(&self) -> &[QueueConfig] {
+         &defs::QUEUE_CONFIG
++    }
++
++    fn config_len(&self) -> Option<u32> {
++        Some(size_of::<VirtioBalloonConfig>() as u32)
+     }
+ 
+     fn read_config(&self, offset: u64, mut data: &mut [u8]) {
+diff -ruN a/src/devices/src/virtio/block/device.rs b/src/devices/src/virtio/block/device.rs
+--- a/src/devices/src/virtio/block/device.rs	2026-10-09 07:35:04
++++ b/src/devices/src/virtio/block/device.rs	2026-10-12 21:50:21
+@@ -9,6 +9,7 @@
+ use std::convert::From;
+ use std::fs::{File, OpenOptions};
+ use std::io::{self, Write};
++use std::mem::size_of;
+ #[cfg(target_os = "linux")]
+ use std::os::linux::fs::MetadataExt;
+ #[cfg(target_os = "macos")]
+@@ -392,6 +393,10 @@
+ 
+     fn queue_config(&self) -> &[QueueConfig] {
+         &QUEUE_CONFIG
++    }
++
++    fn config_len(&self) -> Option<u32> {
++        Some(size_of::<VirtioBlkConfig>() as u32)
+     }
+ 
+     fn avail_features(&self) -> u64 {
+diff -ruN a/src/devices/src/virtio/console/device.rs b/src/devices/src/virtio/console/device.rs
+--- a/src/devices/src/virtio/console/device.rs	2026-10-09 07:35:04
++++ b/src/devices/src/virtio/console/device.rs	2026-10-12 21:50:21
+@@ -308,6 +308,10 @@
+         &self.queue_config
+     }
+ 
++    fn config_len(&self) -> Option<u32> {
++        Some(size_of::<VirtioConsoleConfig>() as u32)
++    }
++
+     fn read_config(&self, offset: u64, mut data: &mut [u8]) {
+         let config_slice = self.config.as_slice();
+         let config_len = config_slice.len() as u64;
+diff -ruN a/src/devices/src/virtio/device.rs b/src/devices/src/virtio/device.rs
+--- a/src/devices/src/virtio/device.rs	2026-10-09 07:35:04
++++ b/src/devices/src/virtio/device.rs	2026-10-12 21:50:21
+@@ -5,11 +5,14 @@
+ // Use of this source code is governed by a BSD-style license that can be
+ // found in the THIRD-PARTY file.
+ 
+-use std::sync::Arc;
++use std::io;
++use std::sync::atomic::AtomicBool;
++use std::sync::{Arc, Mutex, MutexGuard};
+ 
+-use super::{ActivateResult, InterruptTransport, Queue};
++use super::{ActivateResult, Queue, device_status};
+ use crate::virtio::AsAny;
+-use utils::eventfd::EventFd;
++use utils::eventfd::{EFD_NONBLOCK, EventFd};
++use virtio_bindings::virtio_ring::VIRTIO_RING_F_EVENT_IDX;
+ use vm_memory::GuestMemoryMmap;
+ 
+ /// Configuration for a single virtqueue.
+@@ -40,6 +43,244 @@
+     }
+ }
+ 
++#[derive(Clone, Copy)]
++pub(crate) enum InterruptType {
++    UsedQueue,
++    ConfigChange,
++}
++
++pub(crate) trait InterruptHandler: Send + Sync {
++    fn try_signal(&self, interrupt: InterruptType) -> Result<(), crate::Error>;
++}
++
++#[derive(Clone)]
++pub struct InterruptTransport(Arc<dyn InterruptHandler>);
++
++impl InterruptTransport {
++    pub(crate) fn from_handler(handler: Arc<dyn InterruptHandler>) -> Self {
++        Self(handler)
++    }
++
++    pub fn try_signal_used_queue(&self) -> Result<(), crate::Error> {
++        self.0.try_signal(InterruptType::UsedQueue)
++    }
++
++    pub fn try_signal_config_change(&self) -> Result<(), crate::Error> {
++        self.0.try_signal(InterruptType::ConfigChange)
++    }
++
++    pub fn signal_used_queue(&self) {
++        if let Err(e) = self.try_signal_used_queue() {
++            warn!("Failed to signal used queue: {e:?}");
++        }
++    }
++
++    pub fn signal_config_change(&self) {
++        if let Err(e) = self.try_signal_config_change() {
++            warn!("Failed to signal config change: {e:?}");
++        }
++    }
++}
++
++pub(crate) struct VirtioTransportState {
++    pub(crate) device: Arc<Mutex<dyn VirtioDevice>>,
++    pub(crate) features_select: u32,
++    pub(crate) acked_features_select: u32,
++    pub(crate) queue_select: u32,
++    pub(crate) device_status: u32,
++    pub(crate) config_generation: u32,
++    mem: GuestMemoryMmap,
++    pub(crate) queues: Option<Vec<Queue>>,
++    queue_evts: Vec<Arc<EventFd>>,
++    pub(crate) queue_config: Vec<QueueConfig>,
++    bus_master_gate: Option<Arc<AtomicBool>>,
++}
++
++impl VirtioTransportState {
++    pub(crate) fn new(
++        mem: GuestMemoryMmap,
++        device: Arc<Mutex<dyn VirtioDevice>>,
++    ) -> io::Result<Self> {
++        let queue_config = device
++            .try_lock()
++            .expect("Mutex of VirtioDevice should not be locked when creating transport state")
++            .queue_config()
++            .to_vec();
++        let queues = Self::create_queues(&queue_config);
++        let queue_evts = Self::create_queue_evts(queue_config.len())?;
++
++        Ok(Self {
++            device,
++            features_select: 0,
++            acked_features_select: 0,
++            queue_select: 0,
++            device_status: device_status::INIT,
++            config_generation: 0,
++            mem,
++            queues: Some(queues),
++            queue_evts,
++            queue_config,
++            bus_master_gate: None,
++        })
++    }
++
++    fn create_queues(queue_config: &[QueueConfig]) -> Vec<Queue> {
++        queue_config
++            .iter()
++            .map(|config| Queue::new(config.size))
++            .collect()
++    }
++
++    fn create_queue_evts(count: usize) -> io::Result<Vec<Arc<EventFd>>> {
++        (0..count)
++            .map(|_| EventFd::new(EFD_NONBLOCK).map(Arc::new))
++            .collect()
++    }
++
++    pub(crate) fn locked_device(&self) -> MutexGuard<'_, dyn VirtioDevice + 'static> {
++        self.device.lock().expect("Poisoned device lock")
++    }
++
++    pub(crate) fn device(&self) -> Arc<Mutex<dyn VirtioDevice>> {
++        self.device.clone()
++    }
++
++    pub(crate) fn queue_evts(&self) -> &[Arc<EventFd>] {
++        &self.queue_evts
++    }
++
++    pub(crate) fn set_bus_master_gate(&mut self, gate: Arc<AtomicBool>) {
++        self.bus_master_gate = Some(gate.clone());
++        if let Some(queues) = &mut self.queues {
++            for queue in queues {
++                queue.set_bus_master_gate(gate.clone());
++            }
++        }
++    }
++
++    pub(crate) fn queue_max_size(&self, queue_select: u32) -> u16 {
++        self.queue_config
++            .get(queue_select as usize)
++            .map_or(0, |config| config.size)
++    }
++
++    pub(crate) fn with_queue<U, F>(&self, queue_select: u32, default: U, f: F) -> U
++    where
++        F: FnOnce(&Queue) -> U,
++    {
++        self.queues
++            .as_ref()
++            .and_then(|queues| queues.get(queue_select as usize))
++            .map_or(default, f)
++    }
++
++    pub(crate) fn with_queue_mut<F>(&mut self, queue_select: u32, f: F) -> bool
++    where
++        F: FnOnce(&mut Queue),
++    {
++        match self
++            .queues
++            .as_mut()
++            .and_then(|queues| queues.get_mut(queue_select as usize))
++        {
++            Some(queue) => {
++                f(queue);
++                true
++            }
++            None => false,
++        }
++    }
++
++    pub(crate) fn reset(&mut self) {
++        self.features_select = 0;
++        self.acked_features_select = 0;
++        self.queue_select = 0;
++        self.device_status = device_status::INIT;
++        // Keep config_generation monotonic and reuse queue eventfds across reset.
++        let mut queues = Self::create_queues(&self.queue_config);
++        if let Some(gate) = &self.bus_master_gate {
++            for queue in &mut queues {
++                queue.set_bus_master_gate(gate.clone());
++            }
++        }
++        self.queues = Some(queues);
++    }
++
++    pub(crate) fn activate(&mut self, interrupt: InterruptTransport) {
++        let Some(queues) = self.queues.take() else {
++            return;
++        };
++
++        let mut device_queues: Vec<DeviceQueue> = queues
++            .into_iter()
++            .zip(self.queue_evts.iter().cloned())
++            .map(|(queue, event)| DeviceQueue::new(queue, event))
++            .collect();
++
++        let mut locked_device = self.locked_device();
++        let event_idx_enabled =
++            (locked_device.acked_features() & (1 << VIRTIO_RING_F_EVENT_IDX)) != 0;
++        for device_queue in &mut device_queues {
++            device_queue.queue.set_event_idx(event_idx_enabled);
++        }
++        locked_device
++            .activate(self.mem.clone(), interrupt, device_queues)
++            .expect("Failed to activate device");
++    }
++
++    pub(crate) fn set_device_status(
++        &mut self,
++        status: u32,
++        interrupt: InterruptTransport,
++        allow_activation: bool,
++    ) -> bool {
++        use device_status::*;
++
++        match !self.device_status & status {
++            ACKNOWLEDGE if self.device_status == INIT => {
++                self.device_status = status;
++            }
++            DRIVER if self.device_status == ACKNOWLEDGE => {
++                self.device_status = status;
++            }
++            FEATURES_OK if self.device_status == (ACKNOWLEDGE | DRIVER) => {
++                self.device_status = status;
++            }
++            DRIVER_OK if self.device_status == (ACKNOWLEDGE | DRIVER | FEATURES_OK) => {
++                self.device_status = status;
++                if allow_activation && !self.locked_device().is_activated() {
++                    self.activate(interrupt);
++                }
++            }
++            _ if status & FAILED != 0 => {
++                self.device_status |= FAILED;
++            }
++            _ if status == 0 => {
++                let device_activated = self.locked_device().is_activated();
++                if device_activated {
++                    debug!("reset device while it's still in active state");
++                }
++                if device_activated && !self.locked_device().reset() {
++                    self.device_status |= FAILED;
++                }
++
++                if self.device_status & FAILED == 0 {
++                    self.reset();
++                    return true;
++                }
++            }
++            _ => {
++                warn!(
++                    "invalid virtio driver status transition: 0x{:x} -> 0x{:x}",
++                    self.device_status, status
++                );
++            }
++        }
++
++        false
++    }
++}
++
+ /// Enum that indicates if a VirtioDevice is inactive or has been activated
+ /// and memory attached to it.
+ pub enum DeviceState {
+@@ -98,6 +339,12 @@
+     /// Returns the queue configuration for this device.
+     /// The transport uses this to construct the queues during initialization and after reset.
+     fn queue_config(&self) -> &[QueueConfig];
++
++    /// Returns the length of the device-specific configuration space when known.
++    /// Transports that expose device config through a capability require a length.
++    fn config_len(&self) -> Option<u32> {
++        None
++    }
+ 
+     /// The set of feature bits shifted by `page * 32`.
+     fn avail_features_by_page(&self, page: u32) -> u32 {
+diff -ruN a/src/devices/src/virtio/fs/device.rs b/src/devices/src/virtio/fs/device.rs
+--- a/src/devices/src/virtio/fs/device.rs	2026-10-09 07:35:04
++++ b/src/devices/src/virtio/fs/device.rs	2026-10-12 21:50:21
+@@ -2,6 +2,7 @@
+ use crossbeam_channel::Sender;
+ use std::cmp;
+ use std::io::Write;
++use std::mem::size_of;
+ use std::sync::Arc;
+ use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
+ use std::thread::JoinHandle;
+@@ -171,6 +172,10 @@
+ 
+     fn queue_config(&self) -> &[QueueConfig] {
+         &defs::QUEUE_CONFIG
++    }
++
++    fn config_len(&self) -> Option<u32> {
++        Some(size_of::<VirtioFsConfig>() as u32)
+     }
+ 
+     fn read_config(&self, offset: u64, mut data: &mut [u8]) {
+diff -ruN a/src/devices/src/virtio/gpu/device.rs b/src/devices/src/virtio/gpu/device.rs
+--- a/src/devices/src/virtio/gpu/device.rs	2026-10-12 21:49:57
++++ b/src/devices/src/virtio/gpu/device.rs	2026-10-12 21:50:21
+@@ -3,6 +3,7 @@
+ use std::os::fd::{AsRawFd, BorrowedFd};
+ 
+ use nix::fcntl::{FcntlArg, OFlag, fcntl};
++use std::mem::size_of;
+ 
+ #[cfg(target_os = "macos")]
+ use crossbeam_channel::Sender;
+@@ -172,6 +173,10 @@
+ 
+     fn queue_config(&self) -> &[QueueConfig] {
+         &QUEUE_CONFIG
++    }
++
++    fn config_len(&self) -> Option<u32> {
++        Some(size_of::<virtio_gpu_config>() as u32)
+     }
+ 
+     fn read_config(&self, offset: u64, mut data: &mut [u8]) {
+diff -ruN a/src/devices/src/virtio/input/device.rs b/src/devices/src/virtio/input/device.rs
+--- a/src/devices/src/virtio/input/device.rs	2026-10-09 07:35:04
++++ b/src/devices/src/virtio/input/device.rs	2026-10-12 21:50:21
+@@ -1,5 +1,6 @@
+ use std::cmp;
+ use std::io::Write;
++use std::mem::size_of;
+ use std::thread::JoinHandle;
+ 
+ use log::{debug, error};
+@@ -183,6 +184,10 @@
+ 
+     fn queue_config(&self) -> &[QueueConfig] {
+         &defs::QUEUE_CONFIG
++    }
++
++    fn config_len(&self) -> Option<u32> {
++        Some(size_of::<InputConfigRepr>() as u32)
+     }
+ 
+     fn read_config(&self, offset: u64, mut data: &mut [u8]) {
+diff -ruN a/src/devices/src/virtio/mmio.rs b/src/devices/src/virtio/mmio.rs
+--- a/src/devices/src/virtio/mmio.rs	2026-10-09 07:35:04
++++ b/src/devices/src/virtio/mmio.rs	2026-10-12 21:50:21
+@@ -10,10 +10,7 @@
+ use std::sync::atomic::{AtomicUsize, Ordering};
+ use std::sync::{Arc, Mutex, MutexGuard};
+ 
+-use utils::eventfd::EFD_NONBLOCK;
+-use virtio_bindings::virtio_ring::VIRTIO_RING_F_EVENT_IDX;
+-
+-use super::device_status;
++use super::device::{InterruptHandler, InterruptType, VirtioTransportState};
+ use super::*;
+ use crate::bus::BusDevice;
+ use crate::legacy::IrqChip;
+@@ -59,106 +56,92 @@
+ /// Typically one page (4096 bytes) of MMIO address space is sufficient to handle this transport
+ /// and inner virtio device.
+ pub struct MmioTransport {
+-    device: Arc<Mutex<dyn VirtioDevice>>,
+-    // The register where feature bits are stored.
+-    pub(crate) features_select: u32,
+-    // The register where features page is selected.
+-    pub(crate) acked_features_select: u32,
+-    pub(crate) queue_select: u32,
+-    pub(crate) device_status: u32,
+-    pub(crate) config_generation: u32,
+-    mem: GuestMemoryMmap,
+-    // Queues owned by the transport during negotiation.
+-    // These are moved to the device on activation.
+-    queues: Option<Vec<Queue>>,
+-    // Queue eventfds - kept by transport to send notifications.
+-    // Arc clones are passed to the device on activation.
+-    queue_evts: Vec<Arc<EventFd>>,
+-    // Stored queue config from device for recreating queues after reset.
+-    queue_config: Vec<QueueConfig>,
++    state: VirtioTransportState,
+     shm_region_select: u32,
+-    interrupt: InterruptTransport,
++    interrupt: MmioInterrupt,
++    device_interrupt: InterruptTransport,
+ }
+ 
+-struct InterruptTransportInner {
++struct MmioInterruptInner {
+     log_target: String,
+     status: AtomicUsize,
+     event: EventFd,
+     intc: IrqChip,
+-    irq_line: Option<u32>,
++    irq_line: Mutex<Option<u32>>,
+ }
+ 
+ #[derive(Clone)]
+-pub struct InterruptTransport(Arc<InterruptTransportInner>);
++struct MmioInterrupt(Arc<MmioInterruptInner>);
+ 
+-impl InterruptTransport {
+-    pub fn new(intc: IrqChip, log_target: String) -> Result<Self, CreateMmioTransportError> {
+-        Ok(Self(Arc::new(InterruptTransportInner {
++impl MmioInterrupt {
++    fn new(intc: IrqChip, log_target: String) -> Result<Self, CreateMmioTransportError> {
++        Ok(Self(Arc::new(MmioInterruptInner {
+             log_target,
+             status: AtomicUsize::new(0),
+             event: EventFd::new(0).map_err(CreateMmioTransportError::CreateInterruptEventFd)?,
+             intc,
+-            irq_line: None,
++            irq_line: Mutex::new(None),
+         })))
+     }
+ 
+-    pub fn status(&self) -> &AtomicUsize {
++    fn device_interrupt(&self) -> InterruptTransport {
++        InterruptTransport::from_handler(Arc::new(self.clone()))
++    }
++
++    fn status(&self) -> &AtomicUsize {
+         &self.0.status
+     }
+ 
+-    pub fn event(&self) -> &EventFd {
++    fn event(&self) -> &EventFd {
+         &self.0.event
+     }
+ 
+-    pub fn intc(&self) -> &IrqChip {
++    fn intc(&self) -> &IrqChip {
+         &self.0.intc
+     }
+ 
+-    pub fn irq_line(&self) -> Option<u32> {
+-        self.0.irq_line
++    fn irq_line(&self) -> Option<u32> {
++        *self.0.irq_line.lock().unwrap()
+     }
+ 
+     fn set_irq_line(&mut self, irq_line: u32) {
+         debug!(target: &self.0.log_target, "set_irq_line: {irq_line}");
+-        match Arc::get_mut(&mut self.0) {
+-            None => {
+-                error!("Cannot change irq_line of activated device");
+-            }
+-            Some(interrupt) => {
+-                interrupt.irq_line = Some(irq_line);
+-            }
+-        }
++        *self.0.irq_line.lock().unwrap() = Some(irq_line);
+     }
+ 
+-    fn try_signal(&self, status: u32) -> Result<(), crate::Error> {
++    fn try_signal_status(&self, status: u32) -> Result<(), crate::Error> {
+         self.status().fetch_or(status as usize, Ordering::SeqCst);
+         self.intc()
+             .lock()
+             .unwrap()
+-            .set_irq(self.0.irq_line, Some(&self.0.event))?;
++            .set_irq(self.irq_line(), Some(&self.0.event))?;
+         Ok(())
+     }
+ 
+-    pub fn try_signal_used_queue(&self) -> Result<(), crate::Error> {
+-        debug!(target: &self.0.log_target, "interrupt: signal_used_queue");
+-        self.try_signal(VIRTIO_MMIO_INT_VRING)
++    fn reset_status(&self) {
++        self.status().store(0, Ordering::SeqCst);
+     }
+ 
+-    pub fn try_signal_config_change(&self) -> Result<(), crate::Error> {
+-        debug!(target: &self.0.log_target, "interrupt: signal_config_change");
+-        self.try_signal(VIRTIO_MMIO_INT_CONFIG)
++    fn signal_bus_interrupt(&self, irq_mask: u32) -> io::Result<()> {
++        self.status().fetch_or(irq_mask as usize, Ordering::SeqCst);
++        self.event().write(1)
+     }
++}
+ 
+-    pub fn signal_used_queue(&self) {
+-        if let Err(e) = self.try_signal_used_queue() {
+-            warn!(target: &self.0.log_target, "Failed to signal used queue: {e:?}");
+-        }
++impl InterruptHandler for MmioInterrupt {
++    fn try_signal(&self, interrupt: InterruptType) -> Result<(), crate::Error> {
++        let (status, name) = match interrupt {
++            InterruptType::UsedQueue => (VIRTIO_MMIO_INT_VRING, "signal_used_queue"),
++            InterruptType::ConfigChange => (VIRTIO_MMIO_INT_CONFIG, "signal_config_change"),
++        };
++        debug!(target: &self.0.log_target, "interrupt: {name}");
++        self.try_signal_status(status)
+     }
++}
+ 
+-    pub fn signal_config_change(&self) {
+-        if let Err(e) = self.try_signal_config_change() {
+-            warn!(target: &self.0.log_target, "Failed to signal config change: {e:?}");
+-        }
++impl InterruptTransport {
++    pub fn new(intc: IrqChip, log_target: String) -> Result<Self, CreateMmioTransportError> {
++        Ok(MmioInterrupt::new(intc, log_target)?.device_interrupt())
+     }
+ }
+ 
+@@ -169,50 +152,25 @@
+         intc: IrqChip,
+         device: Arc<Mutex<dyn VirtioDevice>>,
+     ) -> Result<MmioTransport, CreateMmioTransportError> {
+-        let locked = device
++        let device_name = device
+             .try_lock()
+-            .expect("Mutex of VirtioDevice should not be locked when calling MmioTransport::new");
++            .expect("Mutex of VirtioDevice should not be locked when calling MmioTransport::new")
++            .device_name()
++            .to_string();
++        let debug_log_target = format!("{}[{device_name}]", module_path!());
++        let state = VirtioTransportState::new(mem, device)
++            .map_err(CreateMmioTransportError::CreateInterruptEventFd)?;
++        let interrupt = MmioInterrupt::new(intc, debug_log_target)?;
++        let device_interrupt = interrupt.device_interrupt();
+ 
+-        let debug_log_target = format!("{}[{}]", module_path!(), locked.device_name());
+-        let queue_config: Vec<QueueConfig> = locked.queue_config().to_vec();
+-        drop(locked);
+-
+-        let queues = Self::create_queues(&queue_config);
+-        let queue_evts = Self::create_queue_evts(queue_config.len())?;
+-
+         Ok(MmioTransport {
+-            interrupt: InterruptTransport::new(intc, debug_log_target)?,
+-            device,
+-            features_select: 0,
+-            acked_features_select: 0,
+-            queue_select: 0,
+-            device_status: device_status::INIT,
+-            config_generation: 0,
+-            mem,
+-            queues: Some(queues),
+-            queue_evts,
+-            queue_config,
++            state,
++            interrupt,
++            device_interrupt,
+             shm_region_select: 0,
+         })
+     }
+ 
+-    /// Create queues from queue configuration.
+-    fn create_queues(queue_config: &[QueueConfig]) -> Vec<Queue> {
+-        queue_config.iter().map(|c| Queue::new(c.size)).collect()
+-    }
+-
+-    /// Create eventfds for queue notifications.
+-    fn create_queue_evts(count: usize) -> Result<Vec<Arc<EventFd>>, CreateMmioTransportError> {
+-        let mut queue_evts = Vec::with_capacity(count);
+-        for _ in 0..count {
+-            queue_evts.push(Arc::new(
+-                EventFd::new(EFD_NONBLOCK)
+-                    .map_err(CreateMmioTransportError::CreateInterruptEventFd)?,
+-            ));
+-        }
+-        Ok(queue_evts)
+-    }
+-
+     /// Set the irq line for the device.
+     /// NOTE: Can only be called when the device is not activated
+     pub fn set_irq_line(&mut self, irq_line: u32) {
+@@ -224,49 +182,26 @@
+     }
+ 
+     pub fn locked_device(&self) -> MutexGuard<'_, dyn VirtioDevice + 'static> {
+-        self.device.lock().expect("Poisoned device lock")
++        self.state.locked_device()
+     }
+ 
+     // Gets the encapsulated VirtioDevice.
+     pub fn device(&self) -> Arc<Mutex<dyn VirtioDevice>> {
+-        self.device.clone()
++        self.state.device()
+     }
+ 
+     /// Returns a reference to the queue eventfds. Used by the VMM to register
+     /// queue notifications with KVM.
+     pub fn queue_evts(&self) -> &[Arc<EventFd>] {
+-        &self.queue_evts
++        self.state.queue_evts()
+     }
+ 
+     fn check_device_status(&self, set: u32, clr: u32) -> bool {
+-        self.device_status & (set | clr) == set
++        self.state.device_status & (set | clr) == set
+     }
+ 
+-    fn with_queue<U, F>(&self, d: U, f: F) -> U
+-    where
+-        F: FnOnce(&Queue) -> U,
+-    {
+-        match &self.queues {
+-            Some(queues) => match queues.get(self.queue_select as usize) {
+-                Some(queue) => f(queue),
+-                None => d,
+-            },
+-            None => d,
+-        }
+-    }
+-
+     fn with_queue_mut<F: FnOnce(&mut Queue)>(&mut self, f: F) -> bool {
+-        match &mut self.queues {
+-            Some(queues) => {
+-                if let Some(queue) = queues.get_mut(self.queue_select as usize) {
+-                    f(queue);
+-                    true
+-                } else {
+-                    false
+-                }
+-            }
+-            None => false,
+-        }
++        self.state.with_queue_mut(self.state.queue_select, f)
+     }
+ 
+     fn update_queue_field<F: FnOnce(&mut Queue)>(&mut self, f: F) {
+@@ -276,50 +211,11 @@
+         } else {
+             warn!(
+                 "update virtio queue in invalid state 0x{:x}",
+-                self.device_status
++                self.state.device_status
+             );
+         }
+     }
+ 
+-    fn reset(&mut self) {
+-        if self.locked_device().is_activated() {
+-            debug!("reset device while it's still in active state");
+-        }
+-        self.features_select = 0;
+-        self.acked_features_select = 0;
+-        self.queue_select = 0;
+-        self.interrupt.0.status.store(0, Ordering::SeqCst);
+-        self.device_status = device_status::INIT;
+-        // Do not reset config_generation and keep it monotonically increasing.
+-        // Recreate queues from queue_config for the next negotiation cycle.
+-        // Keep queue_evts as is - they are reused across reset cycles.
+-        // TODO: consider resting the events when we refactor event handling
+-        self.queues = Some(Self::create_queues(&self.queue_config));
+-        // . Do not reset config_generation and keep it monotonically increasing
+-    }
+-
+-    fn activate(&mut self) {
+-        let Some(queues) = self.queues.take() else {
+-            return;
+-        };
+-
+-        let mut device_queues: Vec<DeviceQueue> = queues
+-            .into_iter()
+-            .zip(self.queue_evts.iter().cloned())
+-            .map(|(queue, event)| DeviceQueue::new(queue, event))
+-            .collect();
+-
+-        let mut locked_device = self.locked_device();
+-        let event_idx_enabled =
+-            (locked_device.acked_features() & (1 << VIRTIO_RING_F_EVENT_IDX)) != 0;
+-        for dq in &mut device_queues {
+-            dq.queue.set_event_idx(event_idx_enabled);
+-        }
+-        locked_device
+-            .activate(self.mem.clone(), self.interrupt.clone(), device_queues)
+-            .expect("Failed to activate device");
+-    }
+-
+     /// Update device status according to the state machine defined by VirtIO Spec 1.0.
+     /// Please refer to VirtIO Spec 1.0, section 2.1.1 and 3.1.1.
+     ///
+@@ -327,48 +223,12 @@
+     /// of the driver initialization sequence specified in 3.1. The driver MUST NOT clear
+     /// a device status bit. If the driver sets the FAILED bit, the driver MUST later reset
+     /// the device before attempting to re-initialize.
+-    #[allow(unused_assignments)]
+     fn set_device_status(&mut self, status: u32) {
+-        use device_status::*;
+-        // match changed bits
+-        match !self.device_status & status {
+-            ACKNOWLEDGE if self.device_status == INIT => {
+-                self.device_status = status;
+-            }
+-            DRIVER if self.device_status == ACKNOWLEDGE => {
+-                self.device_status = status;
+-            }
+-            FEATURES_OK if self.device_status == (ACKNOWLEDGE | DRIVER) => {
+-                self.device_status = status;
+-            }
+-            DRIVER_OK if self.device_status == (ACKNOWLEDGE | DRIVER | FEATURES_OK) => {
+-                self.device_status = status;
+-                let device_activated = self.locked_device().is_activated();
+-                if !device_activated {
+-                    self.activate();
+-                }
+-            }
+-            _ if (status & FAILED) != 0 => {
+-                // TODO: notify backend driver to stop the device
+-                self.device_status |= FAILED;
+-            }
+-            _ if status == 0 => {
+-                if self.locked_device().is_activated() && !self.locked_device().reset() {
+-                    self.device_status |= FAILED;
+-                }
+-
+-                // If the backend device driver doesn't support reset,
+-                // just leave the device marked as FAILED.
+-                if self.device_status & FAILED == 0 {
+-                    self.reset();
+-                }
+-            }
+-            _ => {
+-                warn!(
+-                    "invalid virtio driver status transition: 0x{:x} -> 0x{:x}",
+-                    self.device_status, status
+-                );
+-            }
++        if self
++            .state
++            .set_device_status(status, self.device_interrupt.clone(), true)
++        {
++            self.interrupt.reset_status();
+         }
+     }
+ }
+@@ -385,20 +245,19 @@
+                     0x10 => {
+                         let mut features = self
+                             .locked_device()
+-                            .avail_features_by_page(self.features_select);
+-                        if self.features_select == 1 {
++                            .avail_features_by_page(self.state.features_select);
++                        if self.state.features_select == 1 {
+                             features |= 0x1; // enable support of VirtIO Version 1
+                         }
+                         features
+                     }
+-                    0x34 => self
+-                        .queue_config
+-                        .get(self.queue_select as usize)
+-                        .map_or(0, |c| c.size as u32),
+-                    0x44 => self.with_queue(0, |q| q.ready as u32),
++                    0x34 => self.state.queue_max_size(self.state.queue_select) as u32,
++                    0x44 => self
++                        .state
++                        .with_queue(self.state.queue_select, 0, |q| q.ready as u32),
+                     0x60 => self.interrupt.status().load(Ordering::SeqCst) as u32,
+-                    0x70 => self.device_status,
+-                    0xfc => self.config_generation,
++                    0x70 => self.state.device_status,
++                    0xfc => self.state.config_generation,
+                     0xb0..=0xbc => {
+                         // For no SHM region or invalid region the kernel looks for length of -1
+                         let (shm_base, shm_len) = if self.shm_region_select > 1 {
+@@ -451,28 +310,28 @@
+             0x00..=0xff if data.len() == 4 => {
+                 let v = byte_order::read_le_u32(data);
+                 match offset {
+-                    0x14 => self.features_select = v,
++                    0x14 => self.state.features_select = v,
+                     0x20 => {
+                         if self.check_device_status(
+                             device_status::DRIVER,
+                             device_status::FEATURES_OK | device_status::FAILED,
+                         ) {
+                             self.locked_device()
+-                                .ack_features_by_page(self.acked_features_select, v);
++                                .ack_features_by_page(self.state.acked_features_select, v);
+                         } else {
+                             warn!(
+                                 "ack virtio features in invalid state 0x{:x}",
+-                                self.device_status
++                                self.state.device_status
+                             );
+                         }
+                     }
+-                    0x24 => self.acked_features_select = v,
+-                    0x30 => self.queue_select = v,
++                    0x24 => self.state.acked_features_select = v,
++                    0x30 => self.state.queue_select = v,
+                     0x38 => self.update_queue_field(|q| q.size = v as u16),
+                     0x44 => self.update_queue_field(|q| q.ready = v == 1),
+                     0x50 => {
+                         // Queue notification - write to the eventfd for the specified queue.
+-                        if let Some(eventfd) = self.queue_evts.get(v as usize) {
++                        if let Some(eventfd) = self.state.queue_evts().get(v as usize) {
+                             eventfd.write(1).unwrap();
+                         } else {
+                             warn!("invalid queue index for notification: {v}");
+@@ -516,14 +375,7 @@
+     }
+ 
+     fn interrupt(&self, irq_mask: u32) -> std::io::Result<()> {
+-        self.interrupt
+-            .status()
+-            .fetch_or(irq_mask as usize, Ordering::SeqCst);
+-        // interrupt_evt() is safe to unwrap because the inner interrupt_evt is initialized in the
+-        // constructor.
+-        // write() is safe to unwrap because the inner syscall is tailored to be safe as well.
+-        self.interrupt.event().write(1).unwrap();
+-        Ok(())
++        self.interrupt.signal_bus_interrupt(irq_mask)
+     }
+ }
+ 
+@@ -628,22 +480,66 @@
+         // Transport now owns the queue_evts.
+         assert_eq!(d.queue_evts().len(), 2);
+ 
+-        d.queue_select = 0;
+-        assert_eq!(d.with_queue(0, Queue::get_max_size), 16);
++        d.state.queue_select = 0;
++        assert_eq!(
++            d.state
++                .with_queue(d.state.queue_select, 0, Queue::get_max_size),
++            16
++        );
+         assert!(d.with_queue_mut(|q| q.size = 16));
+-        assert_eq!(d.queues.as_ref().unwrap()[d.queue_select as usize].size, 16);
++        assert_eq!(
++            d.state.queues.as_ref().unwrap()[d.state.queue_select as usize].size,
++            16
++        );
+ 
+-        d.queue_select = 1;
+-        assert_eq!(d.with_queue(0, Queue::get_max_size), 32);
++        d.state.queue_select = 1;
++        assert_eq!(
++            d.state
++                .with_queue(d.state.queue_select, 0, Queue::get_max_size),
++            32
++        );
+         assert!(d.with_queue_mut(|q| q.size = 16));
+-        assert_eq!(d.queues.as_ref().unwrap()[d.queue_select as usize].size, 16);
++        assert_eq!(
++            d.state.queues.as_ref().unwrap()[d.state.queue_select as usize].size,
++            16
++        );
+ 
+-        d.queue_select = 2;
+-        assert_eq!(d.with_queue(0, Queue::get_max_size), 0);
++        d.state.queue_select = 2;
++        assert_eq!(
++            d.state
++                .with_queue(d.state.queue_select, 0, Queue::get_max_size),
++            0
++        );
+         assert!(!d.with_queue_mut(|q| q.size = 16));
+     }
+ 
+     #[test]
++    fn interrupt_transport_forwards_notifications_to_mmio() {
++        let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x1000)]).unwrap();
++        let transport = MmioTransport::new(
++            mem,
++            DummyIrqChip::new().into(),
++            Arc::new(Mutex::new(DummyDevice::new())),
++        )
++        .unwrap();
++
++        transport.device_interrupt.try_signal_used_queue().unwrap();
++        assert_eq!(
++            transport.interrupt.status().load(Ordering::SeqCst),
++            VIRTIO_MMIO_INT_VRING as usize
++        );
++
++        transport
++            .device_interrupt
++            .try_signal_config_change()
++            .unwrap();
++        assert_eq!(
++            transport.interrupt.status().load(Ordering::SeqCst),
++            (VIRTIO_MMIO_INT_VRING | VIRTIO_MMIO_INT_CONFIG) as usize
++        );
++    }
++
++    #[test]
+     fn test_bus_device_read() {
+         let m = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x1000)]).unwrap();
+         let mut d = MmioTransport::new(
+@@ -678,14 +574,14 @@
+         d.read(0, 0x0c, &mut buf[..]);
+         assert_eq!(read_le_u32(&buf[..]), VENDOR_ID);
+ 
+-        d.features_select = 0;
++        d.state.features_select = 0;
+         d.read(0, 0x10, &mut buf[..]);
+         assert_eq!(
+             read_le_u32(&buf[..]),
+             d.locked_device().avail_features_by_page(0)
+         );
+ 
+-        d.features_select = 1;
++        d.state.features_select = 1;
+         d.read(0, 0x10, &mut buf[..]);
+         assert_eq!(
+             read_le_u32(&buf[..]),
+@@ -705,7 +601,7 @@
+         d.read(0, 0x70, &mut buf[..]);
+         assert_eq!(read_le_u32(&buf[..]), 0);
+ 
+-        d.config_generation = 5;
++        d.state.config_generation = 5;
+         d.read(0, 0xfc, &mut buf[..]);
+         assert_eq!(read_le_u32(&buf[..]), 5);
+ 
+@@ -735,18 +631,18 @@
+         write_le_u32(&mut buf[..4], 1);
+ 
+         // Nothing should happen, because the slice len > 4.
+-        d.features_select = 0;
++        d.state.features_select = 0;
+         d.write(0, 0x14, &buf[..]);
+-        assert_eq!(d.features_select, 0);
++        assert_eq!(d.state.features_select, 0);
+ 
+         buf.pop();
+ 
+-        assert_eq!(d.device_status, device_status::INIT);
++        assert_eq!(d.state.device_status, device_status::INIT);
+         set_device_status(&mut d, device_status::ACKNOWLEDGE);
+ 
+         // Acking features in invalid state shouldn't take effect.
+         assert_eq!(d.locked_device().acked_features(), 0x0);
+-        d.acked_features_select = 0x0;
++        d.state.acked_features_select = 0x0;
+         write_le_u32(&mut buf[..], 1);
+         d.write(0, 0x20, &buf[..]);
+         assert_eq!(d.locked_device().acked_features(), 0x0);
+@@ -766,18 +662,18 @@
+ 
+         set_device_status(&mut d, device_status::ACKNOWLEDGE | device_status::DRIVER);
+         assert_eq!(
+-            d.device_status,
++            d.state.device_status,
+             device_status::ACKNOWLEDGE | device_status::DRIVER
+         );
+ 
+         // now writes should work
+-        d.features_select = 0;
++        d.state.features_select = 0;
+         write_le_u32(&mut buf[..], 1);
+         d.write(0, 0x14, &buf[..]);
+-        assert_eq!(d.features_select, 1);
++        assert_eq!(d.state.features_select, 1);
+ 
+         // Test acknowledging features on bus.
+-        d.acked_features_select = 0;
++        d.state.acked_features_select = 0;
+         write_le_u32(&mut buf[..], 0x124);
+ 
+         // Set the device available features in order to make acknowledging possible.
+@@ -785,10 +681,10 @@
+         d.write(0, 0x20, &buf[..]);
+         assert_eq!(d.locked_device().acked_features(), 0x124);
+ 
+-        d.acked_features_select = 0;
++        d.state.acked_features_select = 0;
+         write_le_u32(&mut buf[..], 2);
+         d.write(0, 0x24, &buf[..]);
+-        assert_eq!(d.acked_features_select, 2);
++        assert_eq!(d.state.acked_features_select, 2);
+         set_device_status(
+             &mut d,
+             device_status::ACKNOWLEDGE | device_status::DRIVER | device_status::FEATURES_OK,
+@@ -796,54 +692,57 @@
+ 
+         // Acking features in invalid state shouldn't take effect.
+         assert_eq!(d.locked_device().acked_features(), 0x124);
+-        d.acked_features_select = 0x0;
++        d.state.acked_features_select = 0x0;
+         write_le_u32(&mut buf[..], 1);
+         d.write(0, 0x20, &buf[..]);
+         assert_eq!(d.locked_device().acked_features(), 0x124);
+ 
+         // Setup queues
+-        d.queue_select = 0;
++        d.state.queue_select = 0;
+         write_le_u32(&mut buf[..], 3);
+         d.write(0, 0x30, &buf[..]);
+-        assert_eq!(d.queue_select, 3);
++        assert_eq!(d.state.queue_select, 3);
+ 
+-        d.queue_select = 0;
+-        assert_eq!(d.queues.as_ref().unwrap()[0].size, 0);
++        d.state.queue_select = 0;
++        assert_eq!(d.state.queues.as_ref().unwrap()[0].size, 0);
+         write_le_u32(&mut buf[..], 16);
+         d.write(0, 0x38, &buf[..]);
+-        assert_eq!(d.queues.as_ref().unwrap()[0].size, 16);
++        assert_eq!(d.state.queues.as_ref().unwrap()[0].size, 16);
+ 
+-        assert!(!d.queues.as_ref().unwrap()[0].ready);
++        assert!(!d.state.queues.as_ref().unwrap()[0].ready);
+         write_le_u32(&mut buf[..], 1);
+         d.write(0, 0x44, &buf[..]);
+-        assert!(d.queues.as_ref().unwrap()[0].ready);
++        assert!(d.state.queues.as_ref().unwrap()[0].ready);
+ 
+-        assert_eq!(d.queues.as_ref().unwrap()[0].desc_table.0, 0);
++        assert_eq!(d.state.queues.as_ref().unwrap()[0].desc_table.0, 0);
+         write_le_u32(&mut buf[..], 123);
+         d.write(0, 0x80, &buf[..]);
+-        assert_eq!(d.queues.as_ref().unwrap()[0].desc_table.0, 123);
++        assert_eq!(d.state.queues.as_ref().unwrap()[0].desc_table.0, 123);
+         d.write(0, 0x84, &buf[..]);
+         assert_eq!(
+-            d.queues.as_ref().unwrap()[0].desc_table.0,
++            d.state.queues.as_ref().unwrap()[0].desc_table.0,
+             123 + (123 << 32)
+         );
+ 
+-        assert_eq!(d.queues.as_ref().unwrap()[0].avail_ring.0, 0);
++        assert_eq!(d.state.queues.as_ref().unwrap()[0].avail_ring.0, 0);
+         write_le_u32(&mut buf[..], 124);
+         d.write(0, 0x90, &buf[..]);
+-        assert_eq!(d.queues.as_ref().unwrap()[0].avail_ring.0, 124);
++        assert_eq!(d.state.queues.as_ref().unwrap()[0].avail_ring.0, 124);
+         d.write(0, 0x94, &buf[..]);
+         assert_eq!(
+-            d.queues.as_ref().unwrap()[0].avail_ring.0,
++            d.state.queues.as_ref().unwrap()[0].avail_ring.0,
+             124 + (124 << 32)
+         );
+ 
+-        assert_eq!(d.queues.as_ref().unwrap()[0].used_ring.0, 0);
++        assert_eq!(d.state.queues.as_ref().unwrap()[0].used_ring.0, 0);
+         write_le_u32(&mut buf[..], 125);
+         d.write(0, 0xa0, &buf[..]);
+-        assert_eq!(d.queues.as_ref().unwrap()[0].used_ring.0, 125);
++        assert_eq!(d.state.queues.as_ref().unwrap()[0].used_ring.0, 125);
+         d.write(0, 0xa4, &buf[..]);
+-        assert_eq!(d.queues.as_ref().unwrap()[0].used_ring.0, 125 + (125 << 32));
++        assert_eq!(
++            d.state.queues.as_ref().unwrap()[0].used_ring.0,
++            125 + (125 << 32)
++        );
+ 
+         set_device_status(
+             &mut d,
+@@ -860,13 +759,13 @@
+ 
+         // Write to an invalid address in generic register range.
+         write_le_u32(&mut buf[..], 0xf);
+-        d.config_generation = 0;
++        d.state.config_generation = 0;
+         d.write(0, 0xfb, &buf[..]);
+-        assert_eq!(d.config_generation, 0);
++        assert_eq!(d.state.config_generation, 0);
+ 
+         // Write to an invalid length in generic register range.
+         d.write(0, 0xfc, &buf[..2]);
+-        assert_eq!(d.config_generation, 0);
++        assert_eq!(d.state.config_generation, 0);
+ 
+         // Here we test writes/read into/from the device specific configuration space.
+         let buf1 = vec![1; 0xeff];
+@@ -895,12 +794,12 @@
+         .unwrap();
+ 
+         assert!(!d.locked_device().is_activated());
+-        assert_eq!(d.device_status, device_status::INIT);
++        assert_eq!(d.state.device_status, device_status::INIT);
+ 
+         set_device_status(&mut d, device_status::ACKNOWLEDGE);
+         set_device_status(&mut d, device_status::ACKNOWLEDGE | device_status::DRIVER);
+         assert_eq!(
+-            d.device_status,
++            d.state.device_status,
+             device_status::ACKNOWLEDGE | device_status::DRIVER
+         );
+ 
+@@ -910,7 +809,7 @@
+             device_status::ACKNOWLEDGE | device_status::DRIVER | device_status::DRIVER_OK,
+         );
+         assert_eq!(
+-            d.device_status,
++            d.state.device_status,
+             device_status::ACKNOWLEDGE | device_status::DRIVER
+         );
+ 
+@@ -919,14 +818,14 @@
+             device_status::ACKNOWLEDGE | device_status::DRIVER | device_status::FEATURES_OK,
+         );
+         assert_eq!(
+-            d.device_status,
++            d.state.device_status,
+             device_status::ACKNOWLEDGE | device_status::DRIVER | device_status::FEATURES_OK
+         );
+ 
+         let mut buf = [0; 4];
+-        let queue_len = d.queues.as_ref().unwrap().len();
++        let queue_len = d.state.queues.as_ref().unwrap().len();
+         for q in 0..queue_len {
+-            d.queue_select = q as u32;
++            d.state.queue_select = q as u32;
+             write_le_u32(&mut buf[..], 16);
+             d.write(0, 0x38, &buf[..]);
+             write_le_u32(&mut buf[..], 1);
+@@ -949,7 +848,7 @@
+                 | device_status::DRIVER_OK,
+         );
+         assert_eq!(
+-            d.device_status,
++            d.state.device_status,
+             device_status::ACKNOWLEDGE
+                 | device_status::DRIVER
+                 | device_status::FEATURES_OK
+@@ -968,9 +867,9 @@
+ 
+         // Setup queue data structures
+         let mut buf = [0; 4];
+-        let queues_count = d.queues.as_ref().unwrap().len();
++        let queues_count = d.state.queues.as_ref().unwrap().len();
+         for q in 0..queues_count {
+-            d.queue_select = q as u32;
++            d.state.queue_select = q as u32;
+             write_le_u32(&mut buf[..], 16);
+             d.write(0, 0x38, &buf[..]);
+             write_le_u32(&mut buf[..], 1);
+@@ -987,7 +886,7 @@
+                 | device_status::DRIVER_OK,
+         );
+         assert_eq!(
+-            d.device_status,
++            d.state.device_status,
+             device_status::ACKNOWLEDGE
+                 | device_status::DRIVER
+                 | device_status::FEATURES_OK
+@@ -1009,19 +908,19 @@
+         let mut buf = [0; 4];
+ 
+         assert!(!d.locked_device().is_activated());
+-        assert_eq!(d.device_status, 0);
++        assert_eq!(d.state.device_status, 0);
+         activate_device(&mut d);
+ 
+         // Marking device as FAILED should not affect device_activated state
+         write_le_u32(&mut buf[..], 0x8f);
+         d.write(0, 0x70, &buf[..]);
+-        assert_eq!(d.device_status, 0x8f);
++        assert_eq!(d.state.device_status, 0x8f);
+         assert!(d.locked_device().is_activated());
+ 
+         // Nothing happens when backend driver doesn't support reset
+         write_le_u32(&mut buf[..], 0x0);
+         d.write(0, 0x70, &buf[..]);
+-        assert_eq!(d.device_status, 0x8f);
++        assert_eq!(d.state.device_status, 0x8f);
+         assert!(d.locked_device().is_activated());
+     }
+ 
+diff -ruN a/src/devices/src/virtio/mod.rs b/src/devices/src/virtio/mod.rs
+--- a/src/devices/src/virtio/mod.rs	2026-10-12 21:49:57
++++ b/src/devices/src/virtio/mod.rs	2026-10-12 21:50:21
+@@ -30,6 +30,7 @@
+ mod mmio;
+ #[cfg(feature = "net")]
+ pub mod net;
++mod pci;
+ mod queue;
+ #[cfg(not(feature = "tee"))]
+ pub mod rng;
+@@ -51,6 +52,7 @@
+ pub use self::mmio::*;
+ #[cfg(feature = "net")]
+ pub use self::net::Net;
++pub use self::pci::*;
+ pub use self::queue::{Descriptor, DescriptorChain, Queue};
+ #[cfg(not(feature = "tee"))]
+ pub use self::rng::*;
+diff -ruN a/src/devices/src/virtio/net/device.rs b/src/devices/src/virtio/net/device.rs
+--- a/src/devices/src/virtio/net/device.rs	2026-10-09 07:35:04
++++ b/src/devices/src/virtio/net/device.rs	2026-10-12 21:50:21
+@@ -23,6 +23,7 @@
+ 
+ use std::cmp;
+ use std::io::Write;
++use std::mem::size_of;
+ use std::path::PathBuf;
+ use virtio_bindings::virtio_net::VIRTIO_NET_F_MAC;
+ use virtio_bindings::virtio_ring::VIRTIO_RING_F_EVENT_IDX;
+@@ -155,6 +156,10 @@
+ 
+     fn queue_config(&self) -> &[QueueConfig] {
+         &QUEUE_CONFIG
++    }
++
++    fn config_len(&self) -> Option<u32> {
++        Some(size_of::<VirtioNetConfig>() as u32)
+     }
+ 
+     fn read_config(&self, offset: u64, mut data: &mut [u8]) {
+diff -ruN a/src/devices/src/virtio/pci.rs b/src/devices/src/virtio/pci.rs
+--- a/src/devices/src/virtio/pci.rs	1969-12-31 18:00:00
++++ b/src/devices/src/virtio/pci.rs	2026-10-12 21:50:21
+@@ -0,0 +1,1720 @@
++// SPDX-License-Identifier: Apache-2.0
++
++//! Modern virtio-pci transport.
++
++use std::fmt::{Display, Formatter};
++use std::io;
++use std::mem::size_of;
++use std::sync::atomic::{AtomicBool, Ordering};
++use std::sync::{Arc, Mutex};
++
++use crate::pci::{
++    PCI_CONVENTIONAL_CONFIG_SPACE_SIZE, PCI_UNIMPLEMENTED_READ_BYTE, PciBarAccess, PciFunction,
++    PciIntxLine,
++};
++use virtio_bindings::virtio_config::VIRTIO_F_VERSION_1;
++use vm_memory::{Address, GuestAddress, GuestMemoryMmap};
++
++use super::device::{InterruptHandler, InterruptType, VirtioTransportState};
++use super::{InterruptTransport, VirtioDevice, device_status};
++
++const PCI_VENDOR_ID_VIRTIO: u16 = 0x1af4;
++const PCI_DEVICE_ID_VIRTIO_MODERN: u16 = 0x1040;
++const PCI_CAPABILITY_ID_VENDOR_SPECIFIC: u8 = 0x09;
++const PCI_CAPABILITY_LIST_STATUS: u16 = 1 << 4;
++const PCI_STATUS_INTERRUPT: u16 = 1 << 3;
++const PCI_COMMAND_MEMORY: u16 = 1 << 1;
++const PCI_COMMAND_MASTER: u16 = 1 << 2;
++const PCI_COMMAND_INTX_DISABLE: u16 = 1 << 10;
++const PCI_INTERRUPT_PIN_INTA: u8 = 1;
++const PCI_REVISION_MODERN: u8 = 1;
++const PCI_HEADER_TYPE_ENDPOINT: u8 = 0;
++const PCI_BAR0_INDEX: u8 = 0;
++const PCI_SUBSYSTEM_DEVICE_ID_BASE: u16 = 0x40;
++const VIRTIO_PCI_CAPABILITY_LENGTH: u8 = 16;
++const VIRTIO_PCI_NOTIFY_CAPABILITY_LENGTH: u8 = 20;
++const PCI_CFG_DATA_SIZE: usize = size_of::<u32>();
++const BYTE_SIZE: usize = size_of::<u8>();
++const WORD_SIZE: usize = size_of::<u16>();
++const DWORD_SIZE: usize = size_of::<u32>();
++const QWORD_SIZE: usize = size_of::<u64>();
++const VIRTIO_QUEUE_READY: u16 = 1;
++const QUEUE_ADDRESS_HALF_MASK: u64 = u32::MAX as u64;
++const QUEUE_EVENT_SIGNAL: u64 = 1;
++
++const VIRTIO_PCI_CAP_COMMON_CFG: u8 = 1;
++const VIRTIO_PCI_CAP_NOTIFY_CFG: u8 = 2;
++const VIRTIO_PCI_CAP_ISR_CFG: u8 = 3;
++const VIRTIO_PCI_CAP_DEVICE_CFG: u8 = 4;
++const VIRTIO_PCI_CAP_PCI_CFG: u8 = 5;
++
++const PCI_CONFIG_SIZE: usize = PCI_CONVENTIONAL_CONFIG_SPACE_SIZE;
++const PCI_BAR0_OFFSET: usize = pci_config::BAR0;
++const PCI_BAR0_SIZE: usize = size_of::<u32>();
++const PCI_BAR0_END: usize = PCI_BAR0_OFFSET + PCI_BAR0_SIZE - 1;
++const PCI_STATUS_LAST_BYTE: usize = pci_config::STATUS + WORD_SIZE - 1;
++const PCI_COMMAND_LAST_BYTE: usize = pci_config::COMMAND + WORD_SIZE - 1;
++pub const VIRTIO_PCI_BAR0_SIZE: u64 = 0x8000;
++const VIRTIO_PCI_BAR0_ADDRESS_MASK: u32 = !(VIRTIO_PCI_BAR0_SIZE as u32 - 1);
++const PCI_BAR_ATTRIBUTE_MASK: u32 = 0x0f;
++const PCI_BAR_ADDRESS_MASK: u32 = !PCI_BAR_ATTRIBUTE_MASK;
++const PCI_BAR_PROBE_VALUE: u32 = u32::MAX;
++
++const COMMON_CFG_OFFSET: u64 = 0x0000;
++const NOTIFY_CFG_OFFSET: u64 = 0x1000;
++const NOTIFY_CFG_LEN: u32 = 0x1000;
++const NOTIFY_OFF_MULTIPLIER: u32 = 4;
++const ISR_CFG_OFFSET: u64 = 0x2000;
++const DEVICE_CFG_OFFSET: u64 = 0x3000;
++const COMMON_CFG_LEN: u32 = (common_cfg::QUEUE_RESET_OFFSET + size_of::<u16>() as u64) as u32;
++const COMMON_CFG_DWORD_SIZE: u64 = size_of::<u32>() as u64;
++
++const VIRTIO_ISR_QUEUE: u8 = 1;
++const VIRTIO_ISR_CONFIG: u8 = 2;
++const VIRTIO_MSI_NO_VECTOR: u16 = 0xffff;
++
++mod pci_config {
++    pub const VENDOR_ID: usize = 0x00;
++    pub const DEVICE_ID: usize = 0x02;
++    pub const COMMAND: usize = 0x04;
++    pub const STATUS: usize = 0x06;
++    pub const REVISION_ID: usize = 0x08;
++    pub const HEADER_TYPE: usize = 0x0e;
++    pub const BAR0: usize = 0x10;
++    pub const SUBSYSTEM_VENDOR_ID: usize = 0x2c;
++    pub const SUBSYSTEM_DEVICE_ID: usize = 0x2e;
++    pub const CAPABILITY_POINTER: usize = 0x34;
++    pub const INTERRUPT_LINE: usize = 0x3c;
++    pub const INTERRUPT_PIN: usize = 0x3d;
++    pub const CAPABILITIES_START: usize = 0x40;
++}
++
++mod vendor_cap {
++    pub const VENDOR_SPECIFIC_CAPABILITY_ID: usize = 0x00;
++    pub const NEXT: usize = 0x01;
++    pub const LENGTH: usize = 0x02;
++    pub const CONFIG_TYPE: usize = 0x03;
++    pub const BAR: usize = 0x04;
++    pub const REGION_ID: usize = 0x05;
++    pub const REGION_OFFSET: usize = 0x08;
++    pub const REGION_LENGTH: usize = 0x0c;
++    pub const NOTIFY_MULTIPLIER: usize = 0x10;
++    pub const PCI_CONFIG_DATA: usize = 0x10;
++}
++
++mod common_cfg {
++    pub const DEVICE_FEATURE_SELECT: u64 = 0x00;
++    pub const DEVICE_FEATURE: u64 = 0x04;
++    pub const DRIVER_FEATURE_SELECT: u64 = 0x08;
++    pub const DRIVER_FEATURE: u64 = 0x0c;
++    pub const MSIX_CONFIG: u64 = 0x10;
++    pub const NUMBER_OF_QUEUES: u64 = 0x12;
++    pub const DEVICE_STATUS: u64 = 0x14;
++    pub const CONFIG_GENERATION: u64 = 0x15;
++    pub const QUEUE_SELECT: u64 = 0x16;
++    pub const QUEUE_SIZE: u64 = 0x18;
++    pub const QUEUE_MSIX_VECTOR: u64 = 0x1a;
++    pub const QUEUE_ENABLE: u64 = 0x1c;
++    pub const QUEUE_NOTIFY_OFFSET: u64 = 0x1e;
++    pub const QUEUE_DESCRIPTOR: u64 = 0x20;
++    pub const QUEUE_DESCRIPTOR_HIGH: u64 = QUEUE_DESCRIPTOR + super::COMMON_CFG_DWORD_SIZE;
++    pub const QUEUE_DRIVER: u64 = 0x28;
++    pub const QUEUE_DRIVER_HIGH: u64 = QUEUE_DRIVER + super::COMMON_CFG_DWORD_SIZE;
++    pub const QUEUE_DEVICE: u64 = 0x30;
++    pub const QUEUE_DEVICE_HIGH: u64 = QUEUE_DEVICE + super::COMMON_CFG_DWORD_SIZE;
++    pub const QUEUE_NOTIFY_DATA: u64 = 0x38;
++    pub const QUEUE_RESET_OFFSET: u64 = 0x3a;
++}
++
++#[derive(Debug)]
++pub enum CreatePciTransportError {
++    EventFd(io::Error),
++    DeviceConfigTooLarge(u32),
++    InvalidBarBase(u32),
++    MissingVersion1,
++    UnknownDeviceConfigLength,
++    SharedMemoryNotSupported,
++}
++
++impl Display for CreatePciTransportError {
++    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
++        match self {
++            Self::EventFd(err) => write!(f, "failed to create queue eventfd: {err}"),
++            Self::DeviceConfigTooLarge(size) => {
++                write!(
++                    f,
++                    "virtio device configuration is too large for BAR0: {size}"
++                )
++            }
++            Self::InvalidBarBase(base) => write!(f, "invalid BAR0 base address: 0x{base:x}"),
++            Self::MissingVersion1 => {
++                write!(
++                    f,
++                    "modern virtio-pci device does not offer VIRTIO_F_VERSION_1"
++                )
++            }
++            Self::UnknownDeviceConfigLength => {
++                write!(
++                    f,
++                    "virtio device did not report its configuration space length"
++                )
++            }
++            Self::SharedMemoryNotSupported => {
++                write!(f, "virtio-pci shared-memory regions are not supported")
++            }
++        }
++    }
++}
++
++impl std::error::Error for CreatePciTransportError {}
++
++struct PciInterruptInner {
++    state: Mutex<PciInterruptState>,
++    line: Arc<dyn PciIntxLine>,
++    log_target: String,
++}
++
++struct PciInterruptState {
++    isr: u8,
++    intx_disabled: bool,
++}
++
++#[derive(Clone)]
++struct PciInterrupt(Arc<PciInterruptInner>);
++
++impl PciInterrupt {
++    fn new(line: Arc<dyn PciIntxLine>, log_target: String) -> Self {
++        Self(Arc::new(PciInterruptInner {
++            state: Mutex::new(PciInterruptState {
++                isr: 0,
++                intx_disabled: false,
++            }),
++            line,
++            log_target,
++        }))
++    }
++
++    fn read_isr(&self) -> u8 {
++        let mut state = self.0.state.lock().unwrap();
++        let isr = state.isr;
++        state.isr = 0;
++        if isr != 0
++            && !state.intx_disabled
++            && let Err(err) = self.0.line.set_level(false)
++        {
++            warn!("failed to deassert virtio-pci INTx: {err}");
++        }
++        isr
++    }
++
++    fn is_pending(&self) -> bool {
++        self.0.state.lock().unwrap().isr != 0
++    }
++
++    fn reset(&self) {
++        let mut state = self.0.state.lock().unwrap();
++        if state.isr != 0
++            && !state.intx_disabled
++            && let Err(err) = self.0.line.set_level(false)
++        {
++            warn!("failed to deassert virtio-pci INTx during reset: {err}");
++        }
++        state.isr = 0;
++    }
++
++    fn set_intx_disabled(&self, disabled: bool) {
++        let mut state = self.0.state.lock().unwrap();
++        if state.intx_disabled == disabled {
++            return;
++        }
++        state.intx_disabled = disabled;
++        if state.isr != 0
++            && let Err(err) = self.0.line.set_level(!disabled)
++        {
++            warn!("failed to update virtio-pci INTx disable state: {err}");
++        }
++    }
++
++    fn signal(&self, bit: u8) -> Result<(), crate::Error> {
++        let mut state = self.0.state.lock().unwrap();
++        let was_pending = state.isr != 0;
++        state.isr |= bit;
++        if state.intx_disabled || was_pending {
++            return Ok(());
++        }
++        self.0
++            .line
++            .set_level(true)
++            .map_err(crate::Error::FailedSignalingUsedQueue)
++    }
++}
++
++impl InterruptHandler for PciInterrupt {
++    fn try_signal(&self, interrupt: InterruptType) -> Result<(), crate::Error> {
++        let (bit, description) = match interrupt {
++            InterruptType::UsedQueue => (VIRTIO_ISR_QUEUE, "used queue"),
++            InterruptType::ConfigChange => (VIRTIO_ISR_CONFIG, "configuration change"),
++        };
++        debug!(target: &self.0.log_target, "interrupt: {description}");
++        self.signal(bit)
++    }
++}
++
++#[derive(Clone, Copy)]
++struct Capability {
++    offset: u8,
++    len: u8,
++    cfg_type: u8,
++    bar_offset: u32,
++    bar_len: u32,
++}
++
++#[derive(Clone, Copy)]
++struct PciQueueRegisters {
++    size: u16,
++    enabled: bool,
++    notification_pending: bool,
++}
++
++impl PciQueueRegisters {
++    fn new(max_size: u16) -> Self {
++        Self {
++            size: max_size,
++            enabled: false,
++            notification_pending: false,
++        }
++    }
++}
++
++struct PciConfigSpace([u8; PCI_CONFIG_SIZE]);
++
++impl Default for PciConfigSpace {
++    fn default() -> Self {
++        Self([0; PCI_CONFIG_SIZE])
++    }
++}
++
++impl PciConfigSpace {
++    fn read_bytes(&self, offset: usize, length: usize) -> Option<&[u8]> {
++        self.0.get(offset..offset.checked_add(length)?)
++    }
++
++    fn write_bytes(&mut self, offset: usize, data: &[u8]) {
++        let end = offset
++            .checked_add(data.len())
++            .expect("PCI config-space write range overflowed");
++        self.0
++            .get_mut(offset..end)
++            .expect("PCI config-space write is within bounds")
++            .copy_from_slice(data);
++    }
++
++    fn read_u8(&self, offset: usize) -> Option<u8> {
++        self.read_bytes(offset, size_of::<u8>())?.first().copied()
++    }
++
++    fn read_u16(&self, offset: usize) -> Option<u16> {
++        let bytes = self.read_bytes(offset, size_of::<u16>())?.try_into().ok()?;
++        Some(u16::from_le_bytes(bytes))
++    }
++
++    fn read_u32(&self, offset: usize) -> Option<u32> {
++        let bytes = self.read_bytes(offset, size_of::<u32>())?.try_into().ok()?;
++        Some(u32::from_le_bytes(bytes))
++    }
++
++    fn write_u8(&mut self, offset: usize, value: u8) {
++        self.write_bytes(offset, &[value]);
++    }
++
++    fn write_u16(&mut self, offset: usize, value: u16) {
++        self.write_bytes(offset, &value.to_le_bytes());
++    }
++
++    fn write_u32(&mut self, offset: usize, value: u32) {
++        self.write_bytes(offset, &value.to_le_bytes());
++    }
++}
++
++pub struct VirtioPciTransport {
++    state: VirtioTransportState,
++    config: PciConfigSpace,
++    bar_base: u32,
++    bar_probe: bool,
++    interrupt: PciInterrupt,
++    device_interrupt: InterruptTransport,
++    capabilities: Vec<Capability>,
++    pci_cfg_cap_offset: Option<usize>,
++    device_config_len: u32,
++    queue_registers: Vec<PciQueueRegisters>,
++    bus_master_enabled: Arc<AtomicBool>,
++}
++
++impl VirtioPciTransport {
++    pub fn new(
++        mem: GuestMemoryMmap,
++        device: Arc<Mutex<dyn VirtioDevice>>,
++        interrupt_line: u8,
++        intx_line: Arc<dyn PciIntxLine>,
++        bar_base: u32,
++    ) -> Result<Self, CreatePciTransportError> {
++        let (device_type, device_name, avail_features, device_config_len, has_shm) = {
++            let locked = device.try_lock().expect(
++                "Mutex of VirtioDevice should not be locked when creating virtio-pci transport",
++            );
++            (
++                locked.device_type(),
++                locked.device_name().to_string(),
++                locked.avail_features(),
++                locked.config_len(),
++                locked.shm_region().is_some(),
++            )
++        };
++
++        if avail_features & (1u64 << VIRTIO_F_VERSION_1) == 0 {
++            return Err(CreatePciTransportError::MissingVersion1);
++        }
++        if has_shm {
++            return Err(CreatePciTransportError::SharedMemoryNotSupported);
++        }
++        let device_config_len =
++            device_config_len.ok_or(CreatePciTransportError::UnknownDeviceConfigLength)?;
++        if u64::from(device_config_len) > VIRTIO_PCI_BAR0_SIZE - DEVICE_CFG_OFFSET {
++            return Err(CreatePciTransportError::DeviceConfigTooLarge(
++                device_config_len,
++            ));
++        }
++        if u64::from(bar_base) % VIRTIO_PCI_BAR0_SIZE != 0
++            || u64::from(bar_base) + VIRTIO_PCI_BAR0_SIZE > (1u64 << 32)
++        {
++            return Err(CreatePciTransportError::InvalidBarBase(bar_base));
++        }
++
++        let mut state =
++            VirtioTransportState::new(mem, device).map_err(CreatePciTransportError::EventFd)?;
++        let bus_master_enabled = Arc::new(AtomicBool::new(false));
++        state.set_bus_master_gate(bus_master_enabled.clone());
++        let queue_registers = state
++            .queue_config
++            .iter()
++            .map(|queue| PciQueueRegisters::new(queue.size))
++            .collect();
++        let interrupt = PciInterrupt::new(intx_line, format!("{}[{device_name}]", module_path!()));
++        let device_interrupt = InterruptTransport::from_handler(Arc::new(interrupt.clone()));
++        let (config, capabilities, pci_cfg_cap_offset) =
++            Self::build_config(device_type, device_config_len, interrupt_line);
++
++        Ok(Self {
++            state,
++            config,
++            bar_base,
++            bar_probe: false,
++            interrupt,
++            device_interrupt,
++            capabilities,
++            pci_cfg_cap_offset,
++            device_config_len,
++            queue_registers,
++            bus_master_enabled,
++        })
++    }
++
++    pub fn device(&self) -> Arc<Mutex<dyn VirtioDevice>> {
++        self.state.device()
++    }
++
++    fn build_config(
++        device_type: u32,
++        device_config_len: u32,
++        interrupt_line: u8,
++    ) -> (PciConfigSpace, Vec<Capability>, Option<usize>) {
++        let mut config = PciConfigSpace::default();
++        let mut capabilities = vec![
++            Capability {
++                offset: 0,
++                len: VIRTIO_PCI_CAPABILITY_LENGTH,
++                cfg_type: VIRTIO_PCI_CAP_COMMON_CFG,
++                bar_offset: COMMON_CFG_OFFSET as u32,
++                bar_len: COMMON_CFG_LEN,
++            },
++            Capability {
++                offset: 0,
++                len: VIRTIO_PCI_NOTIFY_CAPABILITY_LENGTH,
++                cfg_type: VIRTIO_PCI_CAP_NOTIFY_CFG,
++                bar_offset: NOTIFY_CFG_OFFSET as u32,
++                bar_len: NOTIFY_CFG_LEN,
++            },
++            Capability {
++                offset: 0,
++                len: VIRTIO_PCI_CAPABILITY_LENGTH,
++                cfg_type: VIRTIO_PCI_CAP_ISR_CFG,
++                bar_offset: ISR_CFG_OFFSET as u32,
++                bar_len: 1,
++            },
++        ];
++        if device_config_len != 0 {
++            capabilities.push(Capability {
++                offset: 0,
++                len: VIRTIO_PCI_CAPABILITY_LENGTH,
++                cfg_type: VIRTIO_PCI_CAP_DEVICE_CFG,
++                bar_offset: DEVICE_CFG_OFFSET as u32,
++                bar_len: device_config_len,
++            });
++        }
++        capabilities.push(Capability {
++            offset: 0,
++            len: VIRTIO_PCI_NOTIFY_CAPABILITY_LENGTH,
++            cfg_type: VIRTIO_PCI_CAP_PCI_CFG,
++            bar_offset: 0,
++            bar_len: 0,
++        });
++
++        let mut next_offset = pci_config::CAPABILITIES_START;
++        for capability in &mut capabilities {
++            capability.offset = next_offset as u8;
++            next_offset += usize::from(capability.len);
++        }
++
++        let device_id = PCI_DEVICE_ID_VIRTIO_MODERN.wrapping_add(device_type as u16);
++        config.write_u16(pci_config::VENDOR_ID, PCI_VENDOR_ID_VIRTIO);
++        config.write_u16(pci_config::DEVICE_ID, device_id);
++        config.write_u16(pci_config::COMMAND, PCI_COMMAND_MEMORY);
++        config.write_u16(pci_config::STATUS, PCI_CAPABILITY_LIST_STATUS);
++        config.write_u8(pci_config::REVISION_ID, PCI_REVISION_MODERN);
++        config.write_u8(pci_config::HEADER_TYPE, PCI_HEADER_TYPE_ENDPOINT);
++        config.write_u16(pci_config::SUBSYSTEM_VENDOR_ID, PCI_VENDOR_ID_VIRTIO);
++        config.write_u16(
++            pci_config::SUBSYSTEM_DEVICE_ID,
++            PCI_SUBSYSTEM_DEVICE_ID_BASE.wrapping_add(device_type as u16),
++        );
++        config.write_u8(
++            pci_config::CAPABILITY_POINTER,
++            capabilities
++                .first()
++                .map_or(0, |capability| capability.offset),
++        );
++        config.write_u8(pci_config::INTERRUPT_LINE, interrupt_line);
++        config.write_u8(pci_config::INTERRUPT_PIN, PCI_INTERRUPT_PIN_INTA);
++
++        let mut pci_cfg_cap_offset = None;
++        for (index, capability) in capabilities.iter().enumerate() {
++            let offset = usize::from(capability.offset);
++            let next = capabilities
++                .get(index + 1)
++                .map_or(0, |next_capability| next_capability.offset);
++            config.write_u8(
++                offset + vendor_cap::VENDOR_SPECIFIC_CAPABILITY_ID,
++                PCI_CAPABILITY_ID_VENDOR_SPECIFIC,
++            );
++            config.write_u8(offset + vendor_cap::NEXT, next);
++            config.write_u8(offset + vendor_cap::LENGTH, capability.len);
++            config.write_u8(offset + vendor_cap::CONFIG_TYPE, capability.cfg_type);
++            config.write_u8(offset + vendor_cap::BAR, PCI_BAR0_INDEX);
++            config.write_u8(offset + vendor_cap::REGION_ID, 0);
++            config.write_u32(offset + vendor_cap::REGION_OFFSET, capability.bar_offset);
++            config.write_u32(offset + vendor_cap::REGION_LENGTH, capability.bar_len);
++
++            if capability.cfg_type == VIRTIO_PCI_CAP_NOTIFY_CFG {
++                config.write_u32(
++                    offset + vendor_cap::NOTIFY_MULTIPLIER,
++                    NOTIFY_OFF_MULTIPLIER,
++                );
++            }
++            if capability.cfg_type == VIRTIO_PCI_CAP_PCI_CFG {
++                config.write_u32(offset + vendor_cap::REGION_LENGTH, PCI_CFG_DATA_SIZE as u32);
++                pci_cfg_cap_offset = Some(offset);
++            }
++        }
++
++        (config, capabilities, pci_cfg_cap_offset)
++    }
++
++    fn config_status(&self) -> u16 {
++        let mut status = self
++            .config
++            .read_u16(pci_config::STATUS)
++            .expect("PCI status register fits in configuration space")
++            & !PCI_STATUS_INTERRUPT;
++        if self.interrupt.is_pending() {
++            status |= PCI_STATUS_INTERRUPT;
++        }
++        status
++    }
++
++    fn bar0_value(&self) -> u32 {
++        if self.bar_probe {
++            (!(VIRTIO_PCI_BAR0_SIZE as u32 - 1)) & PCI_BAR_ADDRESS_MASK
++        } else {
++            self.bar_base
++        }
++    }
++
++    fn config_byte(&self, offset: usize) -> u8 {
++        match offset {
++            pci_config::STATUS..=PCI_STATUS_LAST_BYTE => self
++                .config_status()
++                .to_le_bytes()
++                .get(offset - pci_config::STATUS)
++                .copied()
++                .unwrap_or(PCI_UNIMPLEMENTED_READ_BYTE),
++            PCI_BAR0_OFFSET..=PCI_BAR0_END => self
++                .bar0_value()
++                .to_le_bytes()
++                .get(offset - PCI_BAR0_OFFSET)
++                .copied()
++                .unwrap_or(PCI_UNIMPLEMENTED_READ_BYTE),
++            _ => self
++                .config
++                .read_u8(offset)
++                .unwrap_or(PCI_UNIMPLEMENTED_READ_BYTE),
++        }
++    }
++
++    fn pci_cfg_selection(&self) -> Option<(u8, u32, usize)> {
++        let offset = self.pci_cfg_cap_offset?;
++        let bar = self.config.read_u8(offset + vendor_cap::BAR)?;
++        let bar_offset = self.config.read_u32(offset + vendor_cap::REGION_OFFSET)?;
++        let length = self.config.read_u32(offset + vendor_cap::REGION_LENGTH)? as usize;
++        if bar != PCI_BAR0_INDEX
++            || !matches!(length, BYTE_SIZE | WORD_SIZE | DWORD_SIZE)
++            || !(bar_offset as usize).is_multiple_of(length)
++        {
++            return None;
++        }
++        let end = bar_offset.checked_add(length as u32)?;
++        if !self.capabilities.iter().any(|capability| {
++            capability.cfg_type != VIRTIO_PCI_CAP_PCI_CFG
++                && bar_offset >= capability.bar_offset
++                && capability
++                    .bar_offset
++                    .checked_add(capability.bar_len)
++                    .is_some_and(|capability_end| end <= capability_end)
++        }) {
++            return None;
++        }
++        Some((bar, bar_offset, length))
++    }
++
++    fn read_bar_region(&mut self, offset: u64, data: &mut [u8]) -> PciBarAccess {
++        if offset + data.len() as u64 <= u64::from(COMMON_CFG_LEN) {
++            self.read_common_config(offset, data);
++            return PciBarAccess::Handled;
++        }
++        if offset >= NOTIFY_CFG_OFFSET
++            && offset + data.len() as u64 <= NOTIFY_CFG_OFFSET + u64::from(NOTIFY_CFG_LEN)
++        {
++            data.fill(0);
++            return PciBarAccess::Handled;
++        }
++        if offset == ISR_CFG_OFFSET && data.len() == BYTE_SIZE {
++            data.copy_from_slice(&[self.interrupt.read_isr()]);
++            return PciBarAccess::Handled;
++        }
++        if offset >= DEVICE_CFG_OFFSET
++            && offset + data.len() as u64 <= DEVICE_CFG_OFFSET + u64::from(self.device_config_len)
++        {
++            if data.is_empty() {
++                return PciBarAccess::Handled;
++            }
++            self.state
++                .locked_device()
++                .read_config(offset - DEVICE_CFG_OFFSET, data);
++            return PciBarAccess::Handled;
++        }
++        data.fill(PCI_UNIMPLEMENTED_READ_BYTE);
++        PciBarAccess::Unhandled
++    }
++
++    fn write_bar_region(&mut self, offset: u64, data: &[u8]) -> PciBarAccess {
++        if offset + data.len() as u64 <= u64::from(COMMON_CFG_LEN) {
++            self.write_common_config(offset, data);
++            return PciBarAccess::Handled;
++        }
++        if offset >= NOTIFY_CFG_OFFSET && offset < NOTIFY_CFG_OFFSET + u64::from(NOTIFY_CFG_LEN) {
++            self.notify_queue(offset, data);
++            return PciBarAccess::Handled;
++        }
++        if offset >= DEVICE_CFG_OFFSET
++            && offset + data.len() as u64 <= DEVICE_CFG_OFFSET + u64::from(self.device_config_len)
++        {
++            if self.state.device_status & (device_status::DRIVER | device_status::FAILED)
++                == device_status::DRIVER
++            {
++                self.state
++                    .locked_device()
++                    .write_config(offset - DEVICE_CFG_OFFSET, data);
++            }
++            return PciBarAccess::Handled;
++        }
++        PciBarAccess::Unhandled
++    }
++
++    fn read_common_config(&mut self, offset: u64, data: &mut [u8]) {
++        let queue_select = self.state.queue_select;
++        match (offset, data.len()) {
++            (common_cfg::DEVICE_FEATURE_SELECT, DWORD_SIZE) => {
++                data.copy_from_slice(&self.state.features_select.to_le_bytes());
++            }
++            (common_cfg::DEVICE_FEATURE, DWORD_SIZE) => {
++                let value = self
++                    .state
++                    .locked_device()
++                    .avail_features_by_page(self.state.features_select);
++                data.copy_from_slice(&value.to_le_bytes());
++            }
++            (common_cfg::DRIVER_FEATURE_SELECT, DWORD_SIZE) => {
++                data.copy_from_slice(&self.state.acked_features_select.to_le_bytes());
++            }
++            (common_cfg::DRIVER_FEATURE, DWORD_SIZE) => {
++                let page = self.state.acked_features_select;
++                let feature_words = u64::BITS / u32::BITS;
++                let features = if page < feature_words {
++                    (self.state.locked_device().acked_features() >> (page * u32::BITS)) as u32
++                } else {
++                    0
++                };
++                data.copy_from_slice(&features.to_le_bytes());
++            }
++            (common_cfg::MSIX_CONFIG, WORD_SIZE) => {
++                data.copy_from_slice(&VIRTIO_MSI_NO_VECTOR.to_le_bytes());
++            }
++            (common_cfg::NUMBER_OF_QUEUES, WORD_SIZE) => {
++                data.copy_from_slice(&(self.state.queue_config.len() as u16).to_le_bytes());
++            }
++            (common_cfg::DEVICE_STATUS, BYTE_SIZE) => {
++                data.copy_from_slice(&[self.state.device_status as u8]);
++            }
++            (common_cfg::CONFIG_GENERATION, BYTE_SIZE) => {
++                data.copy_from_slice(&[self.state.config_generation as u8]);
++            }
++            (common_cfg::QUEUE_SELECT, WORD_SIZE) => {
++                data.copy_from_slice(&(queue_select as u16).to_le_bytes());
++            }
++            (common_cfg::QUEUE_SIZE, WORD_SIZE) => {
++                let size = self
++                    .queue_registers
++                    .get(queue_select as usize)
++                    .map_or(0, |registers| registers.size);
++                data.copy_from_slice(&size.to_le_bytes());
++            }
++            (common_cfg::QUEUE_MSIX_VECTOR, WORD_SIZE) => {
++                data.copy_from_slice(&VIRTIO_MSI_NO_VECTOR.to_le_bytes());
++            }
++            (common_cfg::QUEUE_ENABLE, WORD_SIZE) => {
++                let enabled = self
++                    .queue_registers
++                    .get(queue_select as usize)
++                    .is_some_and(|registers| registers.enabled);
++                let value = if enabled { VIRTIO_QUEUE_READY } else { 0 };
++                data.copy_from_slice(&value.to_le_bytes());
++            }
++            (common_cfg::QUEUE_NOTIFY_OFFSET, WORD_SIZE) => {
++                let notify_offset = if self.state.queue_max_size(queue_select) == 0 {
++                    0
++                } else {
++                    queue_select as u16
++                };
++                data.copy_from_slice(&notify_offset.to_le_bytes());
++            }
++            (
++                common_cfg::QUEUE_DESCRIPTOR
++                | common_cfg::QUEUE_DESCRIPTOR_HIGH
++                | common_cfg::QUEUE_DRIVER
++                | common_cfg::QUEUE_DRIVER_HIGH
++                | common_cfg::QUEUE_DEVICE
++                | common_cfg::QUEUE_DEVICE_HIGH,
++                DWORD_SIZE,
++            ) => {
++                let (base, address) = self.queue_address(offset, queue_select);
++                let word = address
++                    .map(|address| address.wrapping_shr(((offset - base) as u32) * u8::BITS) as u32)
++                    .unwrap_or(0);
++                data.copy_from_slice(&word.to_le_bytes());
++            }
++            (
++                common_cfg::QUEUE_DESCRIPTOR | common_cfg::QUEUE_DRIVER | common_cfg::QUEUE_DEVICE,
++                QWORD_SIZE,
++            ) => {
++                let (_, address) = self.queue_address(offset, queue_select);
++                data.copy_from_slice(&address.unwrap_or(0).to_le_bytes());
++            }
++            (common_cfg::QUEUE_NOTIFY_DATA | common_cfg::QUEUE_RESET_OFFSET, WORD_SIZE) => {
++                data.copy_from_slice(&0u16.to_le_bytes());
++            }
++            _ => data.fill(PCI_UNIMPLEMENTED_READ_BYTE),
++        }
++    }
++
++    fn reset_queue_registers(&mut self) {
++        for (registers, queue_config) in self
++            .queue_registers
++            .iter_mut()
++            .zip(&self.state.queue_config)
++        {
++            *registers = PciQueueRegisters::new(queue_config.size);
++        }
++    }
++
++    fn queue_address(&self, offset: u64, queue_select: u32) -> (u64, Option<u64>) {
++        let base = match offset {
++            common_cfg::QUEUE_DESCRIPTOR | common_cfg::QUEUE_DESCRIPTOR_HIGH => {
++                common_cfg::QUEUE_DESCRIPTOR
++            }
++            common_cfg::QUEUE_DRIVER | common_cfg::QUEUE_DRIVER_HIGH => common_cfg::QUEUE_DRIVER,
++            common_cfg::QUEUE_DEVICE | common_cfg::QUEUE_DEVICE_HIGH => common_cfg::QUEUE_DEVICE,
++            _ => offset,
++        };
++        let address = self.state.with_queue(queue_select, None, |queue| {
++            Some(match base {
++                common_cfg::QUEUE_DESCRIPTOR => queue.desc_table.raw_value(),
++                common_cfg::QUEUE_DRIVER => queue.avail_ring.raw_value(),
++                common_cfg::QUEUE_DEVICE => queue.used_ring.raw_value(),
++                _ => 0,
++            })
++        });
++        (base, address)
++    }
++
++    fn write_common_config(&mut self, offset: u64, data: &[u8]) {
++        if offset == common_cfg::DEVICE_STATUS && data.len() == BYTE_SIZE {
++            let status = u32::from(u8::from_le_bytes(data.try_into().unwrap()));
++            let was_activated = self.state.locked_device().is_activated();
++            if self.state.set_device_status(
++                status,
++                self.device_interrupt.clone(),
++                self.bus_master_enabled.load(Ordering::Acquire),
++            ) {
++                self.interrupt.reset();
++                self.reset_queue_registers();
++            } else if !was_activated && self.state.locked_device().is_activated() {
++                self.replay_pending_queue_notifications();
++            }
++            return;
++        }
++
++        let queue_select = self.state.queue_select;
++        match (offset, data.len()) {
++            (common_cfg::DEVICE_FEATURE_SELECT, DWORD_SIZE) => {
++                self.state.features_select = u32::from_le_bytes(data.try_into().unwrap())
++            }
++            (common_cfg::DRIVER_FEATURE_SELECT, DWORD_SIZE) => {
++                self.state.acked_features_select = u32::from_le_bytes(data.try_into().unwrap())
++            }
++            (common_cfg::DRIVER_FEATURE, DWORD_SIZE)
++                if self.state.device_status
++                    & (device_status::DRIVER
++                        | device_status::FEATURES_OK
++                        | device_status::FAILED)
++                    == device_status::DRIVER =>
++            {
++                self.state.locked_device().ack_features_by_page(
++                    self.state.acked_features_select,
++                    u32::from_le_bytes(data.try_into().unwrap()),
++                );
++            }
++            (common_cfg::QUEUE_SELECT, WORD_SIZE) => {
++                self.state.queue_select = u16::from_le_bytes(data.try_into().unwrap()) as u32
++            }
++            (common_cfg::QUEUE_SIZE, WORD_SIZE) if self.can_configure_queue(queue_select) => {
++                let size = u16::from_le_bytes(data.try_into().unwrap());
++                if self
++                    .state
++                    .with_queue_mut(queue_select, |queue| queue.size = size)
++                    && let Some(registers) = self.queue_registers.get_mut(queue_select as usize)
++                {
++                    registers.size = size;
++                }
++            }
++            (common_cfg::QUEUE_ENABLE, WORD_SIZE)
++                if u16::from_le_bytes(data.try_into().unwrap()) == VIRTIO_QUEUE_READY
++                    && self.can_configure_queue(queue_select) =>
++            {
++                if self
++                    .state
++                    .with_queue_mut(queue_select, |queue| queue.ready = true)
++                    && let Some(registers) = self.queue_registers.get_mut(queue_select as usize)
++                {
++                    registers.enabled = true;
++                }
++            }
++            (
++                common_cfg::QUEUE_DESCRIPTOR
++                | common_cfg::QUEUE_DESCRIPTOR_HIGH
++                | common_cfg::QUEUE_DRIVER
++                | common_cfg::QUEUE_DRIVER_HIGH
++                | common_cfg::QUEUE_DEVICE
++                | common_cfg::QUEUE_DEVICE_HIGH,
++                DWORD_SIZE,
++            ) => {
++                let value = u32::from_le_bytes(data.try_into().unwrap());
++                self.write_queue_address(offset, queue_select, value);
++            }
++            (
++                common_cfg::QUEUE_DESCRIPTOR | common_cfg::QUEUE_DRIVER | common_cfg::QUEUE_DEVICE,
++                QWORD_SIZE,
++            ) => {
++                let value = u64::from_le_bytes(data.try_into().unwrap());
++                self.write_queue_address_full(offset, queue_select, value);
++            }
++            _ => {}
++        }
++    }
++
++    fn can_configure_queue(&self, queue_select: u32) -> bool {
++        self.state.device_status & (device_status::FEATURES_OK | device_status::FAILED)
++            == device_status::FEATURES_OK
++            && !self
++                .state
++                .with_queue(queue_select, false, |queue| queue.ready)
++    }
++
++    fn write_queue_address(&mut self, offset: u64, queue_select: u32, value: u32) {
++        let base = match offset {
++            common_cfg::QUEUE_DESCRIPTOR | common_cfg::QUEUE_DESCRIPTOR_HIGH => {
++                common_cfg::QUEUE_DESCRIPTOR
++            }
++            common_cfg::QUEUE_DRIVER | common_cfg::QUEUE_DRIVER_HIGH => common_cfg::QUEUE_DRIVER,
++            common_cfg::QUEUE_DEVICE | common_cfg::QUEUE_DEVICE_HIGH => common_cfg::QUEUE_DEVICE,
++            _ => return,
++        };
++        let shift = ((offset - base) as u32) * u8::BITS;
++        if self.can_configure_queue(queue_select) {
++            self.state.with_queue_mut(queue_select, |queue| {
++                let address = match base {
++                    common_cfg::QUEUE_DESCRIPTOR => &mut queue.desc_table,
++                    common_cfg::QUEUE_DRIVER => &mut queue.avail_ring,
++                    _ => &mut queue.used_ring,
++                };
++                address.0 =
++                    (address.0 & !(QUEUE_ADDRESS_HALF_MASK << shift)) | (u64::from(value) << shift);
++            });
++        }
++    }
++
++    fn write_queue_address_full(&mut self, offset: u64, queue_select: u32, value: u64) {
++        if !self.can_configure_queue(queue_select) {
++            return;
++        }
++        self.state
++            .with_queue_mut(queue_select, |queue| match offset {
++                common_cfg::QUEUE_DESCRIPTOR => queue.desc_table = GuestAddress(value),
++                common_cfg::QUEUE_DRIVER => queue.avail_ring = GuestAddress(value),
++                common_cfg::QUEUE_DEVICE => queue.used_ring = GuestAddress(value),
++                _ => {}
++            });
++    }
++
++    fn notify_queue(&mut self, offset: u64, data: &[u8]) {
++        let relative = offset - NOTIFY_CFG_OFFSET;
++        if data.len() != WORD_SIZE || !relative.is_multiple_of(u64::from(NOTIFY_OFF_MULTIPLIER)) {
++            warn!("invalid virtio-pci queue notification at 0x{offset:x}");
++            return;
++        }
++        let queue_index = (relative / u64::from(NOTIFY_OFF_MULTIPLIER)) as usize;
++        let Some(registers) = self.queue_registers.get_mut(queue_index) else {
++            return;
++        };
++        if !self.bus_master_enabled.load(Ordering::Acquire) {
++            registers.notification_pending = true;
++            return;
++        }
++        if let Some(event) = self.state.queue_evts().get(queue_index)
++            && let Err(err) = event.write(QUEUE_EVENT_SIGNAL)
++        {
++            warn!("failed to notify virtio-pci queue {queue_index}: {err}");
++        }
++    }
++
++    fn activate_if_ready(&mut self) {
++        if !self.bus_master_enabled.load(Ordering::Acquire)
++            || self.state.device_status & device_status::DRIVER_OK == 0
++        {
++            return;
++        }
++
++        if !self.state.locked_device().is_activated() {
++            self.state.activate(self.device_interrupt.clone());
++        }
++        self.replay_pending_queue_notifications();
++    }
++
++    fn replay_pending_queue_notifications(&mut self) {
++        if !self.bus_master_enabled.load(Ordering::Acquire) {
++            return;
++        }
++        for (queue_index, (registers, event)) in self
++            .queue_registers
++            .iter_mut()
++            .zip(self.state.queue_evts())
++            .enumerate()
++        {
++            if registers.notification_pending {
++                registers.notification_pending = false;
++                if let Err(err) = event.write(QUEUE_EVENT_SIGNAL) {
++                    warn!("failed to notify virtio-pci queue {queue_index}: {err}");
++                }
++            }
++        }
++    }
++
++    fn read_pci_cfg_region(&mut self, data: &mut [u8]) {
++        if let Some((PCI_BAR0_INDEX, selected_offset, len)) = self.pci_cfg_selection()
++            && data.len() == len
++        {
++            self.read_bar_region(u64::from(selected_offset), data);
++        } else {
++            data.fill(PCI_UNIMPLEMENTED_READ_BYTE);
++        }
++    }
++
++    fn write_pci_cfg_region(&mut self, data: &[u8]) {
++        if let Some((PCI_BAR0_INDEX, selected_offset, len)) = self.pci_cfg_selection()
++            && data.len() == len
++        {
++            self.write_bar_region(u64::from(selected_offset), data);
++        }
++    }
++}
++
++impl PciFunction for VirtioPciTransport {
++    fn read_config(&mut self, offset: u16, data: &mut [u8]) {
++        let start = usize::from(offset);
++        let Some(end) = start.checked_add(data.len()) else {
++            data.fill(PCI_UNIMPLEMENTED_READ_BYTE);
++            return;
++        };
++        if end > PCI_CONFIG_SIZE {
++            data.fill(PCI_UNIMPLEMENTED_READ_BYTE);
++            return;
++        }
++
++        if let Some(cap_offset) = self.pci_cfg_cap_offset {
++            let data_start = cap_offset + vendor_cap::PCI_CONFIG_DATA;
++            if start >= data_start && end <= data_start + PCI_CFG_DATA_SIZE {
++                if start == data_start {
++                    self.read_pci_cfg_region(data);
++                } else {
++                    data.fill(PCI_UNIMPLEMENTED_READ_BYTE);
++                }
++                return;
++            }
++        }
++
++        for (index, byte) in data.iter_mut().enumerate() {
++            *byte = self.config_byte(start + index);
++        }
++    }
++
++    fn write_config(&mut self, offset: u16, data: &[u8]) {
++        let start = usize::from(offset);
++        let Some(end) = start.checked_add(data.len()) else {
++            return;
++        };
++        if end > PCI_CONFIG_SIZE {
++            return;
++        }
++
++        if let Some(pci_cfg_cap_offset) = self.pci_cfg_cap_offset {
++            let data_start = pci_cfg_cap_offset + vendor_cap::PCI_CONFIG_DATA;
++            if start >= data_start && end <= data_start + PCI_CFG_DATA_SIZE {
++                if start == data_start {
++                    self.write_pci_cfg_region(data);
++                }
++                return;
++            }
++        }
++
++        if start == pci_config::BAR0 && data.len() == PCI_BAR0_SIZE {
++            let value = u32::from_le_bytes(data.try_into().unwrap());
++            if value == PCI_BAR_PROBE_VALUE {
++                self.bar_probe = true;
++                return;
++            }
++        }
++
++        let command_end = pci_config::COMMAND + WORD_SIZE;
++        let command_register_touched = start < command_end && end > pci_config::COMMAND;
++        let bus_master_was_enabled = self.bus_master_enabled.load(Ordering::Acquire);
++        for (index, value) in data.iter().copied().enumerate() {
++            let register = start + index;
++            match register {
++                pci_config::COMMAND..=PCI_COMMAND_LAST_BYTE => {
++                    self.config.write_u8(register, value)
++                }
++                pci_config::BAR0..=PCI_BAR0_END => {
++                    self.bar_probe = false;
++                    let mut bytes = self.bar_base.to_le_bytes();
++                    let byte_offset = register - pci_config::BAR0;
++                    if let Some(byte) = bytes.get_mut(byte_offset) {
++                        *byte = value;
++                    }
++                    self.bar_base = u32::from_le_bytes(bytes) & VIRTIO_PCI_BAR0_ADDRESS_MASK;
++                }
++                _ => {
++                    if let Some(cap_offset) = self.pci_cfg_cap_offset {
++                        let cap_field = register.checked_sub(cap_offset);
++                        if cap_field.is_some_and(|field| {
++                            field == vendor_cap::BAR
++                                || (vendor_cap::REGION_OFFSET
++                                    ..vendor_cap::REGION_OFFSET + DWORD_SIZE)
++                                    .contains(&field)
++                                || (vendor_cap::REGION_LENGTH
++                                    ..vendor_cap::REGION_LENGTH + DWORD_SIZE)
++                                    .contains(&field)
++                        }) {
++                            self.config.write_u8(register, value);
++                        }
++                    }
++                }
++            }
++        }
++
++        if command_register_touched {
++            let command = self
++                .config
++                .read_u16(pci_config::COMMAND)
++                .expect("PCI command register fits in configuration space");
++            let bus_master_enabled = command & PCI_COMMAND_MASTER != 0;
++            self.bus_master_enabled
++                .store(bus_master_enabled, Ordering::Release);
++            self.interrupt
++                .set_intx_disabled(command & PCI_COMMAND_INTX_DISABLE != 0);
++            if !bus_master_was_enabled && bus_master_enabled {
++                self.activate_if_ready();
++            }
++        }
++    }
++
++    fn read_bar(&mut self, address: u64, data: &mut [u8]) -> PciBarAccess {
++        let command = self
++            .config
++            .read_u16(pci_config::COMMAND)
++            .expect("PCI command register fits in configuration space");
++        if command & PCI_COMMAND_MEMORY == 0 || self.bar_base == 0 {
++            return PciBarAccess::Unhandled;
++        }
++        let base = u64::from(self.bar_base);
++        let Some(offset) = address.checked_sub(base) else {
++            return PciBarAccess::Unhandled;
++        };
++        if offset
++            .checked_add(data.len() as u64)
++            .is_none_or(|end| end > VIRTIO_PCI_BAR0_SIZE)
++        {
++            return PciBarAccess::Unhandled;
++        }
++        self.read_bar_region(offset, data)
++    }
++
++    fn write_bar(&mut self, address: u64, data: &[u8]) -> PciBarAccess {
++        let command = self
++            .config
++            .read_u16(pci_config::COMMAND)
++            .expect("PCI command register fits in configuration space");
++        if command & PCI_COMMAND_MEMORY == 0 || self.bar_base == 0 {
++            return PciBarAccess::Unhandled;
++        }
++        let base = u64::from(self.bar_base);
++        let Some(offset) = address.checked_sub(base) else {
++            return PciBarAccess::Unhandled;
++        };
++        if offset
++            .checked_add(data.len() as u64)
++            .is_none_or(|end| end > VIRTIO_PCI_BAR0_SIZE)
++        {
++            return PciBarAccess::Unhandled;
++        }
++        self.write_bar_region(offset, data)
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::BusDevice;
++    use crate::virtio::{ActivateResult, DeviceQueue, QueueConfig};
++    use std::sync::atomic::{AtomicBool, Ordering};
++    use vm_memory::GuestAddress;
++
++    const TEST_DEVICE_TYPE: u32 = 1;
++    const TEST_QUEUE_SIZE: u16 = 8;
++    const TEST_SELECTED_QUEUE_SIZE: u16 = 4;
++    const TEST_BAR_BASE: u32 = 0xe100_0000;
++    const TEST_RELOCATED_BAR_BASE: u32 = TEST_BAR_BASE + VIRTIO_PCI_BAR0_SIZE as u32;
++    const TEST_GUEST_MEMORY_SIZE: usize = 0x10000;
++    const TEST_DESCRIPTOR_ADDRESS: u32 = 0x1000;
++    const TEST_DRIVER_ADDRESS: u32 = 0x2000;
++    const TEST_DEVICE_ADDRESS: u32 = 0x3000;
++
++    static QUEUE_CONFIG: [QueueConfig; 1] = [QueueConfig::new(TEST_QUEUE_SIZE)];
++    static MULTI_QUEUE_CONFIG: [QueueConfig; 2] = [
++        QueueConfig::new(TEST_QUEUE_SIZE),
++        QueueConfig::new(TEST_QUEUE_SIZE),
++    ];
++    const DEVICE_CONFIG: [u8; DWORD_SIZE] = [0x12, 0x34, 0x56, 0x78];
++    const TEST_PCI_ADDRESS: crate::pci::PciAddress = crate::pci::PciAddress {
++        bus: 0,
++        device: 1,
++        function: 0,
++    };
++
++    #[derive(Default)]
++    struct DummyIntxLine(AtomicBool);
++
++    impl PciIntxLine for DummyIntxLine {
++        fn set_level(&self, asserted: bool) -> io::Result<()> {
++            self.0.store(asserted, Ordering::SeqCst);
++            Ok(())
++        }
++    }
++
++    struct DummyDevice {
++        acked_features: u64,
++        activated: bool,
++        queue_config: &'static [QueueConfig],
++    }
++
++    impl VirtioDevice for DummyDevice {
++        fn avail_features(&self) -> u64 {
++            1u64 << VIRTIO_F_VERSION_1
++        }
++
++        fn acked_features(&self) -> u64 {
++            self.acked_features
++        }
++
++        fn set_acked_features(&mut self, features: u64) {
++            self.acked_features = features;
++        }
++
++        fn device_type(&self) -> u32 {
++            TEST_DEVICE_TYPE
++        }
++
++        fn device_name(&self) -> &str {
++            "pci-test"
++        }
++
++        fn queue_config(&self) -> &[QueueConfig] {
++            self.queue_config
++        }
++
++        fn config_len(&self) -> Option<u32> {
++            Some(DEVICE_CONFIG.len() as u32)
++        }
++
++        fn read_config(&self, offset: u64, data: &mut [u8]) {
++            let start = offset as usize;
++            let end = start + data.len();
++            let config = DEVICE_CONFIG
++                .get(start..end)
++                .expect("test device configuration read is in bounds");
++            data.copy_from_slice(config);
++        }
++
++        fn write_config(&mut self, _offset: u64, _data: &[u8]) {}
++
++        fn activate(
++            &mut self,
++            _mem: GuestMemoryMmap,
++            _interrupt: InterruptTransport,
++            _queues: Vec<DeviceQueue>,
++        ) -> ActivateResult {
++            self.activated = true;
++            Ok(())
++        }
++
++        fn is_activated(&self) -> bool {
++            self.activated
++        }
++
++        fn reset(&mut self) -> bool {
++            self.activated = false;
++            true
++        }
++    }
++
++    fn transport_with_queue_config(
++        queue_config: &'static [QueueConfig],
++    ) -> (VirtioPciTransport, Arc<DummyIntxLine>) {
++        let mem =
++            GuestMemoryMmap::from_ranges(&[(GuestAddress(0), TEST_GUEST_MEMORY_SIZE)]).unwrap();
++        let intx_line = Arc::new(DummyIntxLine::default());
++        let transport = VirtioPciTransport::new(
++            mem,
++            Arc::new(Mutex::new(DummyDevice {
++                acked_features: 0,
++                activated: false,
++                queue_config,
++            })),
++            5,
++            intx_line.clone(),
++            0,
++        )
++        .unwrap();
++        (transport, intx_line)
++    }
++
++    fn transport_with_line() -> (VirtioPciTransport, Arc<DummyIntxLine>) {
++        transport_with_queue_config(&QUEUE_CONFIG)
++    }
++
++    fn transport() -> VirtioPciTransport {
++        transport_with_line().0
++    }
++
++    fn read_config(transport: &mut VirtioPciTransport, offset: u16, data: &mut [u8]) {
++        PciFunction::read_config(transport, offset, data);
++    }
++
++    fn write_config(transport: &mut VirtioPciTransport, offset: u16, data: &[u8]) {
++        PciFunction::write_config(transport, offset, data);
++    }
++
++    fn enable_memory_bar(transport: &mut VirtioPciTransport) -> u64 {
++        let bar = TEST_BAR_BASE;
++        write_config(
++            transport,
++            pci_config::COMMAND as u16,
++            &(PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER).to_le_bytes(),
++        );
++        write_config(transport, pci_config::BAR0 as u16, &bar.to_le_bytes());
++        u64::from(bar)
++    }
++
++    fn write_bar(transport: &mut VirtioPciTransport, base: u64, offset: u64, data: &[u8]) {
++        assert_eq!(
++            PciFunction::write_bar(transport, base + offset, data),
++            PciBarAccess::Handled
++        );
++    }
++
++    fn read_bar(transport: &mut VirtioPciTransport, address: u64, data: &mut [u8]) {
++        assert_eq!(
++            PciFunction::read_bar(transport, address, data),
++            PciBarAccess::Handled
++        );
++    }
++
++    #[test]
++    fn advertises_modern_virtio_identity_and_capabilities() {
++        let mut transport = transport();
++        let mut vendor_id = [0; WORD_SIZE];
++        read_config(&mut transport, pci_config::VENDOR_ID as u16, &mut vendor_id);
++        assert_eq!(u16::from_le_bytes(vendor_id), PCI_VENDOR_ID_VIRTIO);
++        let mut device_id = [0; WORD_SIZE];
++        read_config(&mut transport, pci_config::DEVICE_ID as u16, &mut device_id);
++        assert_eq!(
++            u16::from_le_bytes(device_id),
++            PCI_DEVICE_ID_VIRTIO_MODERN.wrapping_add(TEST_DEVICE_TYPE as u16)
++        );
++
++        let mut pointer = transport
++            .config
++            .read_u8(pci_config::CAPABILITY_POINTER)
++            .unwrap();
++        let mut cfg_types = Vec::new();
++        while pointer != 0 {
++            let offset = usize::from(pointer);
++            cfg_types.push(
++                transport
++                    .config
++                    .read_u8(offset + vendor_cap::CONFIG_TYPE)
++                    .unwrap(),
++            );
++            pointer = transport.config.read_u8(offset + vendor_cap::NEXT).unwrap();
++        }
++        assert_eq!(
++            cfg_types,
++            [
++                VIRTIO_PCI_CAP_COMMON_CFG,
++                VIRTIO_PCI_CAP_NOTIFY_CFG,
++                VIRTIO_PCI_CAP_ISR_CFG,
++                VIRTIO_PCI_CAP_DEVICE_CFG,
++                VIRTIO_PCI_CAP_PCI_CFG,
++            ]
++        );
++    }
++
++    #[test]
++    fn bar_probe_and_device_configuration_are_routed() {
++        let mut transport = transport();
++        write_config(
++            &mut transport,
++            pci_config::BAR0 as u16,
++            &PCI_BAR_PROBE_VALUE.to_le_bytes(),
++        );
++        let mut bar = [0; DWORD_SIZE];
++        read_config(&mut transport, pci_config::BAR0 as u16, &mut bar);
++        let expected_probe = (!(VIRTIO_PCI_BAR0_SIZE as u32 - 1)) & PCI_BAR_ADDRESS_MASK;
++        assert_eq!(u32::from_le_bytes(bar), expected_probe);
++
++        let bar_base = enable_memory_bar(&mut transport);
++        let mut config = [0; 4];
++        read_bar(&mut transport, bar_base + DEVICE_CFG_OFFSET, &mut config);
++        assert_eq!(config, DEVICE_CONFIG);
++    }
++
++    #[test]
++    fn bar_router_follows_config_space_relocation() {
++        let function: Arc<Mutex<dyn PciFunction>> = Arc::new(Mutex::new(transport()));
++        let root = crate::pci::PciRoot::shared();
++        root.lock()
++            .unwrap()
++            .insert(TEST_PCI_ADDRESS, function)
++            .unwrap();
++        let mut config = crate::pci::ConfigMechanism1::new(root.clone());
++        let mut bars = crate::pci::BarWindow::new(root, u64::from(TEST_BAR_BASE));
++        let first_bar = TEST_BAR_BASE;
++        let second_bar = TEST_RELOCATED_BAR_BASE;
++        let selector = TEST_PCI_ADDRESS.config_mechanism_1_selector(pci_config::BAR0 as u16);
++        config.write(
++            0,
++            crate::pci::CONFIG_MECHANISM_1_ADDRESS_PORT_OFFSET,
++            &selector.to_le_bytes(),
++        );
++        config.write(
++            0,
++            crate::pci::CONFIG_MECHANISM_1_DATA_PORT_OFFSET,
++            &first_bar.to_le_bytes(),
++        );
++
++        let mut value = [0; 4];
++        bars.read(0, u64::from(DEVICE_CFG_OFFSET), &mut value);
++        assert_eq!(value, DEVICE_CONFIG);
++
++        config.write(
++            0,
++            crate::pci::CONFIG_MECHANISM_1_DATA_PORT_OFFSET,
++            &second_bar.to_le_bytes(),
++        );
++        bars.read(0, u64::from(DEVICE_CFG_OFFSET), &mut value);
++        assert_eq!(value, [PCI_UNIMPLEMENTED_READ_BYTE; DWORD_SIZE]);
++        bars.read(
++            0,
++            u64::from(second_bar - first_bar) + u64::from(DEVICE_CFG_OFFSET),
++            &mut value,
++        );
++        assert_eq!(value, DEVICE_CONFIG);
++    }
++
++    #[test]
++    fn pci_cfg_capability_proxies_bar_accesses() {
++        let mut transport = transport();
++        let pci_cfg = transport
++            .capabilities
++            .iter()
++            .find(|capability| capability.cfg_type == VIRTIO_PCI_CAP_PCI_CFG)
++            .unwrap()
++            .offset;
++        write_config(
++            &mut transport,
++            u16::from(pci_cfg) + vendor_cap::REGION_OFFSET as u16,
++            &(DEVICE_CFG_OFFSET as u32).to_le_bytes(),
++        );
++        write_config(
++            &mut transport,
++            u16::from(pci_cfg) + vendor_cap::REGION_LENGTH as u16,
++            &(PCI_CFG_DATA_SIZE as u32).to_le_bytes(),
++        );
++
++        let mut config = [0; PCI_CFG_DATA_SIZE];
++        read_config(
++            &mut transport,
++            u16::from(pci_cfg) + vendor_cap::PCI_CONFIG_DATA as u16,
++            &mut config,
++        );
++        assert_eq!(config, DEVICE_CONFIG);
++    }
++
++    #[test]
++    fn queue_notifications_and_isr_follow_pci_bar_accesses() {
++        let (mut transport, intx_line) = transport_with_line();
++        let bar_base = enable_memory_bar(&mut transport);
++        let queue_event = transport.state.queue_evts().first().unwrap().clone();
++
++        assert_eq!(
++            PciFunction::write_bar(&mut transport, bar_base + NOTIFY_CFG_OFFSET, &[0, 0]),
++            PciBarAccess::Handled
++        );
++        assert_eq!(queue_event.read().unwrap(), QUEUE_EVENT_SIGNAL);
++
++        transport.device_interrupt.try_signal_used_queue().unwrap();
++        transport
++            .device_interrupt
++            .try_signal_config_change()
++            .unwrap();
++        assert!(intx_line.0.load(Ordering::SeqCst));
++        let mut pci_status = [0; WORD_SIZE];
++        read_config(&mut transport, pci_config::STATUS as u16, &mut pci_status);
++        assert_ne!(u16::from_le_bytes(pci_status) & PCI_STATUS_INTERRUPT, 0);
++
++        let mut isr = [0; BYTE_SIZE];
++        read_bar(&mut transport, bar_base + ISR_CFG_OFFSET, &mut isr);
++        assert_eq!(isr, [VIRTIO_ISR_QUEUE | VIRTIO_ISR_CONFIG]);
++        assert!(!intx_line.0.load(Ordering::SeqCst));
++
++        pci_status = [0; 2];
++        read_config(&mut transport, pci_config::STATUS as u16, &mut pci_status);
++        assert_eq!(u16::from_le_bytes(pci_status) & PCI_STATUS_INTERRUPT, 0);
++    }
++
++    #[test]
++    fn intx_disable_masks_and_replays_pending_interrupts() {
++        let (mut transport, intx_line) = transport_with_line();
++        let command = PCI_COMMAND_MEMORY | PCI_COMMAND_INTX_DISABLE;
++        write_config(&mut transport, 4, &command.to_le_bytes());
++        transport.device_interrupt.try_signal_used_queue().unwrap();
++        assert!(!intx_line.0.load(Ordering::SeqCst));
++
++        write_config(&mut transport, 4, &PCI_COMMAND_MEMORY.to_le_bytes());
++        assert!(intx_line.0.load(Ordering::SeqCst));
++
++        let bar_base = u64::from(TEST_BAR_BASE);
++        write_config(
++            &mut transport,
++            pci_config::BAR0 as u16,
++            &(bar_base as u32).to_le_bytes(),
++        );
++        let mut isr = [0; BYTE_SIZE];
++        read_bar(&mut transport, bar_base + ISR_CFG_OFFSET, &mut isr);
++        assert_eq!(isr, [VIRTIO_ISR_QUEUE]);
++        assert!(!intx_line.0.load(Ordering::SeqCst));
++    }
++
++    #[test]
++    fn queue_common_configuration_uses_virtio_register_widths() {
++        let mut transport = transport();
++        let bar_base = enable_memory_bar(&mut transport);
++        let mut value = [0; WORD_SIZE];
++        read_bar(
++            &mut transport,
++            bar_base + common_cfg::NUMBER_OF_QUEUES,
++            &mut value,
++        );
++        assert_eq!(u16::from_le_bytes(value), 1);
++
++        let mut wrong_width = [0; DWORD_SIZE];
++        read_bar(
++            &mut transport,
++            bar_base + common_cfg::NUMBER_OF_QUEUES,
++            &mut wrong_width,
++        );
++        assert_eq!(wrong_width, [PCI_UNIMPLEMENTED_READ_BYTE; DWORD_SIZE]);
++    }
++
++    #[test]
++    fn queue_setup_activation_and_device_reset_use_shared_state() {
++        let mut transport = transport();
++        let bar_base = enable_memory_bar(&mut transport);
++        let queue_event = transport.state.queue_evts().first().unwrap().clone();
++        let mut queue_size = [0; WORD_SIZE];
++        read_bar(
++            &mut transport,
++            bar_base + common_cfg::QUEUE_SIZE,
++            &mut queue_size,
++        );
++        assert_eq!(u16::from_le_bytes(queue_size), TEST_QUEUE_SIZE);
++
++        write_bar(
++            &mut transport,
++            bar_base,
++            common_cfg::DEVICE_STATUS,
++            &[device_status::ACKNOWLEDGE as u8],
++        );
++        write_bar(
++            &mut transport,
++            bar_base,
++            common_cfg::DEVICE_STATUS,
++            &[(device_status::ACKNOWLEDGE | device_status::DRIVER) as u8],
++        );
++        write_bar(
++            &mut transport,
++            bar_base,
++            common_cfg::DEVICE_STATUS,
++            &[
++                (device_status::ACKNOWLEDGE | device_status::DRIVER | device_status::FEATURES_OK)
++                    as u8,
++            ],
++        );
++        write_bar(
++            &mut transport,
++            bar_base,
++            common_cfg::QUEUE_SELECT,
++            &0u16.to_le_bytes(),
++        );
++        write_bar(
++            &mut transport,
++            bar_base,
++            common_cfg::QUEUE_SIZE,
++            &TEST_SELECTED_QUEUE_SIZE.to_le_bytes(),
++        );
++        read_bar(
++            &mut transport,
++            bar_base + common_cfg::QUEUE_SIZE,
++            &mut queue_size,
++        );
++        assert_eq!(u16::from_le_bytes(queue_size), TEST_SELECTED_QUEUE_SIZE);
++        write_bar(
++            &mut transport,
++            bar_base,
++            common_cfg::QUEUE_DESCRIPTOR,
++            &TEST_DESCRIPTOR_ADDRESS.to_le_bytes(),
++        );
++        write_bar(
++            &mut transport,
++            bar_base,
++            common_cfg::QUEUE_DRIVER,
++            &TEST_DRIVER_ADDRESS.to_le_bytes(),
++        );
++        write_bar(
++            &mut transport,
++            bar_base,
++            common_cfg::QUEUE_DEVICE,
++            &TEST_DEVICE_ADDRESS.to_le_bytes(),
++        );
++        write_bar(
++            &mut transport,
++            bar_base,
++            common_cfg::QUEUE_ENABLE,
++            &VIRTIO_QUEUE_READY.to_le_bytes(),
++        );
++        write_bar(
++            &mut transport,
++            bar_base,
++            common_cfg::DEVICE_STATUS,
++            &[(device_status::ACKNOWLEDGE
++                | device_status::DRIVER
++                | device_status::FEATURES_OK
++                | device_status::DRIVER_OK) as u8],
++        );
++
++        assert!(transport.state.locked_device().is_activated());
++        assert!(queue_event.read().is_err());
++        read_bar(
++            &mut transport,
++            bar_base + common_cfg::QUEUE_SIZE,
++            &mut queue_size,
++        );
++        assert_eq!(u16::from_le_bytes(queue_size), TEST_SELECTED_QUEUE_SIZE);
++        let mut queue_enable = [0; WORD_SIZE];
++        read_bar(
++            &mut transport,
++            bar_base + common_cfg::QUEUE_ENABLE,
++            &mut queue_enable,
++        );
++        assert_eq!(u16::from_le_bytes(queue_enable), VIRTIO_QUEUE_READY);
++
++        write_bar(
++            &mut transport,
++            bar_base,
++            common_cfg::DEVICE_STATUS,
++            &[device_status::INIT as u8],
++        );
++        assert_eq!(transport.state.device_status, device_status::INIT);
++        assert!(!transport.state.locked_device().is_activated());
++        assert!(transport.state.queues.is_some());
++        read_bar(
++            &mut transport,
++            bar_base + common_cfg::QUEUE_SIZE,
++            &mut queue_size,
++        );
++        assert_eq!(u16::from_le_bytes(queue_size), TEST_QUEUE_SIZE);
++        read_bar(
++            &mut transport,
++            bar_base + common_cfg::QUEUE_ENABLE,
++            &mut queue_enable,
++        );
++        assert_eq!(u16::from_le_bytes(queue_enable), 0);
++    }
++
++    #[test]
++    fn bus_master_enable_gates_pci_queue_activation_and_notifications() {
++        let (mut transport, _) = transport_with_queue_config(&MULTI_QUEUE_CONFIG);
++        let bar_base = u64::from(TEST_BAR_BASE);
++        write_config(
++            &mut transport,
++            pci_config::COMMAND as u16,
++            &PCI_COMMAND_MEMORY.to_le_bytes(),
++        );
++        write_config(
++            &mut transport,
++            pci_config::BAR0 as u16,
++            &(bar_base as u32).to_le_bytes(),
++        );
++        let queue_events = transport.state.queue_evts().to_vec();
++
++        write_bar(
++            &mut transport,
++            bar_base,
++            common_cfg::DEVICE_STATUS,
++            &[device_status::ACKNOWLEDGE as u8],
++        );
++        write_bar(
++            &mut transport,
++            bar_base,
++            common_cfg::DEVICE_STATUS,
++            &[(device_status::ACKNOWLEDGE | device_status::DRIVER) as u8],
++        );
++        write_bar(
++            &mut transport,
++            bar_base,
++            common_cfg::DEVICE_STATUS,
++            &[
++                (device_status::ACKNOWLEDGE | device_status::DRIVER | device_status::FEATURES_OK)
++                    as u8,
++            ],
++        );
++        write_bar(
++            &mut transport,
++            bar_base,
++            common_cfg::DEVICE_STATUS,
++            &[(device_status::ACKNOWLEDGE
++                | device_status::DRIVER
++                | device_status::FEATURES_OK
++                | device_status::DRIVER_OK) as u8],
++        );
++        assert!(!transport.state.locked_device().is_activated());
++
++        write_bar(
++            &mut transport,
++            bar_base,
++            NOTIFY_CFG_OFFSET + u64::from(NOTIFY_OFF_MULTIPLIER),
++            &0u16.to_le_bytes(),
++        );
++        assert!(queue_events[0].read().is_err());
++        assert!(queue_events[1].read().is_err());
++
++        write_config(
++            &mut transport,
++            pci_config::COMMAND as u16,
++            &(PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER).to_le_bytes(),
++        );
++        assert!(transport.state.locked_device().is_activated());
++        assert!(queue_events[0].read().is_err());
++        assert_eq!(queue_events[1].read().unwrap(), QUEUE_EVENT_SIGNAL);
++
++        write_config(
++            &mut transport,
++            pci_config::COMMAND as u16,
++            &PCI_COMMAND_MEMORY.to_le_bytes(),
++        );
++
++        write_bar(
++            &mut transport,
++            bar_base,
++            NOTIFY_CFG_OFFSET,
++            &0u16.to_le_bytes(),
++        );
++        assert!(queue_events[0].read().is_err());
++        assert!(queue_events[1].read().is_err());
++
++        write_config(
++            &mut transport,
++            pci_config::COMMAND as u16,
++            &(PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER).to_le_bytes(),
++        );
++        assert_eq!(queue_events[0].read().unwrap(), QUEUE_EVENT_SIGNAL);
++        assert!(queue_events[1].read().is_err());
++    }
++}
+diff -ruN a/src/devices/src/virtio/queue.rs b/src/devices/src/virtio/queue.rs
+--- a/src/devices/src/virtio/queue.rs	2026-10-09 07:35:04
++++ b/src/devices/src/virtio/queue.rs	2026-10-12 21:50:21
+@@ -8,7 +8,8 @@
+ use std::cmp::min;
+ use std::fmt::{self, Debug, Display};
+ use std::num::Wrapping;
+-use std::sync::atomic::{Ordering, fence};
++use std::sync::Arc;
++use std::sync::atomic::{AtomicBool, Ordering, fence};
+ use virtio_bindings::virtio_ring::VRING_USED_F_NO_NOTIFY;
+ use vm_memory::{
+     Address, ByteValued, Bytes, GuestAddress, GuestMemoryBackend, GuestMemoryError,
+@@ -70,6 +71,8 @@
+     GuestMemoryError(GuestMemoryError),
+     /// DescriptorChain split is out of bounds.
+     SplitOutOfBounds(usize),
++    /// PCI bus mastering is disabled.
++    BusMasterDisabled,
+ }
+ 
+ impl Display for Error {
+@@ -109,6 +112,7 @@
+             FindMemoryRegion => write!(f, "no memory region for this address range"),
+             GuestMemoryError(e) => write!(f, "descriptor guest memory error: {e}"),
+             SplitOutOfBounds(off) => write!(f, "`DescriptorChain` split is out of bounds: {off}"),
++            BusMasterDisabled => write!(f, "PCI bus mastering is disabled"),
+         }
+     }
+ }
+@@ -315,7 +319,7 @@
+     }
+ }
+ 
+-#[derive(Debug, Eq, PartialEq)]
++#[derive(Debug)]
+ /// A virtio queue's parameters.
+ pub struct Queue {
+     /// The maximal size in elements offered by the device
+@@ -342,11 +346,36 @@
+     /// VIRTIO_F_RING_EVENT_IDX negotiated.
+     event_idx_enabled: bool,
+ 
++    /// PCI queue memory accesses are allowed while the Command register's master bit is set.
++    bus_master_gate: Option<Arc<AtomicBool>>,
++
+     /// The number of descriptor chains placed in the used ring via `add_used`
+     /// since the last time `needs_notification` was called on the associated queue.
+     num_added: Wrapping<u16>,
+ }
+ 
++impl PartialEq for Queue {
++    fn eq(&self, other: &Self) -> bool {
++        self.max_size == other.max_size
++            && self.size == other.size
++            && self.ready == other.ready
++            && self.desc_table == other.desc_table
++            && self.avail_ring == other.avail_ring
++            && self.used_ring == other.used_ring
++            && self.next_avail == other.next_avail
++            && self.next_used == other.next_used
++            && self.event_idx_enabled == other.event_idx_enabled
++            && self.num_added == other.num_added
++            && match (&self.bus_master_gate, &other.bus_master_gate) {
++                (None, None) => true,
++                (Some(gate), Some(other_gate)) => Arc::ptr_eq(gate, other_gate),
++                _ => false,
++            }
++    }
++}
++
++impl Eq for Queue {}
++
+ impl Queue {
+     /// Constructs an empty virtio queue with the given `max_size`.
+     pub fn new(max_size: u16) -> Queue {
+@@ -360,10 +389,21 @@
+             next_avail: Wrapping(0),
+             next_used: Wrapping(0),
+             event_idx_enabled: false,
++            bus_master_gate: None,
+             num_added: Wrapping(0),
+         }
+     }
+ 
++    pub(crate) fn set_bus_master_gate(&mut self, gate: Arc<AtomicBool>) {
++        self.bus_master_gate = Some(gate);
++    }
++
++    fn bus_master_enabled(&self) -> bool {
++        self.bus_master_gate
++            .as_ref()
++            .is_none_or(|gate| gate.load(Ordering::Acquire))
++    }
++
+     pub fn get_max_size(&self) -> u16 {
+         self.max_size
+     }
+@@ -436,6 +476,9 @@
+     /// Returns the number of yet-to-be-popped descriptor chains in the avail ring.
+     #[allow(clippy::len_without_is_empty)]
+     pub fn len(&self, mem: &GuestMemoryMmap) -> u16 {
++        if !self.bus_master_enabled() {
++            return 0;
++        }
+         (self.avail_idx(mem, Ordering::Acquire).unwrap() - self.next_avail).0
+     }
+ 
+@@ -446,6 +489,9 @@
+ 
+     /// Pop the first available descriptor chain from the avail ring.
+     pub fn pop<'b>(&mut self, mem: &'b GuestMemoryMmap) -> Option<DescriptorChain<'b>> {
++        if !self.bus_master_enabled() {
++            return None;
++        }
+         if self.len(mem) == 0 || self.actual_size() == 0 {
+             return None;
+         }
+@@ -501,6 +547,9 @@
+         head_index: u16,
+         len: u32,
+     ) -> Result<(), Error> {
++        if !self.bus_master_enabled() {
++            return Err(Error::BusMasterDisabled);
++        }
+         if head_index >= self.size {
+             error!("attempted to add out of bounds descriptor to used ring: {head_index}");
+             return Err(Error::InvalidDescriptorIndex);
+@@ -595,6 +644,9 @@
+     // Every access in this method uses `Relaxed` ordering because a fence is added by the caller
+     // when appropriate.
+     fn set_notification(&mut self, mem: &GuestMemoryMmap, enable: bool) -> Result<(), Error> {
++        if !self.bus_master_enabled() {
++            return Ok(());
++        }
+         if enable {
+             if self.event_idx_enabled {
+                 // We call `set_avail_event` using the `next_avail` value, instead of reading
+@@ -634,6 +686,9 @@
+     //     }
+     // }
+     pub fn enable_notification(&mut self, mem: &GuestMemoryMmap) -> Result<bool, Error> {
++        if !self.bus_master_enabled() {
++            return Ok(false);
++        }
+         self.set_notification(mem, true)?;
+         // Ensures the following read is not reordered before any previous write operation.
+         fence(Ordering::SeqCst);
+@@ -649,10 +704,16 @@
+     }
+ 
+     pub fn disable_notification(&mut self, mem: &GuestMemoryMmap) -> Result<(), Error> {
++        if !self.bus_master_enabled() {
++            return Ok(());
++        }
+         self.set_notification(mem, false)
+     }
+ 
+     pub fn needs_notification(&mut self, mem: &GuestMemoryMmap) -> Result<bool, Error> {
++        if !self.bus_master_enabled() {
++            return Ok(false);
++        }
+         let used_idx = self.next_used;
+ 
+         // Complete all the writes in add_used() before reading the event.
+@@ -711,9 +772,28 @@
+ pub(crate) mod tests {
+     use std::marker::PhantomData;
+     use std::mem;
++    use std::sync::Arc;
++    use std::sync::atomic::AtomicBool;
+ 
+     pub use super::*;
+     use vm_memory::{GuestAddress, GuestMemoryMmap};
++
++    #[test]
++    fn bus_master_gate_blocks_queue_guest_memory_accesses() {
++        let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 1)]).unwrap();
++        let mut queue = Queue::new(8);
++        queue.set_bus_master_gate(Arc::new(AtomicBool::new(false)));
++
++        assert_eq!(queue.len(&mem), 0);
++        assert!(queue.pop(&mem).is_none());
++        assert!(matches!(
++            queue.add_used(&mem, 0, 0),
++            Err(Error::BusMasterDisabled)
++        ));
++        assert!(!queue.enable_notification(&mem).unwrap());
++        assert!(queue.disable_notification(&mem).is_ok());
++        assert!(!queue.needs_notification(&mem).unwrap());
++    }
+ 
+     // Represents a location in GuestMemoryMmap which holds a given type.
+     pub struct SomeplaceInMemory<'a, T> {
+diff -ruN a/src/devices/src/virtio/rng/device.rs b/src/devices/src/virtio/rng/device.rs
+--- a/src/devices/src/virtio/rng/device.rs	2026-10-09 07:35:04
++++ b/src/devices/src/virtio/rng/device.rs	2026-10-12 21:50:21
+@@ -108,6 +108,10 @@
+         &defs::QUEUE_CONFIG
+     }
+ 
++    fn config_len(&self) -> Option<u32> {
++        Some(0)
++    }
++
+     fn read_config(&self, _offset: u64, _data: &mut [u8]) {
+         error!("rng: invalid request to read config space");
+     }
+diff -ruN a/src/devices/src/virtio/vsock/device.rs b/src/devices/src/virtio/vsock/device.rs
+--- a/src/devices/src/virtio/vsock/device.rs	2026-10-09 07:35:04
++++ b/src/devices/src/virtio/vsock/device.rs	2026-10-12 21:50:21
+@@ -205,6 +205,10 @@
+         &defs::QUEUE_CONFIG
+     }
+ 
++    fn config_len(&self) -> Option<u32> {
++        Some(8)
++    }
++
+     fn read_config(&self, offset: u64, data: &mut [u8]) {
+         match offset {
+             0 if data.len() == 8 => byte_order::write_le_u64(data, self.cid()),
+diff -ruN a/src/libkrun/src/api/device_builders.rs b/src/libkrun/src/api/device_builders.rs
+--- a/src/libkrun/src/api/device_builders.rs	2026-10-12 21:49:57
++++ b/src/libkrun/src/api/device_builders.rs	2026-10-12 21:50:21
+@@ -18,6 +18,8 @@
+ use std::sync::{Arc, Mutex};
+ 
+ use crate::vmm::Vmm;
++#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
++use crate::vmm::builder::attach_pci_device;
+ use crate::vmm::builder::{attach_mmio_device, setup_terminal_raw_mode};
+ use crate::vmm::device_manager::shm::ShmManager;
+ #[cfg(any(feature = "gpu", feature = "vhost-user"))]
+@@ -104,9 +106,33 @@
+         }
+     }
+ 
++    #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
++    pub(crate) fn new_pci(
++        vmm: &'a mut Vmm,
++        event_manager: &'a mut EventManager,
++        shm_manager: &'a ShmManager,
++        intc: IrqChip,
++        device_index: usize,
++    ) -> Self {
++        Self {
++            vmm,
++            event_manager,
++            shm_manager,
++            intc,
++            device_index,
++            register_fn: Box::new(|vmm, id, intc, device| {
++                attach_pci_device(vmm, id, intc, device)
++                    .map_err(|e| VmmError::Internal(format!("{e:?}")))?;
++                Ok(())
++            }),
++            #[cfg(target_os = "macos")]
++            map_sender: None,
++        }
++    }
++
+     /// Register a virtio device on the transport bus.
+     ///
+-    /// The actual transport (MMIO, future PCIe) is determined by which
++    /// The actual transport (MMIO or PCI) is determined by which
+     /// [`DeviceManager`] the device was added to.
+     pub fn register(
+         &mut self,
+@@ -268,31 +294,43 @@
+ }
+ 
+ mod sealed {
+-    pub trait Sealed {}
++    use super::{DeviceRequirements, EventManager, IrqChip, ShmManager, Vmm, VmmError};
++
++    pub trait Sealed {
++        /// Collect requirements from all devices (called before guest memory creation).
++        fn requirements(&self) -> Vec<DeviceRequirements>;
++
++        /// Whether this manager registers devices on the PCI bus.
++        fn uses_pci(&self) -> bool {
++            false
++        }
++
++        /// Attach all devices using the given VMM context.
++        fn attach_all(
++            self: Box<Self>,
++            vmm: &mut Vmm,
++            event_manager: &mut EventManager,
++            shm_manager: &ShmManager,
++            intc: IrqChip,
++            #[cfg(target_os = "macos")] map_sender: Option<
++                crossbeam_channel::Sender<utils::worker_message::WorkerMessage>,
++            >,
++        ) -> Result<(), VmmError>;
++    }
+ }
+ 
+ /// A device manager that owns a set of devices and knows how to attach them
+-/// to a VM using a specific transport (e.g. MMIO, future PCIe).
++/// to a VM using a specific transport (MMIO or PCI).
+ ///
+ /// This trait is sealed — only libkrun-provided managers can implement it.
+ /// The seal may be lifted in a future major version.
++#[cfg_attr(feature = "ffi", ffier::export(no_vtable))]
+ pub trait DeviceManager<'a>: sealed::Sealed + Send + 'a {
+-    /// Collect requirements from all devices (called before guest memory creation).
+-    #[doc(hidden)]
+-    fn requirements(&self) -> Vec<DeviceRequirements>;
+-
+-    /// Attach all devices using the given VMM context.
+-    #[doc(hidden)]
+-    fn attach_all(
+-        self: Box<Self>,
+-        vmm: &mut Vmm,
+-        event_manager: &mut EventManager,
+-        shm_manager: &ShmManager,
+-        intc: IrqChip,
+-        #[cfg(target_os = "macos")] map_sender: Option<
+-            crossbeam_channel::Sender<utils::worker_message::WorkerMessage>,
+-        >,
+-    ) -> Result<(), VmmError>;
++    /// Add a device to this manager, preserving the order devices are added.
++    #[cfg_attr(feature = "ffi", ffier(index = 0))]
++    fn add(&mut self, device: impl AttachDevice<'a>)
++    where
++        Self: Sized;
+ }
+ 
+ /// Device manager using the virtio-mmio transport.
+@@ -304,13 +342,25 @@
+     devices: Vec<Box<dyn AttachDevice<'a> + 'a>>,
+ }
+ 
++/// Device manager using the modern virtio-pci transport.
++///
++/// Available on x86_64 Linux hosts. The VM must enable ACPI with
++/// [`VmmBuilder::acpi`](crate::api::vmm_builder::VmmBuilder::acpi).
++#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
++#[derive(Default)]
++pub struct PciDeviceManager<'a> {
++    devices: Vec<Box<dyn AttachDevice<'a> + 'a>>,
++}
++
+ #[cfg_attr(feature = "ffi", ffier::export)]
+ impl<'a> MmioDeviceManager<'a> {
+     /// Create an empty device manager.
+     pub fn new() -> Self {
+         Self::default()
+     }
++}
+ 
++impl<'a> MmioDeviceManager<'a> {
+     /// Add a device to this manager.
+     ///
+     /// Devices are attached in the order they are added. The device must
+@@ -322,9 +372,14 @@
+     }
+ }
+ 
+-impl sealed::Sealed for MmioDeviceManager<'_> {}
+-
++#[cfg_attr(feature = "ffi", ffier::export)]
+ impl<'a> DeviceManager<'a> for MmioDeviceManager<'a> {
++    fn add(&mut self, device: impl AttachDevice<'a>) {
++        self.add(device);
++    }
++}
++
++impl sealed::Sealed for MmioDeviceManager<'_> {
+     fn requirements(&self) -> Vec<DeviceRequirements> {
+         self.devices.iter().map(|d| d.requirements()).collect()
+     }
+@@ -349,6 +404,74 @@
+                 #[cfg(target_os = "macos")]
+                 map_sender.clone(),
+             );
++            device.attach(&mut ctx)?;
++        }
++        Ok(())
++    }
++}
++
++#[cfg_attr(
++    feature = "ffi",
++    ffier::export(cfg = "all(target_arch = \"x86_64\", target_os = \"linux\")")
++)]
++#[cfg_attr(
++    not(feature = "ffi"),
++    cfg(all(target_arch = "x86_64", target_os = "linux"))
++)]
++impl<'a> PciDeviceManager<'a> {
++    pub fn new() -> Self {
++        Self::default()
++    }
++}
++
++#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
++impl<'a> PciDeviceManager<'a> {
++    pub fn add(&mut self, device: impl AttachDevice<'a>) -> &mut Self {
++        self.devices.push(Box::new(device));
++        self
++    }
++}
++
++#[cfg_attr(
++    feature = "ffi",
++    ffier::export(cfg = "all(target_arch = \"x86_64\", target_os = \"linux\")")
++)]
++#[cfg_attr(
++    not(feature = "ffi"),
++    cfg(all(target_arch = "x86_64", target_os = "linux"))
++)]
++impl<'a> DeviceManager<'a> for PciDeviceManager<'a> {
++    fn add(&mut self, device: impl AttachDevice<'a>) {
++        self.add(device);
++    }
++}
++
++#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
++impl sealed::Sealed for PciDeviceManager<'_> {
++    fn requirements(&self) -> Vec<DeviceRequirements> {
++        self.devices
++            .iter()
++            .map(|device| device.requirements())
++            .collect()
++    }
++
++    fn uses_pci(&self) -> bool {
++        true
++    }
++
++    fn attach_all(
++        self: Box<Self>,
++        vmm: &mut Vmm,
++        event_manager: &mut EventManager,
++        shm_manager: &ShmManager,
++        intc: IrqChip,
++        #[cfg(target_os = "macos")] _map_sender: Option<
++            crossbeam_channel::Sender<utils::worker_message::WorkerMessage>,
++        >,
++    ) -> Result<(), VmmError> {
++        for (index, device) in self.devices.into_iter().enumerate() {
++            let mut ctx =
++                AttachContext::new_pci(vmm, event_manager, shm_manager, intc.clone(), index);
+             device.attach(&mut ctx)?;
+         }
+         Ok(())
+diff -ruN a/src/libkrun/src/api/mod.rs b/src/libkrun/src/api/mod.rs
+--- a/src/libkrun/src/api/mod.rs	2026-10-12 21:49:57
++++ b/src/libkrun/src/api/mod.rs	2026-10-12 21:50:21
+@@ -34,6 +34,8 @@
+ pub use device_builders::NetDevice;
+ #[cfg(feature = "net")]
+ pub use device_builders::NetFlags;
++#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
++pub use device_builders::PciDeviceManager;
+ #[cfg(not(feature = "tee"))]
+ pub use device_builders::RngDevice;
+ pub use device_builders::SoundDevice;
+@@ -64,6 +66,14 @@
+     primitives_prefix = "krun",
+     crate::api::error::VmmError = 1,
+     crate::api::device_builders::MmioDeviceManager<'_> = 2,
++    #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
++    crate::api::device_builders::PciDeviceManager<'_> = 25,
++    trait crate::api::device_builders::DeviceManager = 26,
++    crate::api::device_builders::DeviceManager
++        for crate::api::device_builders::MmioDeviceManager,
++    #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
++    crate::api::device_builders::DeviceManager
++        for crate::api::device_builders::PciDeviceManager,
+     #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
+     crate::api::device_builders::FsDevice<'_> = 3,
+     crate::api::device_builders::ConsoleDevice<'_> = 4,
+diff -ruN a/src/libkrun/src/api/vmm_builder.rs b/src/libkrun/src/api/vmm_builder.rs
+--- a/src/libkrun/src/api/vmm_builder.rs	2026-10-12 21:49:57
++++ b/src/libkrun/src/api/vmm_builder.rs	2026-10-12 21:50:21
+@@ -17,7 +17,7 @@
+ #[cfg(target_os = "macos")]
+ use utils::pollable_channel::PollableChannelSender;
+ 
+-use super::device_builders::{DeviceManager, MmioDeviceManager};
++use super::device_builders::DeviceManager;
+ use super::error::VmmError;
+ use super::payload::Payload;
+ 
+@@ -64,7 +64,10 @@
+         self
+     }
+ 
+-    pub fn devices(mut self, devices: MmioDeviceManager<'a>) -> Self {
++    /// Add devices using their manager's transport.
++    ///
++    /// PCI devices require ACPI to be enabled with [`VmmBuilder::acpi`].
++    pub fn devices(mut self, devices: impl DeviceManager<'a>) -> Self {
+         self.device_manager = Some(Box::new(devices));
+         self
+     }
+@@ -113,8 +116,8 @@
+     /// Enable ACPI table generation for x86_64 guests.
+     ///
+     /// When disabled (the default), virtio-mmio devices are passed on the kernel
+-    /// command line and SMP uses the MP table. When enabled, devices are described
+-    /// in the ACPI DSDT and the RSDP is published in boot parameters.
++    /// command line and SMP uses the MP table. When enabled, devices and the PCI
++    /// host bridge are described in ACPI and the RSDP is published in boot parameters.
+     pub fn acpi(mut self, enabled: bool) -> Result<Self, VmmError> {
+         if enabled && !cfg!(target_arch = "x86_64") {
+             return Err(VmmError::InvalidParam());
+@@ -336,9 +339,17 @@
+         });
+     }
+ 
++    let pci_enabled = builder_cfg
++        .device_manager
++        .as_ref()
++        .is_some_and(|manager| manager.uses_pci());
++    if pci_enabled && !builder_cfg.acpi {
++        return Err(VmmError::InvalidParam());
++    }
++
+     let device_manager = builder_cfg
+         .device_manager
+-        .ok_or_else(|| VmmError::MissingConfig("no device manager set (call .devices())".into()))?;
++        .ok_or_else(|| VmmError::MissingConfig("no device manager set".into()))?;
+ 
+     let mut vm_resources = VmResources::default();
+     vm_resources
+diff -ruN a/src/libkrun/src/vmm/builder.rs b/src/libkrun/src/vmm/builder.rs
+--- a/src/libkrun/src/vmm/builder.rs	2026-10-12 21:49:57
++++ b/src/libkrun/src/vmm/builder.rs	2026-10-12 21:50:21
+@@ -220,6 +220,15 @@
+     RegisterVhostUserDevice(device_manager::mmio::Error),
+     /// Cannot initialize a MMIO Vsock Device or add a device to the MMIO Bus.
+     RegisterVsockDevice(device_manager::mmio::Error),
++    /// Cannot register the PCI root or a virtio PCI function.
++    #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
++    RegisterPciDevice(device_manager::pci::Error),
++    /// PCI devices require ACPI discovery.
++    #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
++    PciRequiresAcpi,
++    /// PCI shared-memory capabilities are not implemented yet.
++    #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
++    PciSharedMemoryNotSupported,
+     /// Cannot attest the VM in the Secure Virtualization context.
+     SecureVirtAttest(VstateError),
+     /// Cannot initialize the Secure Virtualization backend.
+@@ -492,6 +501,14 @@
+                     "Cannot initialize a MMIO Vsock Device or add a device to the MMIO Bus. {err_msg}"
+                 )
+             }
++            #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
++            RegisterPciDevice(ref err) => write!(f, "Cannot register PCI device: {err}"),
++            #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
++            PciRequiresAcpi => write!(f, "PCI devices require ACPI to be enabled"),
++            #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
++            PciSharedMemoryNotSupported => {
++                write!(f, "PCI shared-memory regions are not supported yet")
++            }
+             SecureVirtAttest(ref err) => {
+                 let mut err_msg = format!("{err}");
+                 err_msg = err_msg.replace('\"', "");
+@@ -717,7 +734,32 @@
+ ) -> std::result::Result<Arc<Mutex<Vmm>>, StartMicrovmError> {
+     let payload = choose_payload(vm_resources)?;
+ 
++    #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
++    let pci_enabled = {
++        let enabled = device_manager.uses_pci();
++        if enabled && !vm_resources.acpi_enabled {
++            return Err(StartMicrovmError::PciRequiresAcpi);
++        }
++        enabled
++    };
++
+     let requirements = device_manager.requirements();
++    #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
++    if pci_enabled
++        && requirements
++            .iter()
++            .any(|requirements| requirements.shm_size.is_some())
++    {
++        return Err(StartMicrovmError::PciSharedMemoryNotSupported);
++    }
++    #[cfg(all(target_arch = "x86_64", target_os = "linux", feature = "gpu"))]
++    if pci_enabled
++        && requirements
++            .iter()
++            .any(|requirements| requirements.gpu_shm.is_some())
++    {
++        return Err(StartMicrovmError::PciSharedMemoryNotSupported);
++    }
+     let fs_shm_sizes: Vec<Option<usize>> = requirements.iter().map(|r| r.shm_size).collect();
+     #[cfg(feature = "gpu")]
+     let gpu_shm_size = requirements.iter().filter_map(|r| r.gpu_shm).next();
+@@ -1035,6 +1077,19 @@
+     .map_err(Error::CreateLegacyDevice)
+     .map_err(StartMicrovmError::Internal)?;
+ 
++    #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
++    let pci_device_manager = if pci_enabled {
++        Some(device_manager::pci::PciHostManager::new())
++    } else {
++        None
++    };
++
++    #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
++    if let Some(pci) = &pci_device_manager {
++        pci.register_config_io(&mut pio_device_manager.io_bus)
++            .map_err(StartMicrovmError::RegisterPciDevice)?;
++    }
++
+     // Instantiate the MMIO device manager.
+     // 'mmio_base' address has to be an address which is protected by the kernel
+     // and is architectural specific.
+@@ -1044,6 +1099,12 @@
+         (arch::IRQ_BASE, arch::IRQ_MAX),
+     );
+ 
++    #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
++    if let Some(pci) = &pci_device_manager {
++        pci.register_mmio(&mut mmio_device_manager.bus)
++            .map_err(StartMicrovmError::RegisterPciDevice)?;
++    }
++
+     #[cfg(target_os = "macos")]
+     let vcpu_list = {
+         let cpu_count = vm_resources.vm_config().vcpu_count.unwrap();
+@@ -1248,6 +1309,8 @@
+         #[cfg(not(target_os = "windows"))]
+         vm,
+         mmio_device_manager,
++        #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
++        pci_device_manager,
+         #[cfg(target_os = "macos")]
+         vm_ctl_tx,
+         #[cfg(target_os = "macos")]
+@@ -2468,6 +2531,22 @@
+         vmm.mmio_device_manager
+             .register_mmio_device(mmio_device, type_id, id)?;
+ 
++    Ok(())
++}
++
++#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
++pub(crate) fn attach_pci_device(
++    vmm: &mut Vmm,
++    _id: String,
++    _intc: IrqChip,
++    device: Arc<Mutex<dyn VirtioDevice>>,
++) -> std::result::Result<(), device_manager::pci::Error> {
++    let guest_memory = vmm.guest_memory.clone();
++    let vm = vmm.vm.fd_shared();
++    vmm.pci_device_manager
++        .as_mut()
++        .expect("PCI device manager must exist when attaching PCI devices")
++        .register_virtio_device(vm, guest_memory, device)?;
+     Ok(())
+ }
+ 
+diff -ruN a/src/libkrun/src/vmm/device_manager/kvm/mod.rs b/src/libkrun/src/vmm/device_manager/kvm/mod.rs
+--- a/src/libkrun/src/vmm/device_manager/kvm/mod.rs	2026-10-09 07:35:04
++++ b/src/libkrun/src/vmm/device_manager/kvm/mod.rs	2026-10-12 21:50:21
+@@ -1 +1,3 @@
+ pub mod mmio;
++#[cfg(target_arch = "x86_64")]
++pub mod pci;
+diff -ruN a/src/libkrun/src/vmm/device_manager/kvm/pci.rs b/src/libkrun/src/vmm/device_manager/kvm/pci.rs
+--- a/src/libkrun/src/vmm/device_manager/kvm/pci.rs	1969-12-31 18:00:00
++++ b/src/libkrun/src/vmm/device_manager/kvm/pci.rs	2026-10-12 21:50:21
+@@ -0,0 +1,148 @@
++// Copyright 2026 The libkrun Authors.
++// SPDX-License-Identifier: Apache-2.0
++
++//! PCI root and virtio-pci registration for the x86_64 KVM backend.
++
++use std::fmt::{Display, Formatter};
++use std::sync::{Arc, Mutex};
++
++use devices::Bus;
++use devices::pci::{
++    BarWindow, ConfigMechanism1, Ecam, PciAddress, PciFunction, PciIntxLine, PciRootError,
++};
++use devices::virtio::{
++    CreatePciTransportError, VIRTIO_PCI_BAR0_SIZE, VirtioDevice, VirtioPciTransport,
++};
++use kvm_ioctls::VmFd;
++use vm_memory::GuestMemoryMmap;
++
++const PCI_BUS0: u8 = 0;
++
++#[derive(Debug)]
++pub enum Error {
++    Bus(devices::BusError),
++    CreateTransport(CreatePciTransportError),
++    IrqsExhausted,
++    PciRoot(PciRootError),
++}
++
++impl Display for Error {
++    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
++        match self {
++            Self::Bus(err) => write!(f, "failed to register PCI bus device: {err}"),
++            Self::CreateTransport(err) => write!(f, "failed to create virtio-pci transport: {err}"),
++            Self::IrqsExhausted => write!(f, "no more GSIs are available for PCI INTx"),
++            Self::PciRoot(err) => write!(f, "failed to register PCI function: {err}"),
++        }
++    }
++}
++
++type Result<T> = std::result::Result<T, Error>;
++
++/// Owns the bus-0 PCI functions and their guest address windows.
++pub struct PciHostManager {
++    root: devices::pci::SharedPciRoot,
++    next_device: u8,
++    irq: u32,
++    functions: Vec<arch::x86_64::PciFunctionInfo>,
++}
++
++struct KvmPciIntxLine {
++    vm: Arc<VmFd>,
++    gsi: u32,
++}
++
++impl PciIntxLine for KvmPciIntxLine {
++    fn set_level(&self, asserted: bool) -> std::io::Result<()> {
++        self.vm
++            .set_irq_line(self.gsi, asserted)
++            .map_err(|err| std::io::Error::from_raw_os_error(err.errno()))
++    }
++}
++
++impl PciHostManager {
++    pub fn new() -> Self {
++        Self {
++            root: devices::pci::PciRoot::shared(),
++            next_device: 1,
++            irq: arch::x86_64::layout::IRQ_BASE,
++            functions: Vec::new(),
++        }
++    }
++
++    pub fn register_config_io(&self, bus: &mut Bus) -> Result<()> {
++        bus.insert(
++            Arc::new(Mutex::new(ConfigMechanism1::new(self.root.clone()))),
++            devices::pci::CONFIG_MECHANISM_1_ADDRESS,
++            devices::pci::CONFIG_MECHANISM_1_SIZE,
++        )
++        .map_err(Error::Bus)
++    }
++
++    pub fn register_mmio(&self, bus: &mut Bus) -> Result<()> {
++        bus.insert(
++            Arc::new(Mutex::new(Ecam::new(self.root.clone()))),
++            arch::x86_64::layout::PCI_ECAM_START,
++            arch::x86_64::layout::PCI_ECAM_SIZE,
++        )
++        .map_err(Error::Bus)?;
++        bus.insert(
++            Arc::new(Mutex::new(BarWindow::new(
++                self.root.clone(),
++                arch::x86_64::layout::PCI_BAR_START,
++            ))),
++            arch::x86_64::layout::PCI_BAR_START,
++            arch::x86_64::layout::PCI_BAR_END - arch::x86_64::layout::PCI_BAR_START,
++        )
++        .map_err(Error::Bus)
++    }
++
++    pub fn register_virtio_device(
++        &mut self,
++        vm: Arc<VmFd>,
++        guest_memory: GuestMemoryMmap,
++        device: Arc<Mutex<dyn VirtioDevice>>,
++    ) -> Result<arch::x86_64::PciFunctionInfo> {
++        if self.irq > arch::x86_64::layout::IRQ_MAX || self.next_device > 31 {
++            return Err(Error::IrqsExhausted);
++        }
++
++        let irq = self.irq;
++        let address = PciAddress::new(PCI_BUS0, self.next_device, 0);
++        let bar_base = arch::x86_64::layout::PCI_BAR_START
++            + u64::from(self.next_device - 1) * VIRTIO_PCI_BAR0_SIZE;
++        if bar_base + VIRTIO_PCI_BAR0_SIZE > arch::x86_64::layout::PCI_BAR_END {
++            return Err(Error::IrqsExhausted);
++        }
++        let intx_line = Arc::new(KvmPciIntxLine { vm, gsi: irq });
++        let transport =
++            VirtioPciTransport::new(guest_memory, device, irq as u8, intx_line, bar_base as u32)
++                .map_err(Error::CreateTransport)?;
++
++        let function: Arc<Mutex<dyn PciFunction>> = Arc::new(Mutex::new(transport));
++        self.root
++            .lock()
++            .expect("Poisoned PCI root lock")
++            .insert(address, function)
++            .map_err(Error::PciRoot)?;
++
++        let info = arch::x86_64::PciFunctionInfo {
++            device: address.device,
++            function: address.function,
++            gsi: irq,
++        };
++        self.functions.push(info);
++        self.next_device += 1;
++        self.irq += 1;
++        Ok(info)
++    }
++
++    pub fn acpi_info(&self) -> arch::x86_64::PciHostInfo {
++        arch::x86_64::PciHostInfo {
++            ecam_base: arch::x86_64::layout::PCI_ECAM_START,
++            bar_start: arch::x86_64::layout::PCI_BAR_START,
++            bar_size: arch::x86_64::layout::PCI_BAR_END - arch::x86_64::layout::PCI_BAR_START,
++            functions: self.functions.clone(),
++        }
++    }
++}
+diff -ruN a/src/libkrun/src/vmm/device_manager/mod.rs b/src/libkrun/src/vmm/device_manager/mod.rs
+--- a/src/libkrun/src/vmm/device_manager/mod.rs	2026-10-09 07:35:04
++++ b/src/libkrun/src/vmm/device_manager/mod.rs	2026-10-12 21:50:21
+@@ -16,6 +16,8 @@
+ pub mod kvm;
+ #[cfg(target_os = "linux")]
+ pub use self::kvm::mmio;
++#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
++pub use self::kvm::pci;
+ #[cfg(target_os = "macos")]
+ pub mod hvf;
+ #[cfg(target_os = "macos")]
+diff -ruN a/src/libkrun/src/vmm/linux/vstate.rs b/src/libkrun/src/vmm/linux/vstate.rs
+--- a/src/libkrun/src/vmm/linux/vstate.rs	2026-10-09 07:35:04
++++ b/src/libkrun/src/vmm/linux/vstate.rs	2026-10-12 21:50:21
+@@ -21,6 +21,7 @@
+ #[cfg(target_arch = "x86_64")]
+ use std::env;
+ use std::result;
++use std::sync::Arc;
+ #[cfg(not(test))]
+ use std::sync::Barrier;
+ use std::sync::atomic::{Ordering, fence};
+@@ -469,7 +470,7 @@
+ 
+ /// A wrapper around creating and using a VM.
+ pub struct Vm {
+-    fd: VmFd,
++    fd: Arc<VmFd>,
+     next_mem_slot: u32,
+ 
+     // X86 specific fields.
+@@ -504,7 +505,7 @@
+             arch::x86_64::msr::supported_guest_msrs(kvm).map_err(Error::GuestMSRs)?;
+ 
+         Ok(Vm {
+-            fd: vm_fd,
++            fd: Arc::new(vm_fd),
+             next_mem_slot: 0,
+             #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+             supported_cpuid,
+@@ -542,7 +543,7 @@
+         };
+ 
+         Ok(Vm {
+-            fd: vm_fd,
++            fd: Arc::new(vm_fd),
+             next_mem_slot: 0,
+             supported_cpuid,
+             supported_msrs,
+@@ -586,7 +587,7 @@
+         vm_fd.enable_cap(&cap).map_err(Error::VmApicBusClockRate)?;
+ 
+         Ok(Vm {
+-            fd: vm_fd,
++            fd: Arc::new(vm_fd),
+             next_mem_slot: 0,
+             supported_cpuid,
+             supported_msrs,
+@@ -838,7 +839,12 @@
+ 
+     /// Gets a reference to the kvm file descriptor owned by this VM.
+     pub fn fd(&self) -> &VmFd {
+-        &self.fd
++        self.fd.as_ref()
++    }
++
++    #[cfg(target_arch = "x86_64")]
++    pub fn fd_shared(&self) -> Arc<VmFd> {
++        self.fd.clone()
+     }
+ 
+     #[allow(unused)]
+diff -ruN a/src/libkrun/src/vmm/mod.rs b/src/libkrun/src/vmm/mod.rs
+--- a/src/libkrun/src/vmm/mod.rs	2026-10-12 21:49:57
++++ b/src/libkrun/src/vmm/mod.rs	2026-10-12 21:50:21
+@@ -50,6 +50,8 @@
+ use utils::windows::AsRawFd;
+ 
+ use crate::vmm::device_manager::mmio::MMIODeviceManager;
++#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
++use crate::vmm::device_manager::pci::PciHostManager;
+ #[cfg(any(target_os = "linux", target_os = "windows"))]
+ use crate::vmm::vstate::VcpuEvent;
+ #[cfg(not(target_os = "windows"))]
+@@ -159,6 +161,8 @@
+ 
+     // Guest VM devices.
+     pub(crate) mmio_device_manager: MMIODeviceManager,
++    #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
++    pub(crate) pci_device_manager: Option<PciHostManager>,
+ 
+     // Out-of-band live pause/resume requests: the C API sends `VmCtl` from
+     // another thread; the event loop freezes or wakes the vCPUs. A single
+@@ -328,6 +332,14 @@
+                 self.kernel_cmdline.len() + 1
+             };
+ 
++            #[cfg(target_os = "linux")]
++            let pci_host_info = self
++                .pci_device_manager
++                .as_ref()
++                .map(PciHostManager::acpi_info);
++            #[cfg(not(target_os = "linux"))]
++            let pci_host_info = None;
++
+             arch::x86_64::configure_system(
+                 &self.guest_memory,
+                 &self.arch_memory_info,
+@@ -338,6 +350,7 @@
+                 _pvh,
+                 _acpi_enabled,
+                 _virtio_mmio_devices,
++                pci_host_info.as_ref(),
+             )
+             .map_err(Error::ConfigureSystem)?;
+         }

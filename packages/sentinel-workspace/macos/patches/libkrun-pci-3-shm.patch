@@ -1,0 +1,665 @@
+libkrun: virtio-pci shared memory regions (VIRTIO_PCI_CAP_SHARED_MEMORY_CFG), so a 3D virtio-gpu
+works on PCI (Windows' viogpu3d maps host-visible memory through it).
+- The region is a 64-bit prefetchable BAR after the registers' BAR, with its capability (struct
+  virtio_pci_cap64; region id 1 for virtio-gpu's host-visible memory, 0 for virtio-fs's cache).
+  It is guest memory at a fixed address, so it is a power-of-two size at a multiple of it, and the
+  host bridge's 64-bit window (device tree "ranges", hence the firmware's and ACPI's) is exactly the
+  regions: the BAR's one valid assignment is where the device maps.
+- A display device's registers are BAR 2 (QEMU's layout): Windows' Basic Display driver, which
+  drives it until its own driver starts, takes BAR 0 for a framebuffer.
+
+--- a/src/devices/src/virtio/pci.rs
++++ b/src/devices/src/virtio/pci.rs
+@@ -30,6 +30,12 @@
+ const PCI_REVISION_MODERN: u8 = 1;
+ const PCI_HEADER_TYPE_ENDPOINT: u8 = 0;
+ const PCI_BAR0_INDEX: u8 = 0;
++// A display device keeps BAR 0 free, as QEMU's virtio-gpu-pci does: Windows' Basic Display driver,
++// which drives a display device until its own driver starts, takes BAR 0 for a framebuffer. Its
++// registers are BAR 2 instead.
++const PCI_DISPLAY_REGS_BAR_INDEX: u8 = 2;
++const PCI_BAR_MEMORY_64: u32 = 0b100;
++const PCI_BAR_PREFETCHABLE: u32 = 0b1000;
+ const PCI_SUBSYSTEM_DEVICE_ID_BASE: u16 = 0x40;
+ const VIRTIO_PCI_CAPABILITY_LENGTH: u8 = 16;
+ const VIRTIO_PCI_NOTIFY_CAPABILITY_LENGTH: u8 = 20;
+@@ -47,11 +53,22 @@
+ const VIRTIO_PCI_CAP_ISR_CFG: u8 = 3;
+ const VIRTIO_PCI_CAP_DEVICE_CFG: u8 = 4;
+ const VIRTIO_PCI_CAP_PCI_CFG: u8 = 5;
++const VIRTIO_PCI_CAP_SHARED_MEMORY_CFG: u8 = 8;
++// struct virtio_pci_cap64: the capability with the upper halves of the offset and length.
++const VIRTIO_PCI_CAP64_LENGTH: u8 = 24;
++// The shared memory region ids the drivers look for: virtio-gpu's host-visible memory
++// (VIRTIO_GPU_SHM_ID_HOST_VISIBLE), virtio-fs's DAX window (VIRTIO_FS_SHMCAP_ID_CACHE).
++const VIRTIO_GPU_SHM_ID_HOST_VISIBLE: u8 = 1;
++const VIRTIO_FS_SHM_ID_CACHE: u8 = 0;
++const VIRTIO_ID_GPU: u32 = 16;
+ 
+ const PCI_CONFIG_SIZE: usize = PCI_CONVENTIONAL_CONFIG_SPACE_SIZE;
+-const PCI_BAR0_OFFSET: usize = pci_config::BAR0;
+ const PCI_BAR0_SIZE: usize = size_of::<u32>();
+-const PCI_BAR0_END: usize = PCI_BAR0_OFFSET + PCI_BAR0_SIZE - 1;
++// A device's shared memory region is the 64-bit, prefetchable BAR after its registers' (with the
++// next BAR, its upper half).
++const fn pci_bar_offset(index: u8) -> usize {
++    pci_config::BAR0 + index as usize * size_of::<u32>()
++}
+ const PCI_STATUS_LAST_BYTE: usize = pci_config::STATUS + WORD_SIZE - 1;
+ const PCI_COMMAND_LAST_BYTE: usize = pci_config::COMMAND + WORD_SIZE - 1;
+ pub const VIRTIO_PCI_BAR0_SIZE: u64 = 0x8000;
+@@ -101,6 +118,8 @@
+     pub const REGION_LENGTH: usize = 0x0c;
+     pub const NOTIFY_MULTIPLIER: usize = 0x10;
+     pub const PCI_CONFIG_DATA: usize = 0x10;
++    pub const REGION_OFFSET_HIGH: usize = 0x10;
++    pub const REGION_LENGTH_HIGH: usize = 0x14;
+ }
+ 
+ mod common_cfg {
+@@ -134,7 +153,7 @@
+     InvalidBarBase(u32),
+     MissingVersion1,
+     UnknownDeviceConfigLength,
+-    SharedMemoryNotSupported,
++    SharedMemoryNotAligned(u64, u64),
+ }
+ 
+ impl Display for CreatePciTransportError {
+@@ -160,9 +179,11 @@
+                     "virtio device did not report its configuration space length"
+                 )
+             }
+-            Self::SharedMemoryNotSupported => {
+-                write!(f, "virtio-pci shared-memory regions are not supported")
+-            }
++            Self::SharedMemoryNotAligned(base, size) => write!(
++                f,
++                "shared-memory region 0x{base:x}+0x{size:x} is not a power-of-two size at a \
++                 multiple of it (a BAR's)"
++            ),
+         }
+     }
+ }
+@@ -266,8 +287,63 @@
+     offset: u8,
+     len: u8,
+     cfg_type: u8,
++    bar: u8,
++    id: u8,
+     bar_offset: u32,
+-    bar_len: u32,
++    bar_len: u64,
++}
++
++/// The device's shared memory region as BAR 2: guest memory at a fixed guest-physical address
++/// (the device maps host memory into it there), which the host bridge's 64-bit window holds
++/// exactly, so the BAR's one valid assignment is that address. The register itself behaves as
++/// any BAR's: sizing probes, then the address the firmware or OS assigns.
++struct ShmBar {
++    index: u8,
++    base: u64,
++    size: u64,
++    value: u64,
++    probe: [bool; 2],
++}
++
++impl ShmBar {
++    fn register(&self, half: usize) -> u32 {
++        let value = if self.probe[half] {
++            !(self.size - 1)
++        } else {
++            self.value
++        };
++        let word = (value >> (half as u32 * u32::BITS)) as u32;
++        if half == 0 {
++            (word & PCI_BAR_ADDRESS_MASK) | PCI_BAR_MEMORY_64 | PCI_BAR_PREFETCHABLE
++        } else {
++            word
++        }
++    }
++
++    fn write(&mut self, offset: usize, data: &[u8]) {
++        if data.len() == DWORD_SIZE && offset.is_multiple_of(DWORD_SIZE) {
++            let half = offset / DWORD_SIZE;
++            if u32::from_le_bytes(data.try_into().unwrap()) == PCI_BAR_PROBE_VALUE {
++                self.probe[half] = true;
++                return;
++            }
++        }
++        let mut bytes = self.value.to_le_bytes();
++        for (index, value) in data.iter().enumerate() {
++            if let Some(byte) = bytes.get_mut(offset + index) {
++                *byte = *value;
++                self.probe[(offset + index) / DWORD_SIZE] = false;
++            }
++        }
++        self.value = u64::from_le_bytes(bytes) & !(self.size - 1);
++        // Both halves written: an address the device does not map at leaves the region unreachable.
++        if offset + data.len() > DWORD_SIZE && self.value != 0 && self.value != self.base {
++            error!(
++                "virtio-pci shared memory BAR moved to 0x{:x}; the device maps it at 0x{:x}",
++                self.value, self.base
++            );
++        }
++    }
+ }
+ 
+ #[derive(Clone, Copy)]
+@@ -346,6 +422,8 @@
+     device_interrupt: InterruptTransport,
+     capabilities: Vec<Capability>,
+     pci_cfg_cap_offset: Option<usize>,
++    regs_bar: u8,
++    shm_bar: Option<ShmBar>,
+     device_config_len: u32,
+     queue_registers: Vec<PciQueueRegisters>,
+     bus_master_enabled: Arc<AtomicBool>,
+@@ -359,7 +437,7 @@
+         intx_line: Arc<dyn PciIntxLine>,
+         bar_base: u32,
+     ) -> Result<Self, CreatePciTransportError> {
+-        let (device_type, device_name, avail_features, device_config_len, has_shm) = {
++        let (device_type, device_name, avail_features, device_config_len, shm) = {
+             let locked = device.try_lock().expect(
+                 "Mutex of VirtioDevice should not be locked when creating virtio-pci transport",
+             );
+@@ -368,15 +446,19 @@
+                 locked.device_name().to_string(),
+                 locked.avail_features(),
+                 locked.config_len(),
+-                locked.shm_region().is_some(),
++                locked
++                    .shm_region()
++                    .map(|region| (region.guest_addr, region.size as u64)),
+             )
+         };
+ 
+         if avail_features & (1u64 << VIRTIO_F_VERSION_1) == 0 {
+             return Err(CreatePciTransportError::MissingVersion1);
+         }
+-        if has_shm {
+-            return Err(CreatePciTransportError::SharedMemoryNotSupported);
++        if let Some((base, size)) = shm
++            && (!size.is_power_of_two() || !base.is_multiple_of(size))
++        {
++            return Err(CreatePciTransportError::SharedMemoryNotAligned(base, size));
+         }
+         let device_config_len =
+             device_config_len.ok_or(CreatePciTransportError::UnknownDeviceConfigLength)?;
+@@ -403,8 +485,20 @@
+             .collect();
+         let interrupt = PciInterrupt::new(intx_line, format!("{}[{device_name}]", module_path!()));
+         let device_interrupt = InterruptTransport::from_handler(Arc::new(interrupt.clone()));
++        let regs_bar = if Self::class_code(device_type) >> 8 == 0x03 {
++            PCI_DISPLAY_REGS_BAR_INDEX
++        } else {
++            PCI_BAR0_INDEX
++        };
+         let (config, capabilities, pci_cfg_cap_offset) =
+-            Self::build_config(device_type, device_config_len, interrupt_line);
++            Self::build_config(device_type, device_config_len, interrupt_line, regs_bar, shm);
++        let shm_bar = shm.map(|(base, size)| ShmBar {
++            index: regs_bar + 2,
++            base,
++            size,
++            value: base,
++            probe: [false; 2],
++        });
+ 
+         Ok(Self {
+             state,
+@@ -415,6 +509,8 @@
+             device_interrupt,
+             capabilities,
+             pci_cfg_cap_offset,
++            regs_bar,
++            shm_bar,
+             device_config_len,
+             queue_registers,
+             bus_master_enabled,
+@@ -443,6 +539,8 @@
+         device_type: u32,
+         device_config_len: u32,
+         interrupt_line: u8,
++        regs_bar: u8,
++        shm: Option<(u64, u64)>,
+     ) -> (PciConfigSpace, Vec<Capability>, Option<usize>) {
+         let mut config = PciConfigSpace::default();
+         let mut capabilities = vec![
+@@ -450,20 +548,26 @@
+                 offset: 0,
+                 len: VIRTIO_PCI_CAPABILITY_LENGTH,
+                 cfg_type: VIRTIO_PCI_CAP_COMMON_CFG,
++                bar: regs_bar,
++                id: 0,
+                 bar_offset: COMMON_CFG_OFFSET as u32,
+-                bar_len: COMMON_CFG_LEN,
++                bar_len: COMMON_CFG_LEN.into(),
+             },
+             Capability {
+                 offset: 0,
+                 len: VIRTIO_PCI_NOTIFY_CAPABILITY_LENGTH,
+                 cfg_type: VIRTIO_PCI_CAP_NOTIFY_CFG,
++                bar: regs_bar,
++                id: 0,
+                 bar_offset: NOTIFY_CFG_OFFSET as u32,
+-                bar_len: NOTIFY_CFG_LEN,
++                bar_len: NOTIFY_CFG_LEN.into(),
+             },
+             Capability {
+                 offset: 0,
+                 len: VIRTIO_PCI_CAPABILITY_LENGTH,
+                 cfg_type: VIRTIO_PCI_CAP_ISR_CFG,
++                bar: regs_bar,
++                id: 0,
+                 bar_offset: ISR_CFG_OFFSET as u32,
+                 bar_len: 1,
+             },
+@@ -473,14 +577,33 @@
+                 offset: 0,
+                 len: VIRTIO_PCI_CAPABILITY_LENGTH,
+                 cfg_type: VIRTIO_PCI_CAP_DEVICE_CFG,
++                bar: regs_bar,
++                id: 0,
+                 bar_offset: DEVICE_CFG_OFFSET as u32,
+-                bar_len: device_config_len,
++                bar_len: device_config_len.into(),
+             });
+         }
++        if let Some((_, size)) = shm {
++            capabilities.push(Capability {
++                offset: 0,
++                len: VIRTIO_PCI_CAP64_LENGTH,
++                cfg_type: VIRTIO_PCI_CAP_SHARED_MEMORY_CFG,
++                bar: regs_bar + 2,
++                id: if device_type == VIRTIO_ID_GPU {
++                    VIRTIO_GPU_SHM_ID_HOST_VISIBLE
++                } else {
++                    VIRTIO_FS_SHM_ID_CACHE
++                },
++                bar_offset: 0,
++                bar_len: size,
++            });
++        }
+         capabilities.push(Capability {
+             offset: 0,
+             len: VIRTIO_PCI_NOTIFY_CAPABILITY_LENGTH,
+             cfg_type: VIRTIO_PCI_CAP_PCI_CFG,
++            bar: regs_bar,
++            id: 0,
+             bar_offset: 0,
+             bar_len: 0,
+         });
+@@ -526,10 +649,17 @@
+             config.write_u8(offset + vendor_cap::NEXT, next);
+             config.write_u8(offset + vendor_cap::LENGTH, capability.len);
+             config.write_u8(offset + vendor_cap::CONFIG_TYPE, capability.cfg_type);
+-            config.write_u8(offset + vendor_cap::BAR, PCI_BAR0_INDEX);
+-            config.write_u8(offset + vendor_cap::REGION_ID, 0);
++            config.write_u8(offset + vendor_cap::BAR, capability.bar);
++            config.write_u8(offset + vendor_cap::REGION_ID, capability.id);
+             config.write_u32(offset + vendor_cap::REGION_OFFSET, capability.bar_offset);
+-            config.write_u32(offset + vendor_cap::REGION_LENGTH, capability.bar_len);
++            config.write_u32(offset + vendor_cap::REGION_LENGTH, capability.bar_len as u32);
++            if capability.cfg_type == VIRTIO_PCI_CAP_SHARED_MEMORY_CFG {
++                config.write_u32(offset + vendor_cap::REGION_OFFSET_HIGH, 0);
++                config.write_u32(
++                    offset + vendor_cap::REGION_LENGTH_HIGH,
++                    (capability.bar_len >> 32) as u32,
++                );
++            }
+ 
+             if capability.cfg_type == VIRTIO_PCI_CAP_NOTIFY_CFG {
+                 config.write_u32(
+@@ -567,17 +697,22 @@
+     }
+ 
+     fn config_byte(&self, offset: usize) -> u8 {
++        let regs = pci_bar_offset(self.regs_bar);
++        if (regs..regs + PCI_BAR0_SIZE).contains(&offset) {
++            return self.bar0_value().to_le_bytes()[offset - regs];
++        }
++        if let Some(shm_bar) = &self.shm_bar {
++            let shm = pci_bar_offset(shm_bar.index);
++            if (shm..shm + QWORD_SIZE).contains(&offset) {
++                let relative = offset - shm;
++                return shm_bar.register(relative / DWORD_SIZE).to_le_bytes()[relative % DWORD_SIZE];
++            }
++        }
+         match offset {
+             pci_config::STATUS..=PCI_STATUS_LAST_BYTE => self
+                 .config_status()
+                 .to_le_bytes()
+                 .get(offset - pci_config::STATUS)
+-                .copied()
+-                .unwrap_or(PCI_UNIMPLEMENTED_READ_BYTE),
+-            PCI_BAR0_OFFSET..=PCI_BAR0_END => self
+-                .bar0_value()
+-                .to_le_bytes()
+-                .get(offset - PCI_BAR0_OFFSET)
+                 .copied()
+                 .unwrap_or(PCI_UNIMPLEMENTED_READ_BYTE),
+             _ => self
+@@ -592,7 +727,7 @@
+         let bar = self.config.read_u8(offset + vendor_cap::BAR)?;
+         let bar_offset = self.config.read_u32(offset + vendor_cap::REGION_OFFSET)?;
+         let length = self.config.read_u32(offset + vendor_cap::REGION_LENGTH)? as usize;
+-        if bar != PCI_BAR0_INDEX
++        if bar != self.regs_bar
+             || !matches!(length, BYTE_SIZE | WORD_SIZE | DWORD_SIZE)
+             || !(bar_offset as usize).is_multiple_of(length)
+         {
+@@ -601,11 +736,9 @@
+         let end = bar_offset.checked_add(length as u32)?;
+         if !self.capabilities.iter().any(|capability| {
+             capability.cfg_type != VIRTIO_PCI_CAP_PCI_CFG
++                && capability.bar == self.regs_bar
+                 && bar_offset >= capability.bar_offset
+-                && capability
+-                    .bar_offset
+-                    .checked_add(capability.bar_len)
+-                    .is_some_and(|capability_end| end <= capability_end)
++                && u64::from(end) <= u64::from(capability.bar_offset) + capability.bar_len
+         }) {
+             return None;
+         }
+@@ -983,7 +1116,7 @@
+     }
+ 
+     fn read_pci_cfg_region(&mut self, data: &mut [u8]) {
+-        if let Some((PCI_BAR0_INDEX, selected_offset, len)) = self.pci_cfg_selection()
++        if let Some((_, selected_offset, len)) = self.pci_cfg_selection()
+             && data.len() == len
+         {
+             self.read_bar_region(u64::from(selected_offset), data);
+@@ -993,7 +1126,7 @@
+     }
+ 
+     fn write_pci_cfg_region(&mut self, data: &[u8]) {
+-        if let Some((PCI_BAR0_INDEX, selected_offset, len)) = self.pci_cfg_selection()
++        if let Some((_, selected_offset, len)) = self.pci_cfg_selection()
+             && data.len() == len
+         {
+             self.write_bar_region(u64::from(selected_offset), data);
+@@ -1049,12 +1182,21 @@
+             }
+         }
+ 
+-        if start == pci_config::BAR0 && data.len() == PCI_BAR0_SIZE {
++        let regs = pci_bar_offset(self.regs_bar);
++        if start == regs && data.len() == PCI_BAR0_SIZE {
+             let value = u32::from_le_bytes(data.try_into().unwrap());
+             if value == PCI_BAR_PROBE_VALUE {
+                 self.bar_probe = true;
+                 return;
+             }
++        }
++
++        if let Some(shm_bar) = self.shm_bar.as_mut()
++            && start >= pci_bar_offset(shm_bar.index)
++            && end <= pci_bar_offset(shm_bar.index) + QWORD_SIZE
++        {
++            shm_bar.write(start - pci_bar_offset(shm_bar.index), data);
++            return;
+         }
+ 
+         let command_end = pci_config::COMMAND + WORD_SIZE;
+@@ -1066,10 +1208,10 @@
+                 pci_config::COMMAND..=PCI_COMMAND_LAST_BYTE => {
+                     self.config.write_u8(register, value)
+                 }
+-                pci_config::BAR0..=PCI_BAR0_END => {
++                _ if (regs..regs + PCI_BAR0_SIZE).contains(&register) => {
+                     self.bar_probe = false;
+                     let mut bytes = self.bar_base.to_le_bytes();
+-                    let byte_offset = register - pci_config::BAR0;
++                    let byte_offset = register - regs;
+                     if let Some(byte) = bytes.get_mut(byte_offset) {
+                         *byte = value;
+                     }
+@@ -1741,5 +1883,116 @@
+         );
+         assert_eq!(queue_events[0].read().unwrap(), QUEUE_EVENT_SIGNAL);
+         assert!(queue_events[1].read().is_err());
++    }
++
++    // A GPU with a shared memory region: registers in BAR 2, the region a 64-bit prefetchable BAR 4
++    // that sizes like one, and a 64-bit shared memory capability naming it.
++    struct ShmDevice(super::super::VirtioShmRegion);
++
++    impl VirtioDevice for ShmDevice {
++        fn avail_features(&self) -> u64 {
++            1u64 << VIRTIO_F_VERSION_1
++        }
++        fn acked_features(&self) -> u64 {
++            0
++        }
++        fn set_acked_features(&mut self, _features: u64) {}
++        fn device_type(&self) -> u32 {
++            VIRTIO_ID_GPU
++        }
++        fn device_name(&self) -> &str {
++            "pci-shm-test"
++        }
++        fn queue_config(&self) -> &[QueueConfig] {
++            &QUEUE_CONFIG
++        }
++        fn config_len(&self) -> Option<u32> {
++            Some(DEVICE_CONFIG.len() as u32)
++        }
++        fn read_config(&self, _offset: u64, data: &mut [u8]) {
++            data.fill(0);
++        }
++        fn write_config(&mut self, _offset: u64, _data: &[u8]) {}
++        fn activate(
++            &mut self,
++            _mem: GuestMemoryMmap,
++            _interrupt: InterruptTransport,
++            _queues: Vec<DeviceQueue>,
++        ) -> ActivateResult {
++            Ok(())
++        }
++        fn is_activated(&self) -> bool {
++            false
++        }
++        fn shm_region(&self) -> Option<&super::super::VirtioShmRegion> {
++            Some(&self.0)
++        }
+     }
++
++    #[test]
++    fn shared_memory_region_is_a_64bit_bar_with_its_capability() {
++        const BASE: u64 = 0x2_0000_0000;
++        const SIZE: u64 = 0x4000_0000;
++        let mem =
++            GuestMemoryMmap::from_ranges(&[(GuestAddress(0), TEST_GUEST_MEMORY_SIZE)]).unwrap();
++        let region = super::super::VirtioShmRegion {
++            host_addr: 0,
++            guest_addr: BASE,
++            size: SIZE as usize,
++        };
++        let mut transport = VirtioPciTransport::new(
++            mem,
++            Arc::new(Mutex::new(ShmDevice(region))),
++            5,
++            Arc::new(DummyIntxLine::default()),
++            TEST_BAR_BASE,
++        )
++        .unwrap();
++        let mut dword = [0u8; DWORD_SIZE];
++        let bar = |index: u16| pci_config::BAR0 as u16 + index * DWORD_SIZE as u16;
++
++        read_config(&mut transport, bar(0), &mut dword);
++        assert_eq!(u32::from_le_bytes(dword), 0, "a display device leaves BAR 0 free");
++        read_config(&mut transport, bar(2), &mut dword);
++        assert_eq!(u32::from_le_bytes(dword), TEST_BAR_BASE);
++
++        let flags = PCI_BAR_MEMORY_64 | PCI_BAR_PREFETCHABLE;
++        read_config(&mut transport, bar(4), &mut dword);
++        assert_eq!(u32::from_le_bytes(dword), BASE as u32 | flags);
++        read_config(&mut transport, bar(5), &mut dword);
++        assert_eq!(u32::from_le_bytes(dword), (BASE >> 32) as u32);
++        write_config(&mut transport, bar(4), &u32::MAX.to_le_bytes());
++        write_config(&mut transport, bar(5), &u32::MAX.to_le_bytes());
++        read_config(&mut transport, bar(4), &mut dword);
++        assert_eq!(u32::from_le_bytes(dword), !(SIZE as u32 - 1) | flags);
++        read_config(&mut transport, bar(5), &mut dword);
++        assert_eq!(u32::from_le_bytes(dword), u32::MAX);
++        write_config(&mut transport, bar(4), &(BASE as u32).to_le_bytes());
++        write_config(&mut transport, bar(5), &((BASE >> 32) as u32).to_le_bytes());
++        read_config(&mut transport, bar(5), &mut dword);
++        assert_eq!(u32::from_le_bytes(dword), (BASE >> 32) as u32);
++
++        let mut offset = [0u8];
++        read_config(&mut transport, pci_config::CAPABILITY_POINTER as u16, &mut offset);
++        let mut found = false;
++        while offset[0] != 0 {
++            let cap = u16::from(offset[0]);
++            let mut header = [0u8; 8];
++            read_config(&mut transport, cap, &mut header);
++            if header[vendor_cap::CONFIG_TYPE] == VIRTIO_PCI_CAP_SHARED_MEMORY_CFG {
++                assert_eq!(header[vendor_cap::LENGTH], VIRTIO_PCI_CAP64_LENGTH);
++                assert_eq!(header[vendor_cap::BAR], 4);
++                assert_eq!(header[vendor_cap::REGION_ID], VIRTIO_GPU_SHM_ID_HOST_VISIBLE);
++                read_config(&mut transport, cap + vendor_cap::REGION_LENGTH as u16, &mut dword);
++                assert_eq!(u32::from_le_bytes(dword), SIZE as u32);
++                read_config(&mut transport, cap + vendor_cap::REGION_LENGTH_HIGH as u16, &mut dword);
++                assert_eq!(u32::from_le_bytes(dword), (SIZE >> 32) as u32);
++                found = true;
++            } else {
++                assert_eq!(header[vendor_cap::BAR], 2, "the registers are BAR 2");
++            }
++            offset[0] = header[vendor_cap::NEXT];
++        }
++        assert!(found);
++    }
+ }
+--- a/src/libkrun/src/vmm/device_manager/hvf/pci.rs
++++ b/src/libkrun/src/vmm/device_manager/hvf/pci.rs
+@@ -3,6 +3,8 @@
+ //! PCI root and virtio-pci registration for the aarch64 Hypervisor.framework backend: the ECAM and
+ //! the BAR window are MMIO bus devices, and each function's INTx is a level-triggered GIC SPI,
+ //! allocated down from the top of the SPI range (MMIO devices take theirs from the bottom).
++//! A device's shared memory region (guest memory above RAM) is its 64-bit BAR 2, and the host
++//! bridge's 64-bit window spans those regions.
+ 
+ use std::fmt::{Display, Formatter};
+ use std::sync::{Arc, Mutex};
+@@ -46,6 +48,7 @@
+     next_device: u8,
+     irq: u32,
+     functions: Vec<PciFunctionInfo>,
++    mem64: Option<(u64, u64)>,
+ }
+ 
+ struct GicIntxLine {
+@@ -76,6 +79,7 @@
+             next_device: 1,
+             irq: arch::IRQ_MAX,
+             functions: Vec::new(),
++            mem64: None,
+         }
+     }
+ 
+@@ -111,6 +115,11 @@
+             return Err(Error::IrqsExhausted);
+         }
+         let intx_line = Arc::new(GicIntxLine { intc, irq });
++        let shm = device
++            .lock()
++            .expect("Poisoned virtio device lock")
++            .shm_region()
++            .map(|region| (region.guest_addr, region.guest_addr + region.size as u64));
+         let transport =
+             VirtioPciTransport::new(guest_memory, device, irq as u8, intx_line, bar_base as u32)
+                 .map_err(Error::CreateTransport)?;
+@@ -128,6 +137,12 @@
+             irq,
+         };
+         self.functions.push(info);
++        if let Some((start, end)) = shm {
++            self.mem64 = Some(match self.mem64 {
++                Some((first, last)) => (first.min(start), last.max(end)),
++                None => (start, end),
++            });
++        }
+         self.next_device += 1;
+         self.irq -= 1;
+         Ok(info)
+@@ -140,6 +155,7 @@
+             ecam_size: PCI_ECAM_SIZE,
+             bar_start: PCI_BAR_START,
+             bar_size: PCI_BAR_END - PCI_BAR_START,
++            mem64: self.mem64.map(|(start, end)| (start, end - start)),
+             functions: self.functions.clone(),
+         })
+     }
+--- a/src/arch/src/aarch64/mod.rs
++++ b/src/arch/src/aarch64/mod.rs
+@@ -56,6 +56,8 @@
+     pub ecam_size: u64,
+     pub bar_start: u64,
+     pub bar_size: u64,
++    /// The 64-bit memory window (start, size): the functions' shared memory BARs.
++    pub mem64: Option<(u64, u64)>,
+     pub functions: Vec<PciFunctionInfo>,
+ }
+ 
+--- a/src/devices/src/fdt/aarch64.rs
++++ b/src/devices/src/fdt/aarch64.rs
+@@ -312,6 +312,7 @@
+ // INTA as a level-triggered SPI.
+ fn create_pci_node(fdt: &mut FdtWriter, pci: &arch::aarch64::PciHostInfo) -> Result<()> {
+     const PCI_MEM32: u32 = 0x0200_0000;
++    const PCI_MEM64: u32 = 0x0300_0000;
+     let node = fdt.begin_node(&format!("pcie@{:x}", pci.ecam_base))?;
+     fdt.property_string("compatible", "pci-host-ecam-generic")?;
+     fdt.property_string("device_type", "pci")?;
+@@ -322,19 +323,21 @@
+     fdt.property_u32("linux,pci-domain", 0)?;
+     fdt.property_null("dma-coherent")?;
+     fdt.property("reg", &generate_prop64(&[pci.ecam_base, pci.ecam_size]))?;
+-    let (start, size) = (pci.bar_start, pci.bar_size);
+-    fdt.property(
+-        "ranges",
+-        &generate_prop32(&[
+-            PCI_MEM32,
++    let mut ranges = Vec::new();
++    for (space, (start, size)) in std::iter::once((PCI_MEM32, (pci.bar_start, pci.bar_size)))
++        .chain(pci.mem64.map(|window| (PCI_MEM64, window)))
++    {
++        ranges.extend_from_slice(&[
++            space,
+             (start >> 32) as u32,
+             start as u32,
+             (start >> 32) as u32,
+             start as u32,
+             (size >> 32) as u32,
+             size as u32,
+-        ]),
+-    )?;
++        ]);
++    }
++    fdt.property("ranges", &generate_prop32(&ranges))?;
+     let mut map = Vec::new();
+     for f in &pci.functions {
+         let devfn = (u32::from(f.device) << 11) | (u32::from(f.function) << 8);
+--- a/src/libkrun/src/vmm/device_manager/shm.rs
++++ b/src/libkrun/src/vmm/device_manager/shm.rs
+@@ -87,11 +87,15 @@
+         }
+     }
+ 
++    // A power-of-two size at a multiple of it, so that it can be a PCI BAR (virtio-pci's shared
++    // memory capability) as well as a virtio-mmio region.
+     #[cfg(feature = "gpu")]
+     pub fn create_gpu_region(&mut self, size: usize) -> Result<(), Error> {
+         if self.gpu_region.is_some() {
+             Err(Error::DuplicatedGpuRegion)
+         } else {
++            let size = size.max(self.page_size).next_power_of_two();
++            self.next_guest_addr = align_upwards!(self.next_guest_addr, size as u64);
+             self.gpu_region = Some(self.create_region(size)?);
+             Ok(())
+         }

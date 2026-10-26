@@ -1,0 +1,541 @@
+virglrenderer: emulate dma_buf for Venus where memory is shm imported as host memory (macOS).
+The guest Venus driver only exposes external memory (needed by compositors and Zink) when the renderer
+has VK_EXT_external_memory_dma_buf, which macOS drivers cannot have. With use_host_memory_import:
+- advertise VK_EXT_external_memory_dma_buf, VK_EXT_queue_family_foreign and
+  VK_EXT_image_drm_format_modifier (linear modifier only), next to the injected
+  VK_KHR_external_memory_fd (Zink needs them for dma_buf), and keep them, and the dma_buf/opaque
+  fd handle types, away from the driver;
+- answer external buffer/image queries for them, and create shareable images linear (shm holds
+  linear images only; their layout is opaque to the guest);
+- exportable memory is shm-backed (host-visible type), already exported as VIRGL_RESOURCE_FD_SHM;
+- importing an shm resource imports its mapping as host memory; shm resources exported from
+  device memory now hold a mapping too, like imported ones (the union held an fd there).
+Similar in spirit to the draft !1586 (emulate unsupported extensions), much smaller.
+
+diff -ru b/src/venus/vkr_buffer.c c/src/venus/vkr_buffer.c
+--- b/src/venus/vkr_buffer.c	2026-10-08 10:08:14
++++ c/src/venus/vkr_buffer.c	2026-10-11 02:08:20
+@@ -37,6 +37,9 @@
+     * vkr_physical_device_init_memory_properties as well.
+     */
+ 
++   vkr_strip_emulated_handle_types(vkr_device_from_handle(args->device)->physical_device,
++                                   args->pCreateInfo,
++                                   VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO);
+    vkr_buffer_create_and_add(dispatch->data, args);
+ }
+ 
+diff -ru b/src/venus/vkr_context.c c/src/venus/vkr_context.c
+--- b/src/venus/vkr_context.c	2026-10-08 10:08:14
++++ c/src/venus/vkr_context.c	2026-10-11 02:40:17
+@@ -345,10 +345,26 @@
+       }
+    }
+ 
++   /* shm resources hold a mapping, not an fd (see vkr_context_import_resource_from_shm and
++    * vkr_context_free_resource): map it, which is what importing the memory needs
++    */
++   void *mmap_ptr = NULL;
++   if (blob.type == VIRGL_RESOURCE_FD_SHM && res_fd >= 0) {
++      mmap_ptr = mmap(NULL, blob_size, PROT_READ | PROT_WRITE, MAP_SHARED, res_fd, 0);
++      close(res_fd);
++      res_fd = -1;
++      if (mmap_ptr == MAP_FAILED) {
++         close(blob.u.fd);
++         return false;
++      }
++   }
++
+    if (!vkr_context_import_resource_internal(ctx, res_id, blob_size, blob.type, res_fd,
+-                                             NULL)) {
++                                             mmap_ptr)) {
+       if (res_fd >= 0)
+          close(res_fd);
++      if (mmap_ptr)
++         munmap(mmap_ptr, blob_size);
+       close(blob.u.fd);
+       return false;
+    }
+diff -ru b/src/venus/vkr_device.c c/src/venus/vkr_device.c
+--- b/src/venus/vkr_device.c	2026-10-11 02:04:57
++++ c/src/venus/vkr_device.c	2026-10-11 02:38:28
+@@ -148,6 +148,13 @@
+          const char *name = args->pCreateInfo->ppEnabledExtensionNames[i];
+          if (!strcmp(name, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME))
+             has_external_memory_host = true;
++         /* emulated with shm, unknown to the driver */
++         if (physical_dev->use_host_memory_import &&
++             (!strcmp(name, VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME) ||
++              !strcmp(name, VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME) ||
++              !strcmp(name, VK_EXT_QUEUE_FAMILY_FOREIGN_EXTENSION_NAME) ||
++              !strcmp(name, VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME)))
++            continue;
+          exts[ext_count++] = name;
+       }
+ 
+diff -ru b/src/venus/vkr_device_memory.c c/src/venus/vkr_device_memory.c
+--- b/src/venus/vkr_device_memory.c	2026-10-11 02:04:57
++++ c/src/venus/vkr_device_memory.c	2026-10-11 02:09:29
+@@ -274,14 +274,32 @@
+    return shm;
+ }
+ 
++/* Wraps the mapping of an shm resource (attached to this context) for a host memory import.
++ * The resource owns the mapping (fd -1); it outlives the import while the guest holds both.
++ */
++static struct vkr_shm *
++vkr_shm_borrow(void *data, uint64_t size)
++{
++   const size_t page_size = getpagesize();
++   struct vkr_shm *shm = calloc(1, sizeof(*shm));
++   if (!shm)
++      return NULL;
++   shm->fd = -1;
++   shm->ptr = data;
++   shm->size = (size + page_size - 1) & ~(page_size - 1);
++   return shm;
++}
++
+ static void
+ vkr_shm_free(struct vkr_shm *shm)
+ {
+    if (!shm)
+       return;
+ 
+-   munmap(shm->ptr, shm->size);
+-   close(shm->fd);
++   if (shm->fd >= 0) {
++      munmap(shm->ptr, shm->size);
++      close(shm->fd);
++   }
+    free(shm);
+ }
+ 
+@@ -295,7 +313,7 @@
+    struct vkr_physical_device *physical_dev = dev->physical_device;
+ 
+    VkMemoryAllocateInfo *alloc_info = (VkMemoryAllocateInfo *)args->pAllocateInfo;
+-   const uint32_t mem_type_index = alloc_info->memoryTypeIndex;
++   uint32_t mem_type_index = alloc_info->memoryTypeIndex;
+    if (unlikely(mem_type_index >= physical_dev->memory_properties.memoryTypeCount)) {
+       args->ret = VK_ERROR_UNKNOWN;
+       return;
+@@ -306,14 +324,36 @@
+    VkImportMemoryResourceInfoMESA *res_info = NULL;
+    void *prev_of_res_info = vkr_find_prev_struct(
+       alloc_info, VK_STRUCTURE_TYPE_IMPORT_MEMORY_RESOURCE_INFO_MESA);
++   /* or, for an shm resource (emulated dma_buf), into a host memory import */
++   struct vkr_shm *imported_shm = NULL;
++   VkImportMemoryHostPointerInfoEXT local_shm_import;
+    if (prev_of_res_info) {
+       res_info = (VkImportMemoryResourceInfoMESA *)vkr_pnext_get_next(prev_of_res_info);
+-      if (!vkr_get_fd_info_from_resource_info(ctx, res_info, &local_import_info)) {
++      struct vkr_resource *res = physical_dev->use_host_memory_import
++                                    ? vkr_context_get_resource(ctx, res_info->resourceId)
++                                    : NULL;
++      if (res && res->fd_type == VIRGL_RESOURCE_FD_SHM) {
++         const int type = vkr_host_visible_memory_type(physical_dev);
++         imported_shm = type >= 0 ? vkr_shm_borrow(res->u.data, res->size) : NULL;
++         if (!imported_shm) {
++            args->ret = VK_ERROR_INVALID_EXTERNAL_HANDLE;
++            return;
++         }
++         local_shm_import = (VkImportMemoryHostPointerInfoEXT){
++            .sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_HOST_POINTER_INFO_EXT,
++            .pNext = res_info->pNext,
++            .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT,
++            .pHostPointer = imported_shm->ptr,
++         };
++         vkr_pnext_set_next(prev_of_res_info, &local_shm_import);
++         alloc_info->allocationSize = imported_shm->size;
++         alloc_info->memoryTypeIndex = mem_type_index = type;
++      } else if (!vkr_get_fd_info_from_resource_info(ctx, res_info, &local_import_info)) {
+          args->ret = VK_ERROR_INVALID_EXTERNAL_HANDLE;
+          return;
++      } else {
++         vkr_pnext_set_next(prev_of_res_info, &local_import_info);
+       }
+-
+-      vkr_pnext_set_next(prev_of_res_info, &local_import_info);
+    }
+ 
+    VkExportMemoryAllocateInfo *export_info =
+@@ -322,6 +362,16 @@
+    /* track if driver has requested export allocation */
+    const bool might_export = export_info && export_info->handleTypes;
+ 
++   /* Emulated external memory is shm, which only host-visible types import. */
++   if (physical_dev->use_host_memory_import && export_info &&
++       (export_info->handleTypes & VKR_EMULATED_MEMORY_HANDLE_TYPES) &&
++       !(physical_dev->memory_properties.memoryTypes[mem_type_index].propertyFlags &
++         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)) {
++      const int type = vkr_host_visible_memory_type(physical_dev);
++      if (type >= 0)
++         alloc_info->memoryTypeIndex = mem_type_index = type;
++   }
++
+    /* XXX Force dma_buf/opaque fd export or gbm bo import until a new extension that
+     * supports direct export from host visible memory
+     *
+@@ -391,6 +441,14 @@
+             }
+          }
+       } else if (physical_dev->use_host_memory_import) {
++         /* The driver cannot export: the shm is the export (emulated handle types). */
++         if (export_info) {
++            void *prev_of_export_info =
++               vkr_find_prev_struct(alloc_info, VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO);
++            vkr_pnext_set_next(prev_of_export_info, export_info->pNext);
++            export_info = NULL;
++         }
++
+          /* Allocate shm and import it as host memory. */
+          shm = vkr_shm_alloc(alloc_info->allocationSize);
+          if (!shm) {
+@@ -462,6 +520,11 @@
+          valid_fd_types |= 1 << VIRGL_RESOURCE_FD_DMABUF;
+    }
+ 
++   if (imported_shm) {
++      shm = imported_shm;
++      valid_fd_types = 1 << VIRGL_RESOURCE_FD_SHM;
++   }
++
+    struct vkr_device_memory *mem = vkr_device_memory_create_and_add(ctx, args);
+    if (!mem) {
+       if (local_import_info.fd >= 0)
+@@ -543,6 +606,21 @@
+       return;
+    }
+ 
++   VkMemoryResourceAllocationSizePropertiesMESA *alloc_size_props =
++      vkr_find_struct(args->pMemoryResourceProperties->pNext,
++                      VK_STRUCTURE_TYPE_MEMORY_RESOURCE_ALLOCATION_SIZE_PROPERTIES_MESA);
++
++   /* emulated dma_buf: shm imported as host memory into a host-visible type */
++   const int host_visible_type = vkr_host_visible_memory_type(dev->physical_device);
++   if (dev->physical_device->use_host_memory_import && res->fd_type == VIRGL_RESOURCE_FD_SHM &&
++       host_visible_type >= 0) {
++      args->ret = VK_SUCCESS;
++      args->pMemoryResourceProperties->memoryTypeBits = 1u << host_visible_type;
++      if (alloc_size_props)
++         alloc_size_props->allocationSize = res->size;
++      return;
++   }
++
+    if (res->fd_type != VIRGL_RESOURCE_FD_DMABUF) {
+       args->ret = VK_ERROR_INVALID_EXTERNAL_HANDLE;
+       return;
+@@ -563,9 +641,6 @@
+ 
+    args->pMemoryResourceProperties->memoryTypeBits = mem_fd_props.memoryTypeBits;
+ 
+-   VkMemoryResourceAllocationSizePropertiesMESA *alloc_size_props =
+-      vkr_find_struct(args->pMemoryResourceProperties->pNext,
+-                      VK_STRUCTURE_TYPE_MEMORY_RESOURCE_ALLOCATION_SIZE_PROPERTIES_MESA);
+    if (alloc_size_props)
+       alloc_size_props->allocationSize = res->size;
+ }
+diff -ru b/src/venus/vkr_image.c c/src/venus/vkr_image.c
+--- b/src/venus/vkr_image.c	2026-10-08 10:08:14
++++ c/src/venus/vkr_image.c	2026-10-11 02:38:28
+@@ -31,6 +31,33 @@
+     * situation because the app does not consider the memory external.
+     */
+ 
++   /* Shareable images with emulated handle types live in shm-backed host memory, which holds
++    * linear images only. Their layout is opaque to the guest, and every importer creates them
++    * the same way, so they are created linear.
++    */
++   const struct vkr_physical_device *physical_dev =
++      vkr_device_from_handle(args->device)->physical_device;
++   const VkExternalMemoryImageCreateInfo *external =
++      vkr_find_struct(args->pCreateInfo->pNext, VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO);
++   if (physical_dev->use_host_memory_import && external &&
++       (external->handleTypes & VKR_EMULATED_MEMORY_HANDLE_TYPES) &&
++       args->pCreateInfo->tiling == VK_IMAGE_TILING_OPTIMAL)
++      ((VkImageCreateInfo *)args->pCreateInfo)->tiling = VK_IMAGE_TILING_LINEAR;
++
++   /* Emulated modifier tiling is the linear modifier: linear tiling for the driver. An import's
++    * explicit layout stays: its row pitch is the exporting image's, which may be wider than this
++    * one (the driver keeps it, mesa-0008). */
++   if (physical_dev->use_host_memory_import &&
++       args->pCreateInfo->tiling == VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT) {
++      void *prev = vkr_find_prev_struct(args->pCreateInfo,
++                                        VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_LIST_CREATE_INFO_EXT);
++      if (prev)
++         vkr_pnext_set_next(prev, ((const VkBaseInStructure *)vkr_pnext_get_next(prev))->pNext);
++      ((VkImageCreateInfo *)args->pCreateInfo)->tiling = VK_IMAGE_TILING_LINEAR;
++   }
++
++   vkr_strip_emulated_handle_types(physical_dev, args->pCreateInfo,
++                                   VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO);
+    vkr_image_create_and_add(dispatch->data, args);
+ }
+ 
+@@ -125,6 +155,11 @@
+    struct vn_device_proc_table *vk = &dev->proc_table;
+ 
+    vn_replace_vkGetImageSubresourceLayout_args_handle(args);
++   /* emulated modifier: memory plane 0 is the (single) color plane */
++   VkImageSubresource *subresource = (VkImageSubresource *)args->pSubresource;
++   if (dev->physical_device->use_host_memory_import &&
++       subresource->aspectMask == VK_IMAGE_ASPECT_MEMORY_PLANE_0_BIT_EXT)
++      subresource->aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    vk->GetImageSubresourceLayout(args->device, args->image, args->pSubresource,
+                                  args->pLayout);
+ }
+@@ -138,6 +173,10 @@
+    struct vn_device_proc_table *vk = &dev->proc_table;
+ 
+    vn_replace_vkGetImageSubresourceLayout2_args_handle(args);
++   VkImageSubresource2 *subresource = (VkImageSubresource2 *)args->pSubresource;
++   if (dev->physical_device->use_host_memory_import &&
++       subresource->imageSubresource.aspectMask == VK_IMAGE_ASPECT_MEMORY_PLANE_0_BIT_EXT)
++      subresource->imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    vk->GetImageSubresourceLayout2(args->device, args->image, args->pSubresource,
+                                   args->pLayout);
+ }
+@@ -161,6 +200,13 @@
+ {
+    struct vkr_device *dev = vkr_device_from_handle(args->device);
+    struct vn_device_proc_table *vk = &dev->proc_table;
++
++   /* emulated modifier: every image is linear to the guest */
++   if (dev->physical_device->use_host_memory_import) {
++      args->pProperties->drmFormatModifier = VKR_DRM_FORMAT_MOD_LINEAR;
++      args->ret = VK_SUCCESS;
++      return;
++   }
+ 
+    vn_replace_vkGetImageDrmFormatModifierPropertiesEXT_args_handle(args);
+    args->ret = vk->GetImageDrmFormatModifierPropertiesEXT(args->device, args->image,
+diff -ru b/src/venus/vkr_physical_device.c c/src/venus/vkr_physical_device.c
+--- b/src/venus/vkr_physical_device.c	2026-10-11 02:04:57
++++ c/src/venus/vkr_physical_device.c	2026-10-11 02:38:28
+@@ -328,16 +328,36 @@
+                                           !physical_dev->KHR_external_memory_fd &&
+                                           !physical_dev->EXT_external_memory_dma_buf;
+    if (physical_dev->use_host_memory_import) {
++      /* VK_EXT_external_memory_dma_buf too: the guest driver only exposes external memory
++       * (which compositors and GL-on-Vulkan need) when the renderer has it. Both are emulated
++       * with shm; see VKR_EMULATED_MEMORY_HANDLE_TYPES. And VK_EXT_queue_family_foreign, which
++       * Zink requires for dma_buf: Apple silicon has one queue and the driver ignores queue
++       * family ownership transfers.
++       */
+       VkExtensionProperties *new_exts =
+-         realloc(exts, sizeof(*exts) * (advertised_count + 1));
++         realloc(exts, sizeof(*exts) * (advertised_count + 4));
+       if (new_exts) {
+          exts = new_exts;
+          strcpy(new_exts[advertised_count].extensionName,
+                 VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME);
+          new_exts[advertised_count].specVersion = 0;
+          advertised_count++;
++         strcpy(new_exts[advertised_count].extensionName,
++                VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME);
++         new_exts[advertised_count].specVersion = 1;
++         advertised_count++;
++         strcpy(new_exts[advertised_count].extensionName,
++                VK_EXT_QUEUE_FAMILY_FOREIGN_EXTENSION_NAME);
++         new_exts[advertised_count].specVersion = 1;
++         advertised_count++;
++         /* and VK_EXT_image_drm_format_modifier, with the linear modifier only: Zink needs it
++          * to export images that were not created shareable */
++         strcpy(new_exts[advertised_count].extensionName,
++                VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME);
++         new_exts[advertised_count].specVersion = 2;
++         advertised_count++;
+       } else {
+-         vkr_log("failed to inject VK_KHR_external_memory_fd");
++         vkr_log("failed to inject external memory extensions");
+       }
+    }
+ 
+@@ -741,6 +761,39 @@
+    vn_replace_vkGetPhysicalDeviceFormatProperties2_args_handle(args);
+    vk->GetPhysicalDeviceFormatProperties2(args->physicalDevice, args->format,
+                                           args->pFormatProperties);
++
++   /* emulated VK_EXT_image_drm_format_modifier: the linear modifier, with linear features */
++   if (!physical_dev->use_host_memory_import)
++      return;
++   const VkFormatFeatureFlags linear =
++      args->pFormatProperties->formatProperties.linearTilingFeatures;
++   const VkFormatProperties3 *props3 =
++      vkr_find_struct(args->pFormatProperties->pNext, VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_3);
++   VkDrmFormatModifierPropertiesListEXT *list = vkr_find_struct(
++      args->pFormatProperties->pNext, VK_STRUCTURE_TYPE_DRM_FORMAT_MODIFIER_PROPERTIES_LIST_EXT);
++   if (list) {
++      if (linear && list->pDrmFormatModifierProperties && list->drmFormatModifierCount) {
++         list->pDrmFormatModifierProperties[0] = (VkDrmFormatModifierPropertiesEXT){
++            .drmFormatModifier = VKR_DRM_FORMAT_MOD_LINEAR,
++            .drmFormatModifierPlaneCount = 1,
++            .drmFormatModifierTilingFeatures = linear,
++         };
++      }
++      list->drmFormatModifierCount = linear ? 1 : 0;
++   }
++   VkDrmFormatModifierPropertiesList2EXT *list2 = vkr_find_struct(
++      args->pFormatProperties->pNext, VK_STRUCTURE_TYPE_DRM_FORMAT_MODIFIER_PROPERTIES_LIST_2_EXT);
++   if (list2) {
++      const VkFormatFeatureFlags2 linear2 = props3 ? props3->linearTilingFeatures : linear;
++      if (linear2 && list2->pDrmFormatModifierProperties && list2->drmFormatModifierCount) {
++         list2->pDrmFormatModifierProperties[0] = (VkDrmFormatModifierProperties2EXT){
++            .drmFormatModifier = VKR_DRM_FORMAT_MOD_LINEAR,
++            .drmFormatModifierPlaneCount = 1,
++            .drmFormatModifierTilingFeatures = linear2,
++         };
++      }
++      list2->drmFormatModifierCount = linear2 ? 1 : 0;
++   }
+ }
+ 
+ static void
+@@ -753,8 +806,75 @@
+    struct vn_physical_device_proc_table *vk = &physical_dev->proc_table;
+ 
+    vn_replace_vkGetPhysicalDeviceImageFormatProperties2_args_handle(args);
+-   args->ret = vk->GetPhysicalDeviceImageFormatProperties2(
+-      args->physicalDevice, args->pImageFormatInfo, args->pImageFormatProperties);
++
++   if (!physical_dev->use_host_memory_import) {
++      args->ret = vk->GetPhysicalDeviceImageFormatProperties2(
++         args->physicalDevice, args->pImageFormatInfo, args->pImageFormatProperties);
++      return;
++   }
++
++   /* Emulated handle types and modifier: shareable images are shm-backed host memory, which
++    * holds linear images only, so they are created linear (vkr_dispatch_vkCreateImage). Ask
++    * the driver about a linear image without the emulated structs and answer for them.
++    */
++   VkPhysicalDeviceImageFormatInfo2 *info =
++      (VkPhysicalDeviceImageFormatInfo2 *)args->pImageFormatInfo;
++   const VkImageTiling tiling = info->tiling;
++
++   void *prev_of_modifier = NULL;
++   VkPhysicalDeviceImageDrmFormatModifierInfoEXT *modifier = NULL;
++   if (tiling == VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT) {
++      prev_of_modifier = vkr_find_prev_struct(
++         info, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_DRM_FORMAT_MODIFIER_INFO_EXT);
++      modifier = prev_of_modifier
++                    ? (VkPhysicalDeviceImageDrmFormatModifierInfoEXT *)vkr_pnext_get_next(
++                         prev_of_modifier)
++                    : NULL;
++      if (!modifier || modifier->drmFormatModifier != VKR_DRM_FORMAT_MOD_LINEAR) {
++         args->ret = VK_ERROR_FORMAT_NOT_SUPPORTED;
++         return;
++      }
++      vkr_pnext_set_next(prev_of_modifier, modifier->pNext);
++      info->tiling = VK_IMAGE_TILING_LINEAR;
++   }
++
++   void *prev_of_external =
++      vkr_find_prev_struct(info, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO);
++   VkPhysicalDeviceExternalImageFormatInfo *external =
++      prev_of_external
++         ? (VkPhysicalDeviceExternalImageFormatInfo *)vkr_pnext_get_next(prev_of_external)
++         : NULL;
++   if (external && !(external->handleType & VKR_EMULATED_MEMORY_HANDLE_TYPES))
++      external = NULL;
++   if (external) {
++      vkr_pnext_set_next(prev_of_external, external->pNext);
++      if (info->tiling == VK_IMAGE_TILING_OPTIMAL)
++         info->tiling = VK_IMAGE_TILING_LINEAR;
++   }
++
++   if (info->tiling == VK_IMAGE_TILING_LINEAR || tiling == info->tiling)
++      args->ret = vk->GetPhysicalDeviceImageFormatProperties2(
++         args->physicalDevice, args->pImageFormatInfo, args->pImageFormatProperties);
++   else
++      args->ret = VK_ERROR_FORMAT_NOT_SUPPORTED;
++
++   if (external) {
++      vkr_pnext_set_next(prev_of_external, external);
++      VkExternalImageFormatProperties *props =
++         vkr_find_struct(args->pImageFormatProperties->pNext,
++                         VK_STRUCTURE_TYPE_EXTERNAL_IMAGE_FORMAT_PROPERTIES);
++      if (args->ret == VK_SUCCESS && props) {
++         props->externalMemoryProperties = (VkExternalMemoryProperties){
++            .externalMemoryFeatures = VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT |
++                                      VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT,
++            .exportFromImportedHandleTypes = external->handleType,
++            .compatibleHandleTypes = external->handleType,
++         };
++      }
++   }
++   if (modifier)
++      vkr_pnext_set_next(prev_of_modifier, modifier);
++   info->tiling = tiling;
+ }
+ 
+ static void
+@@ -781,6 +901,20 @@
+    struct vn_physical_device_proc_table *vk = &physical_dev->proc_table;
+ 
+    vn_replace_vkGetPhysicalDeviceExternalBufferProperties_args_handle(args);
++
++   const VkExternalMemoryHandleTypeFlagBits handle_type =
++      args->pExternalBufferInfo->handleType;
++   if (physical_dev->use_host_memory_import &&
++       (handle_type & VKR_EMULATED_MEMORY_HANDLE_TYPES)) {
++      args->pExternalBufferProperties->externalMemoryProperties = (VkExternalMemoryProperties){
++         .externalMemoryFeatures =
++            VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT | VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT,
++         .exportFromImportedHandleTypes = handle_type,
++         .compatibleHandleTypes = handle_type,
++      };
++      return;
++   }
++
+    vk->GetPhysicalDeviceExternalBufferProperties(
+       args->physicalDevice, args->pExternalBufferInfo, args->pExternalBufferProperties);
+ }
+diff -ru b/src/venus/vkr_physical_device.h c/src/venus/vkr_physical_device.h
+--- b/src/venus/vkr_physical_device.h	2026-10-11 02:04:57
++++ c/src/venus/vkr_physical_device.h	2026-10-11 02:38:28
+@@ -56,4 +56,44 @@
+ vkr_physical_device_destroy(struct vkr_context *ctx,
+                             struct vkr_physical_device *physical_dev);
+ 
++/* With use_host_memory_import, dma_buf and opaque fd memory is emulated with shm: the guest
++ * sees the handle types, the driver never does.
++ */
++/* ... and image tiling is described with one DRM format modifier: shareable images are linear. */
++#define VKR_DRM_FORMAT_MOD_LINEAR 0ull
++
++#define VKR_EMULATED_MEMORY_HANDLE_TYPES                                                 \
++   (VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT | VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT)
++
++/* Removes the emulated handle types from a VkExternalMemory{Buffer,Image}CreateInfo in a
++ * create info chain, unlinking the struct when nothing is left.
++ */
++static inline void
++vkr_strip_emulated_handle_types(const struct vkr_physical_device *physical_dev,
++                                const void *create_info,
++                                VkStructureType type)
++{
++   if (!physical_dev->use_host_memory_import)
++      return;
++   void *prev = vkr_find_prev_struct(create_info, type);
++   if (!prev)
++      return;
++   VkExternalMemoryImageCreateInfo *info = (VkExternalMemoryImageCreateInfo *)vkr_pnext_get_next(prev);
++   info->handleTypes &= ~VKR_EMULATED_MEMORY_HANDLE_TYPES;
++   if (!info->handleTypes)
++      vkr_pnext_set_next(prev, info->pNext);
++}
++
++/* The first host-visible memory type: emulated external memory lives there. */
++static inline int
++vkr_host_visible_memory_type(const struct vkr_physical_device *physical_dev)
++{
++   const VkPhysicalDeviceMemoryProperties *props = &physical_dev->memory_properties;
++   for (uint32_t i = 0; i < props->memoryTypeCount; i++) {
++      if (props->memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
++         return (int)i;
++   }
++   return -1;
++}
++
+ #endif /* VKR_PHYSICAL_DEVICE_H */

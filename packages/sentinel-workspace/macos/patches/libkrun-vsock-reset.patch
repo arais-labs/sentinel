@@ -1,0 +1,60 @@
+--- a/src/devices/src/virtio/vsock/device.rs
++++ b/src/devices/src/virtio/vsock/device.rs
+@@ -249,21 +249,31 @@
+             return Err(ActivateError::BadActivate);
+         }
+ 
+-        if self.activate_evt.write(1).is_err() {
+-            error!("Cannot write to activate_evt",);
+-            return Err(ActivateError::BadActivate);
+-        }
+-
+-        // Store queue events for event handling.
+-        self.queue_events = queues.iter().map(|dq| dq.event.clone()).collect();
+-
+         // Extract queues from DeviceQueues and wrap in Arc<Mutex<>>.
++        let queue_events: Vec<_> = queues.iter().map(|dq| dq.event.clone()).collect();
+         let mut queues_vec: Vec<VirtQueue> = queues.into_iter().map(|dq| dq.queue).collect();
+         // Note: EVQ (index 2) is currently unused, we just take it to maintain the vec.
+         let _evq = queues_vec.pop().unwrap();
+         let tx_queue = queues_vec.pop().unwrap();
+         let rx_queue = queues_vec.pop().unwrap();
+ 
++        // Activated again after a reset: the driver's new rings go into the queues the muxer
++        // threads already hold (the transport keeps the queue events), and the threads carry on.
++        if let (Some(rx), Some(tx)) = (&self.queue_rx, &self.queue_tx) {
++            *rx.lock().unwrap() = rx_queue;
++            *tx.lock().unwrap() = tx_queue;
++            self.device_state = DeviceState::Activated(mem, interrupt);
++            return Ok(());
++        }
++
++        if self.activate_evt.write(1).is_err() {
++            error!("Cannot write to activate_evt",);
++            return Err(ActivateError::BadActivate);
++        }
++
++        // Store queue events for event handling.
++        self.queue_events = queue_events;
++
+         self.queue_tx = Some(Arc::new(Mutex::new(tx_queue)));
+         self.queue_rx = Some(Arc::new(Mutex::new(rx_queue)));
+         self.muxer.activate(
+@@ -280,4 +290,17 @@
+     fn is_activated(&self) -> bool {
+         self.device_state.is_activated()
+     }
++
++    // A driver resets the device before letting it go, and waits for the reset to complete
++    // (Windows' viosock on every power-down: without it, shutdown hangs until the power watchdog
++    // stops the system). The muxer threads keep running on empty queues (size 0: nothing to pop,
++    // nothing to complete) until a driver activates the device again.
++    fn reset(&mut self) -> bool {
++        for queue in [&self.queue_rx, &self.queue_tx].into_iter().flatten() {
++            let mut queue = queue.lock().unwrap();
++            *queue = VirtQueue::new(queue.get_max_size());
++        }
++        self.device_state = DeviceState::Inactive;
++        true
++    }
+ }

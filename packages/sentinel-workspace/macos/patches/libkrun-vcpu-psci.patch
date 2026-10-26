@@ -1,0 +1,248 @@
+diff -ruN a/src/hvf/src/lib.rs b/src/hvf/src/lib.rs
+--- a/src/hvf/src/lib.rs	2026-10-13 00:06:54
++++ b/src/hvf/src/lib.rs	2026-10-13 00:42:57
+@@ -50,6 +50,32 @@
+ const PSR_D_BIT: u64 = 0x0000_0200;
+ const AA64DFR0_EL1_PMUVER_SHIFT: u64 = 8;
+ const AA64DFR0_EL1_PMUVER_V3: u64 = 1;
++const PSCI_VERSION: u64 = 0x8400_0000;
++const PSCI_CPU_SUSPEND_32: u64 = 0x8400_0001;
++const PSCI_CPU_SUSPEND_64: u64 = 0xc400_0001;
++const PSCI_CPU_ON_32: u64 = 0x8400_0003;
++const PSCI_CPU_ON_64: u64 = 0xc400_0003;
++const PSCI_AFFINITY_INFO_32: u64 = 0x8400_0004;
++const PSCI_AFFINITY_INFO_64: u64 = 0xc400_0004;
++const PSCI_MIGRATE_INFO_TYPE: u64 = 0x8400_0006;
++const PSCI_SYSTEM_OFF: u64 = 0x8400_0008;
++const PSCI_SYSTEM_RESET: u64 = 0x8400_0009;
++const PSCI_FEATURES: u64 = 0x8400_000a;
++const PSCI_FUNCTIONS: [u64; 11] = [
++    PSCI_VERSION,
++    PSCI_CPU_SUSPEND_32,
++    PSCI_CPU_SUSPEND_64,
++    PSCI_CPU_ON_32,
++    PSCI_CPU_ON_64,
++    PSCI_AFFINITY_INFO_32,
++    PSCI_AFFINITY_INFO_64,
++    PSCI_MIGRATE_INFO_TYPE,
++    PSCI_SYSTEM_OFF,
++    PSCI_SYSTEM_RESET,
++    PSCI_FEATURES,
++];
++const PSCI_VERSION_1_0: u64 = 0x1_0000;
++const PSCI_NOT_SUPPORTED: u64 = -1i64 as u64;
+ // ESR_ELx for an Unknown-reason exception from a 32-bit instruction.
+ const ESR_IL: u64 = 1 << 25;
+ const PSTATE_EL1_FAULT_BITS_64: u64 = PSR_MODE_EL1H | PSR_A_BIT | PSR_F_BIT | PSR_I_BIT | PSR_D_BIT;
+@@ -368,6 +394,7 @@
+     PsciHandled,
+     SecureMonitorCall,
+     Shutdown,
++    Reset,
+     SystemRegister,
+     VtimerActivated,
+     WaitForEvent,
+@@ -688,28 +715,48 @@
+ 
+     fn handle_psci_request(&self) -> Result<VcpuExit<'_>, Error> {
+         match self.read_reg(hv_reg_t_HV_REG_X0)? {
+-            0x8400_0000 /* QEMU_PSCI_0_2_FN_PSCI_VERSION */ => {
+-                self.write_reg(hv_reg_t_HV_REG_X0, 2)?;
++            PSCI_VERSION => {
++                self.write_reg(hv_reg_t_HV_REG_X0, PSCI_VERSION_1_0)?;
+                 Ok(VcpuExit::PsciHandled)
+             },
+-            0x8400_0006 /* QEMU_PSCI_0_2_FN_MIGRATE_INFO_TYPE */ => {
++            PSCI_FEATURES => {
++                let function = self.read_reg(hv_reg_t_HV_REG_X1)?;
++                let supported = PSCI_FUNCTIONS.contains(&function);
++                self.write_reg(hv_reg_t_HV_REG_X0, if supported { 0 } else { PSCI_NOT_SUPPORTED })?;
++                Ok(VcpuExit::PsciHandled)
++            },
++            // A standby request may return at once, as on any spurious wakeup.
++            PSCI_CPU_SUSPEND_32 | PSCI_CPU_SUSPEND_64 => {
++                self.write_reg(hv_reg_t_HV_REG_X0, 0)?;
++                Ok(VcpuExit::PsciHandled)
++            },
++            // Every vCPU runs from boot or from its CPU_ON on: report them all on.
++            PSCI_AFFINITY_INFO_32 | PSCI_AFFINITY_INFO_64 => {
++                self.write_reg(hv_reg_t_HV_REG_X0, 0)?;
++                Ok(VcpuExit::PsciHandled)
++            },
++            PSCI_MIGRATE_INFO_TYPE => {
+                 self.write_reg(hv_reg_t_HV_REG_X0, 2)?;
+                 Ok(VcpuExit::PsciHandled)
+             },
+-            0x8400_0008 /* QEMU_PSCI_0_2_FN_SYSTEM_OFF */ => {
++            PSCI_SYSTEM_OFF => {
+                 Ok(VcpuExit::Shutdown)
+             },
+-            0x8400_0009 /* QEMU_PSCI_0_2_FN_SYSTEM_RESET */ => {
+-                Ok(VcpuExit::Shutdown)
++            PSCI_SYSTEM_RESET => {
++                Ok(VcpuExit::Reset)
+             },
+-            0xc400_0003 /* QEMU_PSCI_0_2_FN64_CPU_ON */ => {
++            PSCI_CPU_ON_32 | PSCI_CPU_ON_64 => {
+                 let mpidr = self.read_reg(hv_reg_t_HV_REG_X1)?;
+                 let entry = self.read_reg(hv_reg_t_HV_REG_X2)?;
+                 let context_id = self.read_reg(hv_reg_t_HV_REG_X3)?;
+                 self.write_reg(hv_reg_t_HV_REG_X0, 0)?;
+                 Ok(VcpuExit::CpuOn(mpidr, entry, context_id))
+             }
+-            val => panic!("Unexpected val={val}")
++            function => {
++                debug!("unsupported PSCI/SMCCC function 0x{function:x}");
++                self.write_reg(hv_reg_t_HV_REG_X0, PSCI_NOT_SUPPORTED)?;
++                Ok(VcpuExit::PsciHandled)
++            }
+         }
+     }
+ 
+diff -ruN a/src/libkrun/src/vmm/builder.rs b/src/libkrun/src/vmm/builder.rs
+--- a/src/libkrun/src/vmm/builder.rs	2026-10-13 00:06:54
++++ b/src/libkrun/src/vmm/builder.rs	2026-10-13 00:42:57
+@@ -2453,7 +2453,7 @@
+     nested_enabled: bool,
+ ) -> super::Result<Vec<Vcpu>> {
+     let mut vcpus = Vec::with_capacity(vcpu_config.vcpu_count as usize);
+-    let mut boot_senders: HashMap<u64, Sender<u64>> = HashMap::new();
++    let mut boot_senders: HashMap<u64, Sender<(u64, u64)>> = HashMap::new();
+ 
+     for cpu_index in 0..vcpu_config.vcpu_count {
+         let (boot_sender, boot_receiver) = if cpu_index != 0 {
+@@ -2483,7 +2483,10 @@
+         vcpus.push(vcpu);
+     }
+ 
+-    vcpus[0].set_boot_senders(boot_senders);
++    // PSCI lets any running vCPU start another.
++    for vcpu in &mut vcpus {
++        vcpu.set_boot_senders(boot_senders.clone());
++    }
+ 
+     Ok(vcpus)
+ }
+diff -ruN a/src/libkrun/src/vmm/macos/vstate.rs b/src/libkrun/src/vmm/macos/vstate.rs
+--- a/src/libkrun/src/vmm/macos/vstate.rs	2026-10-13 00:06:54
++++ b/src/libkrun/src/vmm/macos/vstate.rs	2026-10-13 00:42:57
+@@ -14,7 +14,7 @@
+ use std::thread;
+ use std::time::Duration;
+ 
+-use super::super::{FC_EXIT_CODE_GENERIC_ERROR, FC_EXIT_CODE_OK};
++use super::super::{FC_EXIT_CODE_GENERIC_ERROR, FC_EXIT_CODE_OK, FC_EXIT_CODE_RESET};
+ use crate::vmm::vmm_config::machine_config::CpuFeaturesTemplate;
+ 
+ use arch::ArchMemoryInfo;
+@@ -302,8 +302,8 @@
+     id: u8,
+     ipa_size: u32,
+     boot_entry_addr: u64,
+-    boot_receiver: Option<Receiver<u64>>,
+-    boot_senders: Option<HashMap<u64, Sender<u64>>>,
++    boot_receiver: Option<Receiver<(u64, u64)>>,
++    boot_senders: Option<HashMap<u64, Sender<(u64, u64)>>>,
+     fdt_addr: u64,
+     mmio_bus: Option<devices::Bus>,
+     #[cfg_attr(all(test, target_arch = "aarch64"), allow(unused))]
+@@ -393,7 +393,7 @@
+         id: u8,
+         ipa_size: u32,
+         boot_entry_addr: GuestAddress,
+-        boot_receiver: Option<Receiver<u64>>,
++        boot_receiver: Option<Receiver<(u64, u64)>>,
+         exit_evt: EventFd,
+         vcpu_list: Arc<VcpuList>,
+         nested_enabled: bool,
+@@ -435,7 +435,7 @@
+         self.mmio_bus = Some(mmio_bus);
+     }
+ 
+-    pub fn set_boot_senders(&mut self, boot_senders: HashMap<u64, Sender<u64>>) {
++    pub fn set_boot_senders(&mut self, boot_senders: HashMap<u64, Sender<(u64, u64)>>) {
+         self.boot_senders = Some(boot_senders);
+     }
+ 
+@@ -497,7 +497,7 @@
+                     debug!("CpuOn: mpidr=0x{mpidr:x} entry=0x{entry:x} context_id={context_id}");
+                     if let Some(boot_senders) = &self.boot_senders {
+                         if let Some(sender) = boot_senders.get(&mpidr) {
+-                            sender.send(entry).unwrap()
++                            sender.send((entry, context_id)).unwrap()
+                         }
+                     } else {
+                         error!("CpuOn request coming from an unexpected vCPU={}", self.id);
+@@ -533,6 +533,10 @@
+                     info!("vCPU {vcpuid} received shutdown signal");
+                     Ok(VcpuEmulation::Stopped)
+                 }
++                VcpuExit::Reset => {
++                    info!("vCPU {vcpuid} received reset signal");
++                    Ok(VcpuEmulation::Reset)
++                }
+                 VcpuExit::SystemRegister => {
+                     debug!("vCPU {vcpuid} accessed a system register");
+                     Ok(VcpuEmulation::Handled)
+@@ -574,14 +578,20 @@
+         let (wfe_sender, wfe_receiver) = unbounded();
+         self.vcpu_list.register(hvf_vcpuid, wfe_sender);
+ 
+-        let entry_addr = if let Some(boot_receiver) = &self.boot_receiver {
+-            boot_receiver.recv().unwrap()
++        // The boot vCPU starts with the FDT address in x0; a vCPU started by PSCI CPU_ON with
++        // the caller's context id.
++        let (entry_addr, x0) = if let Some(boot_receiver) = &self.boot_receiver {
++            // A vCPU never started has nothing to do when the VM goes away.
++            let Ok(start) = boot_receiver.recv() else {
++                return;
++            };
++            start
+         } else {
+-            self.boot_entry_addr
++            (self.boot_entry_addr, self.fdt_addr)
+         };
+ 
+         hvf_vcpu
+-            .set_initial_state(self.ipa_size, entry_addr, self.fdt_addr)
++            .set_initial_state(self.ipa_size, entry_addr, x0)
+             .unwrap_or_else(|_| panic!("Can't set HVF vCPU {hvf_vcpuid} initial state"));
+ 
+         loop {
+@@ -604,11 +614,15 @@
+                 Ok(VcpuEmulation::WaitForEventTimeout(timeout)) => {
+                     self.wait_for_event(hvf_vcpuid, &wfe_receiver, Some(timeout), &hvf_vcpu)
+                 }
+-                // The guest was rebooted or halted.
++                // The guest was halted.
+                 Ok(VcpuEmulation::Stopped) => {
+                     self.exit(FC_EXIT_CODE_OK);
+                     break;
+                 }
++                Ok(VcpuEmulation::Reset) => {
++                    self.exit(FC_EXIT_CODE_RESET);
++                    break;
++                }
+                 // Emulation errors lead to vCPU exit.
+                 Err(_) => {
+                     self.exit(FC_EXIT_CODE_GENERIC_ERROR);
+@@ -761,6 +775,7 @@
+     Handled,
+     Interrupted,
+     Stopped,
++    Reset,
+     WaitForEvent,
+     WaitForEventExpired,
+     WaitForEventTimeout(Duration),
+diff -ruN a/src/libkrun/src/vmm/mod.rs b/src/libkrun/src/vmm/mod.rs
+--- a/src/libkrun/src/vmm/mod.rs	2026-10-13 00:42:51
++++ b/src/libkrun/src/vmm/mod.rs	2026-10-13 00:42:57
+@@ -80,6 +80,8 @@
+ /// Generic exit code for an error considered not possible to occur if the program logic is sound.
+ #[cfg(target_os = "linux")]
+ pub const FC_EXIT_CODE_UNEXPECTED_ERROR: u8 = 2;
++/// The guest asked for a reboot (PSCI SYSTEM_RESET): the caller starts the machine again.
++pub const FC_EXIT_CODE_RESET: u8 = 3;
+ /// Errors associated with the VMM internal logic. These errors cannot be generated by direct user
+ /// input, but can result from bad configuration of the host (for example if Firecracker doesn't
+ /// have permissions to open the KVM fd).

@@ -1,0 +1,46 @@
+diff -ruN a/src/devices/src/virtio/queue.rs b/src/devices/src/virtio/queue.rs
+--- a/src/devices/src/virtio/queue.rs	2026-10-13 01:45:36
++++ b/src/devices/src/virtio/queue.rs	2026-10-13 01:45:36
+@@ -30,6 +30,7 @@
+ 
+ pub(super) const VIRTQ_DESC_F_NEXT: u16 = 0x1;
+ pub(super) const VIRTQ_DESC_F_WRITE: u16 = 0x2;
++pub(super) const VIRTQ_DESC_F_INDIRECT: u16 = 0x4;
+ 
+ /// Virtio Queue related errors.
+ #[allow(clippy::enum_variant_names)]
+@@ -261,6 +262,26 @@
+         if chain.is_valid() { Some(chain) } else { None }
+     }
+ 
++    /// A head pointing at an indirect descriptor table (VIRTIO_RING_F_INDIRECT_DESC) becomes the
++    /// chain in that table, keeping the head's index for the used ring. Accepted whether or not the
++    /// feature was offered: some drivers (Windows' viosock) use it regardless.
++    fn resolve_indirect(self) -> Option<DescriptorChain<'a>> {
++        if self.flags & VIRTQ_DESC_F_INDIRECT == 0 {
++            return Some(self);
++        }
++        let count = self.len / 16;
++        if self.len % 16 != 0 || count == 0 || count > u32::from(u16::MAX) || self.has_next() {
++            return None;
++        }
++        let mut head = DescriptorChain::checked_new(self.mem, self.addr, count as u16, 0)?;
++        // An indirect table's descriptors may not themselves be indirect.
++        if head.flags & VIRTQ_DESC_F_INDIRECT != 0 {
++            return None;
++        }
++        head.index = self.index;
++        Some(head)
++    }
++
+     fn is_valid(&self) -> bool {
+         !self.has_next() || self.next < self.queue_size
+     }
+@@ -532,6 +553,7 @@
+             .unwrap();
+ 
+         DescriptorChain::checked_new(mem, self.desc_table, self.actual_size(), desc_index)
++            .and_then(DescriptorChain::resolve_indirect)
+             .inspect(|_| self.next_avail += Wrapping(1))
+     }
+ 

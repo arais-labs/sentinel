@@ -1,0 +1,26 @@
+angle: let a build without the Metal toolchain (an optional Xcode download) skip precompiling the
+internal shaders; ANGLE then builds them from their embedded source when a display is first created.
+
+diff -ruN angle-a/src/libANGLE/renderer/metal/metal_backend.gni angle-b/src/libANGLE/renderer/metal/metal_backend.gni
+--- a/src/libANGLE/renderer/metal/metal_backend.gni	2026-10-13 19:03:17
++++ b/src/libANGLE/renderer/metal/metal_backend.gni	2026-10-13 19:03:17
+@@ -92,6 +92,10 @@
+   # Set to precompile internal shaders for iOS or cross-compilation.
+   # Leave empty for default behavior.
+   angle_metal_toolchain_dir = ""
++
++  # Compile the internal shaders at build time with the Metal toolchain. Without it, the
++  # internal shaders are built from their embedded source when a display is first created.
++  angle_metal_precompile_internal_shaders = true
+ }
+ 
+ # We can build the ANGLE internal shaders at build-time if we have access to the
+@@ -102,7 +106,7 @@
+ # precompiling the internal shaders anyway, which enables prebuilt internal
+ # shaders for iOS as well.
+ metal_internal_shader_compilation_supported =
+-    angle_has_build &&
++    angle_has_build && angle_metal_precompile_internal_shaders &&
+     (angle_metal_toolchain_dir != "" || (!is_ios && target_os == host_os))
+ 
+ metal_internal_shaders_header =

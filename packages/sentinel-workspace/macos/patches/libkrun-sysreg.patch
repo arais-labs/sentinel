@@ -1,0 +1,166 @@
+diff -ruN a/src/arch/src/aarch64/macos/sysreg.rs b/src/arch/src/aarch64/macos/sysreg.rs
+--- a/src/arch/src/aarch64/macos/sysreg.rs	2026-10-12 22:16:02
++++ b/src/arch/src/aarch64/macos/sysreg.rs	2026-10-12 22:57:49
+@@ -117,6 +117,23 @@
+     }
+ }
+ 
++// PMU and self-hosted debug registers read as zero and ignore writes: the guest
++// sees a PMU with no event counters and no breakpoints, which every OS accepts.
++pub fn is_raz_wi_sysreg(reg: u32) -> bool {
++    let (op0, op1, crn, crm) = (
++        sysreg_op0(reg),
++        sysreg_op1(reg),
++        sysreg_crn(reg),
++        sysreg_crm(reg),
++    );
++    let pmu = op0 == 3
++        && ((op1 == 3 && crn == 9 && (12..=14).contains(&crm))
++            || (op1 == 3 && crn == 14 && crm >= 8)
++            || (op1 == 0 && crn == 9 && crm == 14));
++    let debug = op0 == 2 && op1 == 0 && (crn == 0 || crn == 1 || crn == 7);
++    pmu || debug
++}
++
+ pub fn sysreg_op0(sysreg: u32) -> u32 {
+     (sysreg >> SYSREG_OP0_SHIFT) & SYSREG_OP0_MASK
+ }
+diff -ruN a/src/devices/src/legacy/vcpu.rs b/src/devices/src/legacy/vcpu.rs
+--- a/src/devices/src/legacy/vcpu.rs	2026-10-12 22:16:02
++++ b/src/devices/src/legacy/vcpu.rs	2026-10-12 22:57:49
+@@ -145,7 +145,7 @@
+     fn handle_sysreg_read(&self, vcpuid: u64, reg: u32) -> Option<u64> {
+         assert!(vcpuid < self.cpu_count);
+ 
+-        if is_id_sysreg(reg) {
++        if is_id_sysreg(reg) || is_raz_wi_sysreg(reg) {
+             return Some(0);
+         }
+ 
+@@ -192,7 +192,7 @@
+     fn handle_sysreg_write(&self, vcpuid: u64, reg: u32, val: u64) -> bool {
+         assert!(vcpuid < self.cpu_count);
+ 
+-        if is_id_sysreg(reg) {
++        if is_id_sysreg(reg) || is_raz_wi_sysreg(reg) {
+             return true;
+         }
+ 
+diff -ruN a/src/hvf/src/lib.rs b/src/hvf/src/lib.rs
+--- a/src/hvf/src/lib.rs	2026-10-12 22:16:02
++++ b/src/hvf/src/lib.rs	2026-10-12 22:57:49
+@@ -28,7 +28,7 @@
+ use arch::ArchMemoryInfo;
+ #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+ use arch::aarch64::sysreg::{SYSREG_MASK, sys_reg_name};
+-use log::debug;
++use log::{debug, warn};
+ 
+ unsafe extern "C" {
+     pub fn mach_absolute_time() -> u64;
+@@ -48,6 +48,10 @@
+ const PSR_I_BIT: u64 = 0x0000_0080;
+ const PSR_A_BIT: u64 = 0x0000_0100;
+ const PSR_D_BIT: u64 = 0x0000_0200;
++const AA64DFR0_EL1_PMUVER_SHIFT: u64 = 8;
++const AA64DFR0_EL1_PMUVER_V3: u64 = 1;
++// ESR_ELx for an Unknown-reason exception from a 32-bit instruction.
++const ESR_IL: u64 = 1 << 25;
+ const PSTATE_EL1_FAULT_BITS_64: u64 = PSR_MODE_EL1H | PSR_A_BIT | PSR_F_BIT | PSR_I_BIT | PSR_D_BIT;
+ const PSTATE_EL2_FAULT_BITS_64: u64 = PSR_MODE_EL2H | PSR_A_BIT | PSR_F_BIT | PSR_I_BIT | PSR_D_BIT;
+ 
+@@ -479,6 +483,16 @@
+             return Err(Error::VcpuInitialRegisters);
+         }
+ 
++        // Apple CPUs have no architected PMU, but guests such as Windows require one: advertise
++        // PMUv3, whose registers then trap to the VMM, which emulates them (see Vcpus).
++        let dfr0 = self.read_sys_reg(hv_sys_reg_t_HV_SYS_REG_ID_AA64DFR0_EL1)?;
++        if (dfr0 >> AA64DFR0_EL1_PMUVER_SHIFT) & 0xf == 0 {
++            self.write_sys_reg(
++                hv_sys_reg_t_HV_SYS_REG_ID_AA64DFR0_EL1,
++                dfr0 | (AA64DFR0_EL1_PMUVER_V3 << AA64DFR0_EL1_PMUVER_SHIFT),
++            )?;
++        }
++
+         if self.nested_enabled {
+             let ret = unsafe {
+                 hv_vcpu_set_reg(self.vcpuid, hv_reg_t_HV_REG_CPSR, PSTATE_EL2_FAULT_BITS_64)
+@@ -606,6 +620,39 @@
+         }
+     }
+ 
++    fn write_sys_reg(&self, reg: u16, val: u64) -> Result<(), Error> {
++        let ret = unsafe { hv_vcpu_set_sys_reg(self.vcpuid, reg, val) };
++        if ret != HV_SUCCESS {
++            Err(Error::VcpuSetSystemRegister(reg, val))
++        } else {
++            Ok(())
++        }
++    }
++
++    /// Deliver an Undefined Instruction exception to the guest's EL1 vector, as
++    /// real hardware does for a system register it does not implement. Guests
++    /// probe optional registers and rely on catching that exception.
++    #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
++    fn inject_undef(&mut self) -> Result<(), Error> {
++        let pc = self.read_reg(hv_reg_t_HV_REG_PC)?;
++        let cpsr = self.read_reg(hv_reg_t_HV_REG_CPSR)?;
++        let el = (cpsr >> 2) & 3;
++        assert!(el <= 1, "unknown sysreg trapped at EL{el}");
++        let vector = match (el, cpsr & 1) {
++            (0, _) => 0x400,
++            (_, 0) => 0x000,
++            _ => 0x200,
++        };
++        self.write_sys_reg(hv_sys_reg_t_HV_SYS_REG_ELR_EL1, pc)?;
++        self.write_sys_reg(hv_sys_reg_t_HV_SYS_REG_SPSR_EL1, cpsr)?;
++        self.write_sys_reg(hv_sys_reg_t_HV_SYS_REG_ESR_EL1, ESR_IL)?;
++        let vbar = self.read_sys_reg(hv_sys_reg_t_HV_SYS_REG_VBAR_EL1)?;
++        self.write_reg(hv_reg_t_HV_REG_CPSR, PSTATE_EL1_FAULT_BITS_64)?;
++        self.write_reg(hv_reg_t_HV_REG_PC, vbar + vector)?;
++        self.pending_advance_pc = false;
++        Ok(())
++    }
++
+     /// Freeze the guest's CNTVCT across a live pause. The guest virtual counter
+     /// is `mach_absolute_time() - vtimer_offset`; while paused the host counter
+     /// keeps advancing, so on resume we add the ticks spent paused to the offset.
+@@ -795,12 +842,11 @@
+                             self.write_reg(rt, val)?;
+                             Ok(VcpuExit::SystemRegister)
+                         }
+-                        None => panic!(
+-                            "UNKNOWN rt={}, reg={} name={}",
+-                            rt,
+-                            reg,
+-                            sys_reg_name(reg).unwrap_or("unknown sysreg")
+-                        ),
++                        None => {
++                            warn!("vCPU {} read of unknown sysreg 0x{reg:x}", self.vcpuid);
++                            self.inject_undef()?;
++                            Ok(VcpuExit::SystemRegister)
++                        }
+                     }
+                 } else {
+                     assert!(rt < 32);
+@@ -808,15 +854,11 @@
+                     // See https://developer.arm.com/documentation/dui0801/l/Overview-of-AArch64-state/Registers-in-AArch64-state
+                     let val = if rt == 31 { 0u64 } else { self.read_reg(rt)? };
+ 
+-                    if vcpu_list.handle_sysreg_write(self.vcpuid, reg, val) {
+-                        Ok(VcpuExit::SystemRegister)
+-                    } else {
+-                        panic!(
+-                            "unexpected write: {} name={}",
+-                            reg,
+-                            sys_reg_name(reg).unwrap_or("unknown sysreg")
+-                        );
++                    if !vcpu_list.handle_sysreg_write(self.vcpuid, reg, val) {
++                        warn!("vCPU {} write of unknown sysreg 0x{reg:x}", self.vcpuid);
++                        self.inject_undef()?;
+                     }
++                    Ok(VcpuExit::SystemRegister)
+                 }
+             }
+             EC_WFX_TRAP => {

@@ -1,0 +1,32 @@
+libkrun: a closed vsock proxy's socket stops being watched.
+A proxy whose connection closed stays in the muxer until the reaper removes it, and its socket,
+readable at end of file, stayed registered: the muxer woke for it in a loop (60,000 wakeups in 9 s,
+20-45% of a host core whenever the guest is busy and connections come and go). An IN event while
+not connected now stops watching the socket, as the closed path above it already does.
+
+--- a/src/devices/src/virtio/vsock/unix_proxy/unix.rs
++++ b/src/devices/src/virtio/vsock/unix_proxy/unix.rs
+@@ -409,7 +409,10 @@
+                 update.polling = Some((proxy.id, proxy.fd.as_raw_fd(), EventSet::empty()));
+             }
+         } else {
++            // A socket that is not connected (closed, until the reaper removes its proxy) stays
++            // readable: watching it would wake the muxer in a loop.
+             debug!("EventSet::IN while not connected: {:?}", proxy.status);
++            update.polling = Some((proxy.id, proxy.fd.as_raw_fd(), EventSet::empty()));
+         }
+     }
+ 
+--- a/src/devices/src/virtio/vsock/tsi_stream/unix.rs
++++ b/src/devices/src/virtio/vsock/tsi_stream/unix.rs
+@@ -608,7 +608,10 @@
+             update.signal_queue = true;
+             return update;
+         } else {
++            // A socket that is not connected (closed, until the reaper removes its proxy) stays
++            // readable: watching it would wake the muxer in a loop.
+             debug!("EventSet::IN while not connected: {:?}", proxy.status);
++            update.polling = Some((proxy.id, proxy.fd.as_raw_fd(), EventSet::empty()));
+         }
+     }
+ 

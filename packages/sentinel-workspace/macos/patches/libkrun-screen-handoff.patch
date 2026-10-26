@@ -1,0 +1,51 @@
+diff -ruN a/src/devices/src/ramfb.rs b/src/devices/src/ramfb.rs
+--- a/src/devices/src/ramfb.rs	2026-10-13 01:03:38
++++ b/src/devices/src/ramfb.rs	2026-10-13 01:03:52
+@@ -5,6 +5,7 @@
+ //! the display backend's first scanout, from a presenter thread, about 60 times a second. An OS
+ //! without a GPU driver keeps drawing into the same memory (Windows' basic display driver).
+ 
++use std::sync::atomic::{AtomicBool, Ordering};
+ use std::sync::{Arc, Mutex};
+ use std::thread;
+ use std::time::Duration;
+@@ -30,6 +31,14 @@
+ const FOURCC_XRGB8888: u32 = 0x3432_5258;
+ const FRAME_INTERVAL: Duration = Duration::from_millis(16);
+ 
++/// Set once the guest shows something on the virtio GPU: from then on the GPU owns the screen and
++/// the boot framebuffer is no longer shown (one VM per process, so one flag).
++static GPU_TOOK_OVER: AtomicBool = AtomicBool::new(false);
++
++pub fn gpu_took_over() {
++    GPU_TOOK_OVER.store(true, Ordering::Relaxed);
++}
++
+ #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+ struct Config {
+     address: u64,
+@@ -100,6 +109,12 @@
+     let mut last = Vec::new();
+     loop {
+         thread::sleep(FRAME_INTERVAL);
++        if GPU_TOOK_OVER.load(Ordering::Relaxed) {
++            // The instance stays: dropping it would tear down the scanout the GPU now uses.
++            loop {
++                thread::park();
++            }
++        }
+         let Some(c) = *shown.lock().unwrap() else { continue };
+         if configured != Some(c) {
+             if let Err(e) = display.configure_scanout(0, max_width, max_height, c.width, c.height, ResourceFormat::BGRX) {
+diff -ruN a/src/devices/src/virtio/gpu/virtio_gpu.rs b/src/devices/src/virtio/gpu/virtio_gpu.rs
+--- a/src/devices/src/virtio/gpu/virtio_gpu.rs	2026-10-13 01:03:38
++++ b/src/devices/src/virtio/gpu/virtio_gpu.rs	2026-10-13 01:03:52
+@@ -558,6 +558,8 @@
+             .get(scanout_id as usize)
+             .ok_or(ErrInvalidScanoutId)?;
+ 
++        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
++        crate::ramfb::gpu_took_over();
+         self.display_backend.configure_scanout(
+             scanout_id,
+             display_info.width,

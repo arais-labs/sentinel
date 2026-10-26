@@ -1,0 +1,48 @@
+diff -ruN a/src/devices/src/virtio/pci.rs b/src/devices/src/virtio/pci.rs
+--- a/src/devices/src/virtio/pci.rs	2026-10-12 23:09:04
++++ b/src/devices/src/virtio/pci.rs	2026-10-12 23:09:15
+@@ -349,6 +349,9 @@
+     device_config_len: u32,
+     queue_registers: Vec<PciQueueRegisters>,
+     bus_master_enabled: Arc<AtomicBool>,
++    // Interrupts are INTx only, yet Windows' viostor sets the configuration vector even without
++    // MSI-X and fails unless it reads back what it wrote: keep the value, deliver INTx.
++    config_vector: u16,
+ }
+ 
+ impl VirtioPciTransport {
+@@ -418,6 +421,7 @@
+             device_config_len,
+             queue_registers,
+             bus_master_enabled,
++            config_vector: VIRTIO_MSI_NO_VECTOR,
+         })
+     }
+ 
+@@ -693,7 +697,7 @@
+                 data.copy_from_slice(&features.to_le_bytes());
+             }
+             (common_cfg::MSIX_CONFIG, WORD_SIZE) => {
+-                data.copy_from_slice(&VIRTIO_MSI_NO_VECTOR.to_le_bytes());
++                data.copy_from_slice(&self.config_vector.to_le_bytes());
+             }
+             (common_cfg::NUMBER_OF_QUEUES, WORD_SIZE) => {
+                 data.copy_from_slice(&(self.state.queue_config.len() as u16).to_le_bytes());
+@@ -770,6 +774,7 @@
+     }
+ 
+     fn reset_queue_registers(&mut self) {
++        self.config_vector = VIRTIO_MSI_NO_VECTOR;
+         Self::size_queues(&mut self.state);
+         for (registers, queue_config) in self
+             .queue_registers
+@@ -819,6 +824,9 @@
+ 
+         let queue_select = self.state.queue_select;
+         match (offset, data.len()) {
++            (common_cfg::MSIX_CONFIG, WORD_SIZE) => {
++                self.config_vector = u16::from_le_bytes(data.try_into().unwrap())
++            }
+             (common_cfg::DEVICE_FEATURE_SELECT, DWORD_SIZE) => {
+                 self.state.features_select = u32::from_le_bytes(data.try_into().unwrap())
+             }

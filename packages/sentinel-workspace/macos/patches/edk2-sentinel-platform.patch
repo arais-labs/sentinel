@@ -1,0 +1,2794 @@
+diff -ruN a/ArmVirtPkg/ArmVirtSentinel.dsc b/ArmVirtPkg/ArmVirtSentinel.dsc
+--- a/ArmVirtPkg/ArmVirtSentinel.dsc	1969-12-31 18:00:00
++++ b/ArmVirtPkg/ArmVirtSentinel.dsc	2026-10-13 01:21:18
+@@ -0,0 +1,509 @@
++#
++#  Copyright (c) 2011-2015, ARM Limited. All rights reserved.
++#  Copyright (c) 2014, Linaro Limited. All rights reserved.
++#  Copyright (c) 2015 - 2020, Intel Corporation. All rights reserved.
++#
++#  SPDX-License-Identifier: BSD-2-Clause-Patent
++#
++#
++
++################################################################################
++#
++# Defines Section - statements that will be processed to create a Makefile.
++#
++################################################################################
++[Defines]
++  PLATFORM_NAME                  = ArmVirtSentinel
++  PLATFORM_GUID                  = 3b9c6e1d-8f42-4a7b-b5d0-2e6a9c1f4d83
++  PLATFORM_VERSION               = 0.1
++  DSC_SPECIFICATION              = 0x00010005
++  OUTPUT_DIRECTORY               = Build/ArmVirtSentinel-AArch64
++  SUPPORTED_ARCHITECTURES        = AARCH64
++  BUILD_TARGETS                  = DEBUG|RELEASE|NOOPT
++  SKUID_IDENTIFIER               = DEFAULT
++  FLASH_DEFINITION               = ArmVirtPkg/ArmVirtSentinel.fdf
++
++  #
++  # Defines for default states.  These can be changed on the command line.
++  # -D FLAG=VALUE
++  #
++  DEFINE PLAT_QEMU               = TRUE
++  DEFINE TTY_TERMINAL            = FALSE
++  DEFINE SECURE_BOOT_ENABLE      = FALSE
++  DEFINE QEMU_PV_VARS            = FALSE
++  DEFINE TPM2_ENABLE             = FALSE
++  DEFINE TPM2_CONFIG_ENABLE      = FALSE
++  DEFINE CAVIUM_ERRATUM_27456    = FALSE
++  DEFINE DEBUG_TO_MEM            = FALSE
++
++  #
++  # Network definition
++  #
++  DEFINE NETWORK_IP6_ENABLE              = FALSE
++  DEFINE NETWORK_HTTP_BOOT_ENABLE        = FALSE
++  DEFINE NETWORK_SNP_ENABLE              = FALSE
++  DEFINE NETWORK_TLS_ENABLE              = FALSE
++  DEFINE NETWORK_ALLOW_HTTP_CONNECTIONS  = TRUE
++  DEFINE NETWORK_ISCSI_ENABLE            = FALSE
++  DEFINE NETWORK_PXE_BOOT_ENABLE         = TRUE
++
++# This comes at the beginning of includes to pick all relevant defines early on.
++!include ArmVirtPkg/ArmVirtStackCookies.dsc.inc
++
++!include NetworkPkg/NetworkDefines.dsc.inc
++
++!include MdePkg/MdeLibs.dsc.inc
++!include DynamicTablesPkg/DynamicTables.dsc.inc
++
++# This comes at the end of includes to pick all relevant components without any
++# unintentional overrides.
++!include ArmVirtPkg/ArmVirt.dsc.inc
++
++[LibraryClasses.common]
++  HwInfoParserLib|DynamicTablesPkg/Library/FdtHwInfoParserLib/FdtHwInfoParserLib.inf
++  DynamicPlatRepoLib|DynamicTablesPkg/Library/Common/DynamicPlatRepoLib/DynamicPlatRepoLib.inf
++  ArmTransferListLib|ArmPkg/Library/ArmTransferListLib/ArmTransferListLib.inf
++
++  QemuFwCfgLib|OvmfPkg/Library/QemuFwCfgLib/QemuFwCfgLibNull.inf
++  QemuFwCfgS3Lib|OvmfPkg/Library/QemuFwCfgS3Lib/BaseQemuFwCfgS3LibNull.inf
++  QemuFwCfgSimpleParserLib|OvmfPkg/Library/QemuFwCfgSimpleParserLib/QemuFwCfgSimpleParserLib.inf
++  QemuLoadImageLib|OvmfPkg/Library/GenericQemuLoadImageLib/GenericQemuLoadImageLib.inf
++
++
++  PlatformBootManagerLib|OvmfPkg/Library/PlatformBootManagerLibLight/PlatformBootManagerLib.inf
++  PlatformBmPrintScLib|OvmfPkg/Library/PlatformBmPrintScLib/PlatformBmPrintScLib.inf
++  QemuBootOrderLib|OvmfPkg/Library/QemuBootOrderLib/QemuBootOrderLib.inf
++  PlatformBootManagerCommonLib|OvmfPkg/Library/PlatformBootManagerCommonLib/PlatformBootManagerCommonLib.inf
++  PciHostBridgeUtilityLib|OvmfPkg/Library/PciHostBridgeUtilityLib/PciHostBridgeUtilityLib.inf
++  PeiHardwareInfoLib|OvmfPkg/Library/HardwareInfoLib/PeiHardwareInfoLib.inf
++
++!if $(TPM2_ENABLE) == TRUE
++  Tpm2CommandLib|SecurityPkg/Library/Tpm2CommandLib/Tpm2CommandLib.inf
++  Tpm2HelpLib|SecurityPkg/Library/Tpm2HelpLib/Tpm2HelpLib.inf
++  Tcg2PhysicalPresenceLib|OvmfPkg/Library/Tcg2PhysicalPresenceLibQemu/DxeTcg2PhysicalPresenceLib.inf
++  TpmMeasurementLib|SecurityPkg/Library/DxeTpmMeasurementLib/DxeTpmMeasurementLib.inf
++  TpmPlatformHierarchyLib|SecurityPkg/Library/PeiDxeTpmPlatformHierarchyLib/PeiDxeTpmPlatformHierarchyLib.inf
++!else
++  TpmPlatformHierarchyLib|SecurityPkg/Library/PeiDxeTpmPlatformHierarchyLibNull/PeiDxeTpmPlatformHierarchyLib.inf
++!endif
++
++  ArmMonitorLib|ArmVirtPkg/Library/ArmVirtMonitorLib/ArmVirtMonitorLib.inf
++!if $(DEBUG_TO_MEM)
++  MemDebugLogLib|OvmfPkg/Library/MemDebugLogLib/MemDebugLogDxeLib.inf
++!else
++  MemDebugLogLib|OvmfPkg/Library/MemDebugLogLib/MemDebugLogLibNull.inf
++!endif
++
++  ArmPlatformLib|ArmVirtPkg/Library/ArmPlatformLibQemu/ArmPlatformLibQemu.inf
++
++[LibraryClasses.common.PEIM]
++  ArmVirtMemInfoLib|ArmVirtPkg/Library/QemuVirtMemInfoLib/QemuVirtMemInfoPeiLib.inf
++  ArmMonitorLib|ArmVirtPkg/Library/ArmVirtMonitorPeiLib/ArmVirtMonitorPeiLib.inf
++  FdtLib|MdePkg/Library/BaseFdtLib/BaseFdtLib.inf
++  Tpm2DeviceLib|SecurityPkg/Library/Tpm2DeviceLibDTpm/Tpm2DeviceLibDTpm.inf
++  QemuFwCfgLib|OvmfPkg/Library/QemuFwCfgLib/QemuFwCfgLibNull.inf
++!if $(DEBUG_TO_MEM)
++  MemDebugLogLib|OvmfPkg/Library/MemDebugLogLib/MemDebugLogPeiCoreLib.inf
++!else
++  MemDebugLogLib|OvmfPkg/Library/MemDebugLogLib/MemDebugLogLibNull.inf
++!endif
++
++  ArmMmuLib|UefiCpuPkg/Library/ArmMmuLib/ArmMmuPeiLib.inf
++  BaseCryptLib|CryptoPkg/Library/BaseCryptLib/PeiCryptLib.inf
++
++[LibraryClasses.common.DXE_DRIVER]
++  AcpiPlatformLib|OvmfPkg/Library/AcpiPlatformLib/DxeAcpiPlatformLib.inf
++  ReportStatusCodeLib|MdeModulePkg/Library/DxeReportStatusCodeLib/DxeReportStatusCodeLib.inf
++
++!if $(TPM2_ENABLE) == TRUE
++  Tpm2DeviceLib|SecurityPkg/Library/Tpm2DeviceLibTcg2/Tpm2DeviceLibTcg2.inf
++!endif
++
++[BuildOptions]
++  # Built on macOS with clang: newer clang flags edk2's own range checks against 64-bit limits.
++  CLANGDWARF:*_*_*_CC_FLAGS = -Wno-tautological-constant-out-of-range-compare
++!if $(CAVIUM_ERRATUM_27456) == TRUE
++  GCC:*_*_AARCH64_PP_FLAGS = -DCAVIUM_ERRATUM_27456
++!endif
++
++!include NetworkPkg/NetworkBuildOptions.dsc.inc
++
++################################################################################
++#
++# Pcd Section - list of all EDK II PCD Entries defined by this Platform
++#
++################################################################################
++
++[PcdsFeatureFlag.common]
++  gUefiOvmfPkgTokenSpaceGuid.PcdQemuBootOrderPciTranslation|TRUE
++  gUefiOvmfPkgTokenSpaceGuid.PcdQemuBootOrderMmioTranslation|TRUE
++
++  ## If TRUE, Graphics Output Protocol will be installed on virtual handle created by ConsplitterDxe.
++  #  It could be set FALSE to save size.
++  gEfiMdeModulePkgTokenSpaceGuid.PcdConOutGopSupport|TRUE
++
++  gEfiMdeModulePkgTokenSpaceGuid.PcdTurnOffUsbLegacySupport|TRUE
++
++  gArmVirtTokenSpaceGuid.PcdTpm2SupportEnabled|$(TPM2_ENABLE)
++
++!if $(QEMU_PV_VARS) == TRUE
++  gUefiOvmfPkgTokenSpaceGuid.PcdQemuVarsRequire|TRUE
++  gEfiMdeModulePkgTokenSpaceGuid.PcdEnableVariableRuntimeCache|FALSE
++!endif
++  gEfiMdeModulePkgTokenSpaceGuid.PcdPeiMemoryBinsEnable|TRUE
++
++[PcdsFixedAtBuild.common]
++  gUefiOvmfPkgTokenSpaceGuid.PcdOvmfFdBaseAddress|0x00000000
++  gUefiOvmfPkgTokenSpaceGuid.PcdOvmfFirmwareFdSize|$(FD_SIZE)
++
++  gArmPlatformTokenSpaceGuid.PcdCPUCoresStackBase|0x4007c000
++  gArmPlatformTokenSpaceGuid.PcdCPUCorePrimaryStackSize|0x4000
++  gEfiMdeModulePkgTokenSpaceGuid.PcdMaxVariableSize|0x2000
++  gEfiMdeModulePkgTokenSpaceGuid.PcdMaxAuthVariableSize|0x2800
++!if $(NETWORK_TLS_ENABLE) == TRUE
++  #
++  # The cumulative and individual VOLATILE variable size limits should be set
++  # high enough for accommodating several and/or large CA certificates.
++  #
++  gEfiMdeModulePkgTokenSpaceGuid.PcdVariableStoreSize|0x80000
++  gEfiMdeModulePkgTokenSpaceGuid.PcdMaxVolatileVariableSize|0x40000
++!endif
++
++  # Size of the region used by UEFI in permanent memory (Reserved 64MB)
++  gArmPlatformTokenSpaceGuid.PcdSystemMemoryUefiRegionSize|0x04000000
++
++  #
++  # ARM PrimeCell
++  #
++
++  ## PL011 - Serial Terminal
++  gEfiMdePkgTokenSpaceGuid.PcdUartDefaultBaudRate|38400
++
++  ## Default Terminal Type
++  ## 0-PCANSI, 1-VT100, 2-VT00+, 3-UTF8, 4-TTYTERM
++!if $(TTY_TERMINAL) == TRUE
++  gEfiMdePkgTokenSpaceGuid.PcdDefaultTerminalType|4
++  # Set terminal type to TtyTerm, the value encoded is EFI_TTY_TERM_GUID
++  gUefiOvmfPkgTokenSpaceGuid.PcdTerminalTypeGuidBuffer|{0x80, 0x6d, 0x91, 0x7d, 0xb1, 0x5b, 0x8c, 0x45, 0xa4, 0x8f, 0xe2, 0x5f, 0xdd, 0x51, 0xef, 0x94}
++!else
++  gEfiMdePkgTokenSpaceGuid.PcdDefaultTerminalType|1
++!endif
++
++  #
++  # Network Pcds
++  #
++!include NetworkPkg/NetworkFixedPcds.dsc.inc
++
++  # System Memory Base -- fixed at 0x4000_0000
++  gArmTokenSpaceGuid.PcdSystemMemoryBase|0x40000000
++
++  # initial location of the device tree blob passed by QEMU -- base of DRAM
++  gUefiOvmfPkgTokenSpaceGuid.PcdDeviceTreeInitialBaseAddress|0x40000000
++
++  gEfiMdeModulePkgTokenSpaceGuid.PcdResetOnMemoryTypeInformationChange|FALSE
++
++  # Point to the MdeModulePkg/Application/BootManagerMenuApp/BootManagerMenuApp.inf
++  gEfiMdeModulePkgTokenSpaceGuid.PcdBootManagerMenuFile|{ 0xdc, 0x5b, 0xc2, 0xee, 0xf2, 0x67, 0x95, 0x4d, 0xb1, 0xd5, 0xf8, 0x1b, 0x20, 0x39, 0xd1, 0x1d }
++
++  #
++  # The maximum physical I/O addressability of the processor, set with
++  # BuildCpuHob().
++  #
++  gEmbeddedTokenSpaceGuid.PcdPrePiCpuIoSize|16
++
++  #
++  # Enable the non-executable DXE stack. (This gets set up by DxeIpl)
++  #
++  gEfiMdeModulePkgTokenSpaceGuid.PcdSetNxForStack|TRUE
++
++!if $(SECURE_BOOT_ENABLE) == TRUE
++  # override the default values from SecurityPkg to ensure images from all sources are verified in secure boot
++  gEfiSecurityPkgTokenSpaceGuid.PcdOptionRomImageVerificationPolicy|0x04
++  gEfiSecurityPkgTokenSpaceGuid.PcdFixedMediaImageVerificationPolicy|0x04
++  gEfiSecurityPkgTokenSpaceGuid.PcdRemovableMediaImageVerificationPolicy|0x04
++!endif
++
++  gEfiMdePkgTokenSpaceGuid.PcdReportStatusCodePropertyMask|3
++  gEfiShellPkgTokenSpaceGuid.PcdShellFileOperationSize|0x20000
++
++  # Shadowing PEI modules is absolutely pointless when the NOR flash is emulated
++  gEfiMdeModulePkgTokenSpaceGuid.PcdShadowPeimOnBoot|FALSE
++
++  # libkrun has no flash: the UEFI variable store lives in RAM.
++  gEfiMdeModulePkgTokenSpaceGuid.PcdEmuVariableNvModeEnable|TRUE
++
++  # System Memory Size -- 128 MB initially, actual size will be fetched from DT
++  gArmTokenSpaceGuid.PcdSystemMemorySize|0x8000000
++
++  gEfiMdeModulePkgTokenSpaceGuid.PcdFlashNvStorageVariableSize   | 0x40000
++  gEfiMdeModulePkgTokenSpaceGuid.PcdFlashNvStorageFtwSpareSize   | 0x40000
++  gEfiMdeModulePkgTokenSpaceGuid.PcdFlashNvStorageFtwWorkingSize | 0x40000
++
++[PcdsFixedAtBuild.AARCH64]
++  # Clearing BIT0 in this PCD prevents installing a 32-bit SMBIOS entry point,
++  # if the entry point version is >= 3.0. AARCH64 OSes cannot assume the
++  # presence of the 32-bit entry point anyway (because many AARCH64 systems
++  # don't have 32-bit addressable physical RAM), and the additional allocations
++  # below 4 GB needlessly fragment the memory map. So expose the 64-bit entry
++  # point only, for entry point versions >= 3.0.
++  gEfiMdeModulePkgTokenSpaceGuid.PcdSmbiosEntryPointProvideMethod|0x2
++
++[PcdsDynamicDefault.common]
++  gEfiMdePkgTokenSpaceGuid.PcdPlatformBootTimeOut|3
++
++  gEfiMdeModulePkgTokenSpaceGuid.PcdFlashNvStorageFtwSpareBase     | 0
++  gEfiMdeModulePkgTokenSpaceGuid.PcdFlashNvStorageFtwSpareBase64   | 0
++  gEfiMdeModulePkgTokenSpaceGuid.PcdFlashNvStorageVariableBase64   | 0
++  gEfiMdeModulePkgTokenSpaceGuid.PcdFlashNvStorageVariableBase     | 0
++  gEfiMdeModulePkgTokenSpaceGuid.PcdFlashNvStorageFtwWorkingBase   | 0
++  gEfiMdeModulePkgTokenSpaceGuid.PcdFlashNvStorageFtwWorkingBase64 | 0
++
++  ## If TRUE, OvmfPkg/AcpiPlatformDxe will not wait for PCI
++  #  enumeration to complete before installing ACPI tables.
++  gEfiMdeModulePkgTokenSpaceGuid.PcdPciDisableBusEnumeration|TRUE
++
++  gArmTokenSpaceGuid.PcdArmArchTimerSecIntrNum|0x0
++  gArmTokenSpaceGuid.PcdArmArchTimerIntrNum|0x0
++  gArmTokenSpaceGuid.PcdArmArchTimerVirtIntrNum|0x0
++  gArmTokenSpaceGuid.PcdArmArchTimerHypIntrNum|0x0
++  gArmTokenSpaceGuid.PcdArmArchTimerHypVirtIntrNum|0x0
++
++  #
++  # ARM General Interrupt Controller
++  #
++  gArmTokenSpaceGuid.PcdGicDistributorBase|0x0
++  gArmTokenSpaceGuid.PcdGicRedistributorsBase|0x0
++  gArmTokenSpaceGuid.PcdGicInterruptInterfaceBase|0x0
++
++  ## PL031 RealTimeClock
++  gArmPlatformTokenSpaceGuid.PcdPL031RtcBase|0x0
++
++  # set PcdPciExpressBaseAddress to MAX_UINT64, which signifies that this
++  # PCD and PcdPciDisableBusEnumeration above have not been assigned yet
++  gEfiMdePkgTokenSpaceGuid.PcdPciExpressBaseAddress|0xFFFFFFFFFFFFFFFF
++
++  gEfiMdePkgTokenSpaceGuid.PcdPciIoTranslation|0x0
++
++  #
++  # SMBIOS entry point version
++  #
++  gEfiMdeModulePkgTokenSpaceGuid.PcdSmbiosVersion|0x0300
++  gEfiMdeModulePkgTokenSpaceGuid.PcdSmbiosDocRev|0x0
++  gUefiOvmfPkgTokenSpaceGuid.PcdQemuSmbiosValidated|FALSE
++
++!include OvmfPkg/Include/Dsc/OvmfDisplayPcds.dsc.inc
++
++!include NetworkPkg/NetworkDynamicPcds.dsc.inc
++
++  #
++  # TPM2 support
++  #
++!if $(TPM2_ENABLE) == TRUE
++  gEfiSecurityPkgTokenSpaceGuid.PcdTpmBaseAddress|0x0
++  gEfiSecurityPkgTokenSpaceGuid.PcdTpmInstanceGuid|{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
++  gEfiSecurityPkgTokenSpaceGuid.PcdTpm2HashMask|0
++!else
++[PcdsPatchableInModule]
++  # make this PCD patchable instead of dynamic when TPM support is not enabled
++  # this permits setting the PCD in unreachable code without pulling in dynamic PCD support
++  gEfiSecurityPkgTokenSpaceGuid.PcdTpmBaseAddress|0x0
++!endif
++
++[PcdsDynamicHii]
++  gUefiOvmfPkgTokenSpaceGuid.PcdForceNoAcpi|L"ForceNoAcpi"|gOvmfVariableGuid|0x0|FALSE|NV,BS
++
++!if $(TPM2_CONFIG_ENABLE) == TRUE
++  gEfiSecurityPkgTokenSpaceGuid.PcdTcgPhysicalPresenceInterfaceVer|L"TCG2_VERSION"|gTcg2ConfigFormSetGuid|0x0|"1.3"|NV,BS
++  gEfiSecurityPkgTokenSpaceGuid.PcdTpm2AcpiTableRev|L"TCG2_VERSION"|gTcg2ConfigFormSetGuid|0x8|3|NV,BS
++!endif
++
++  gEfiMdePkgTokenSpaceGuid.PcdPlatformBootTimeOut|L"Timeout"|gEfiGlobalVariableGuid|0x0|5
++
++[LibraryClasses.common.PEI_CORE, LibraryClasses.common.PEIM]
++!if $(TPM2_ENABLE) == TRUE
++  PcdLib|MdePkg/Library/PeiPcdLib/PeiPcdLib.inf
++!else
++  PcdLib|MdePkg/Library/BasePcdLibNull/BasePcdLibNull.inf
++!endif
++
++[LibraryClasses.common.SEC]
++  MemDebugLogLib|OvmfPkg/Library/MemDebugLogLib/MemDebugLogLibNull.inf
++
++[LibraryClasses.common.PEI_CORE]
++!if $(DEBUG_TO_MEM)
++  MemDebugLogLib|OvmfPkg/Library/MemDebugLogLib/MemDebugLogPeiCoreLib.inf
++!else
++  MemDebugLogLib|OvmfPkg/Library/MemDebugLogLib/MemDebugLogLibNull.inf
++!endif
++
++[LibraryClasses.common.DXE_RUNTIME_DRIVER]
++!if $(DEBUG_TO_MEM)
++  MemDebugLogLib|OvmfPkg/Library/MemDebugLogLib/MemDebugLogRtLib.inf
++!else
++  MemDebugLogLib|OvmfPkg/Library/MemDebugLogLib/MemDebugLogLibNull.inf
++!endif
++
++################################################################################
++#
++# Components Section - list of all EDK II Modules needed by this Platform
++#
++################################################################################
++[Components.common]
++  #
++  # PEI Phase modules
++  #
++  ArmPlatformPkg/Sec/Sec.inf
++  MdeModulePkg/Core/Pei/PeiMain.inf
++  ArmPlatformPkg/PlatformPei/PlatformPeim.inf
++  ArmVirtPkg/MemoryInitPei/MemoryInitPeim.inf
++  ArmPkg/Drivers/CpuPei/CpuPei.inf
++
++!if $(DEBUG_TO_MEM)
++  OvmfPkg/MemDebugLogPei/MemDebugLogPei.inf {
++    <LibraryClasses>
++      MemDebugLogLib|OvmfPkg/Library/MemDebugLogLib/MemDebugLogPeiLib.inf
++  }
++!endif
++
++!if $(TPM2_ENABLE) == TRUE
++  MdeModulePkg/Universal/PCD/Pei/Pcd.inf {
++    <LibraryClasses>
++      PcdLib|MdePkg/Library/BasePcdLibNull/BasePcdLibNull.inf
++  }
++  MdeModulePkg/Universal/ResetSystemPei/ResetSystemPei.inf
++  OvmfPkg/Tcg/Tcg2Config/Tcg2ConfigPei.inf
++  SecurityPkg/Tcg/Tcg2Pei/Tcg2Pei.inf {
++    <LibraryClasses>
++      HashLib|SecurityPkg/Library/HashLibBaseCryptoRouter/HashLibBaseCryptoRouterPei.inf
++      NULL|SecurityPkg/Library/HashInstanceLibSha1/HashInstanceLibSha1.inf
++      NULL|SecurityPkg/Library/HashInstanceLibSha256/HashInstanceLibSha256.inf
++      NULL|SecurityPkg/Library/HashInstanceLibSha384/HashInstanceLibSha384.inf
++      NULL|SecurityPkg/Library/HashInstanceLibSha512/HashInstanceLibSha512.inf
++      NULL|SecurityPkg/Library/HashInstanceLibSm3/HashInstanceLibSm3.inf
++  }
++!endif
++
++  MdeModulePkg/Core/DxeIplPeim/DxeIpl.inf {
++    <LibraryClasses>
++      NULL|MdeModulePkg/Library/LzmaCustomDecompressLib/LzmaCustomDecompressLib.inf
++  }
++
++  #
++  # Architectural Protocols
++  #
++!if $(QEMU_PV_VARS) == TRUE
++  OvmfPkg/VirtMmCommunicationDxe/VirtMmCommunication.inf
++  MdeModulePkg/Universal/Variable/RuntimeDxe/VariableSmmRuntimeDxe.inf
++!else
++  MdeModulePkg/Universal/Variable/RuntimeDxe/VariableRuntimeDxe.inf {
++    <LibraryClasses>
++      NULL|MdeModulePkg/Library/VarCheckUefiLib/VarCheckUefiLib.inf
++      NULL|EmbeddedPkg/Library/NvVarStoreFormattedLib/NvVarStoreFormattedLib.inf
++      # don't use unaligned CopyMem () on the UEFI varstore NOR flash region
++      BaseMemoryLib|MdePkg/Library/BaseMemoryLib/BaseMemoryLib.inf
++  }
++!endif
++!if $(SECURE_BOOT_ENABLE) == TRUE
++  MdeModulePkg/Universal/SecurityStubDxe/SecurityStubDxe.inf {
++    <LibraryClasses>
++      NULL|SecurityPkg/Library/DxeImageVerificationLib/DxeImageVerificationLib.inf
++!if $(TPM2_ENABLE) == TRUE
++      NULL|SecurityPkg/Library/DxeTpm2MeasureBootLib/DxeTpm2MeasureBootLib.inf
++!endif
++  }
++  SecurityPkg/VariableAuthenticated/SecureBootConfigDxe/SecureBootConfigDxe.inf
++  OvmfPkg/EnrollDefaultKeys/EnrollDefaultKeys.inf
++!else
++  MdeModulePkg/Universal/SecurityStubDxe/SecurityStubDxe.inf
++!endif
++  MdeModulePkg/Universal/FaultTolerantWriteDxe/FaultTolerantWriteDxe.inf {
++    <LibraryClasses>
++      NULL|EmbeddedPkg/Library/NvVarStoreFormattedLib/NvVarStoreFormattedLib.inf
++  }
++  EmbeddedPkg/RealTimeClockRuntimeDxe/RealTimeClockRuntimeDxe.inf {
++    <LibraryClasses>
++      NULL|ArmVirtPkg/Library/ArmVirtPL031FdtClientLib/ArmVirtPL031FdtClientLib.inf
++  }
++
++
++  #
++  # Status Code Routing
++  #
++  MdeModulePkg/Universal/ReportStatusCodeRouter/RuntimeDxe/ReportStatusCodeRouterRuntimeDxe.inf
++
++  #
++  # Platform Driver
++  #
++  OvmfPkg/VirtioInputDxe/VirtioInput.inf
++
++  MdeModulePkg/Application/BootManagerMenuApp/BootManagerMenuApp.inf
++  OvmfPkg/QemuKernelLoaderFsDxe/QemuKernelLoaderFsDxe.inf {
++    <LibraryClasses>
++      NULL|OvmfPkg/Library/BlobVerifierLibNull/BlobVerifierLibNull.inf
++  }
++
++  #
++  # Networking stack
++  #
++!include NetworkPkg/NetworkComponents.dsc.inc
++!include OvmfPkg/Include/Dsc/NetworkComponents.dsc.inc
++
++  #
++  # NVME Driver
++  #
++  MdeModulePkg/Bus/Pci/NvmExpressDxe/NvmExpressDxe.inf
++
++  #
++  # SMBIOS Support
++  #
++  MdeModulePkg/Universal/SmbiosDxe/SmbiosDxe.inf {
++    <LibraryClasses>
++      NULL|OvmfPkg/Library/SmbiosVersionLib/DetectSmbiosVersionLib.inf
++  }
++  OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.inf
++
++  #
++  # PCI support
++  #
++  MdeModulePkg/Bus/Pci/PciHostBridgeDxe/PciHostBridgeDxe.inf
++
++  #
++  # Video support
++  #
++  ArmVirtPkg/SentinelRamfbDxe/SentinelRamfbDxe.inf
++  OvmfPkg/PlatformDxe/Platform.inf
++
++!include OvmfPkg/Include/Dsc/UsbComponents.dsc.inc
++
++  #
++  # Hash2 Protocol Support
++  #
++  SecurityPkg/Hash2DxeCrypto/Hash2DxeCrypto.inf
++
++  #
++  # TPM2 support
++  #
++!if $(TPM2_ENABLE) == TRUE
++  SecurityPkg/Tcg/Tcg2Dxe/Tcg2Dxe.inf {
++    <LibraryClasses>
++      HashLib|SecurityPkg/Library/HashLibBaseCryptoRouter/HashLibBaseCryptoRouterDxe.inf
++      Tpm2DeviceLib|SecurityPkg/Library/Tpm2DeviceLibRouter/Tpm2DeviceLibRouterDxe.inf
++      NULL|SecurityPkg/Library/Tpm2DeviceLibDTpm/Tpm2InstanceLibDTpm.inf
++      NULL|SecurityPkg/Library/HashInstanceLibSha1/HashInstanceLibSha1.inf
++      NULL|SecurityPkg/Library/HashInstanceLibSha256/HashInstanceLibSha256.inf
++      NULL|SecurityPkg/Library/HashInstanceLibSha384/HashInstanceLibSha384.inf
++      NULL|SecurityPkg/Library/HashInstanceLibSha512/HashInstanceLibSha512.inf
++      NULL|SecurityPkg/Library/HashInstanceLibSm3/HashInstanceLibSm3.inf
++  }
++!if $(TPM2_CONFIG_ENABLE) == TRUE
++  SecurityPkg/Tcg/Tcg2Config/Tcg2ConfigDxe.inf
++!endif
++!endif
++
++  #
++  # ACPI Support
++  #
++  ArmVirtPkg/SentinelPlatformDxe/SentinelPlatformDxe.inf
++  ArmVirtPkg/SentinelCfgMgrDxe/ConfigurationManagerDxe.inf
++[Components.AARCH64]
++  MdeModulePkg/Universal/Acpi/BootGraphicsResourceTableDxe/BootGraphicsResourceTableDxe.inf
+diff -ruN a/ArmVirtPkg/ArmVirtSentinel.fdf b/ArmVirtPkg/ArmVirtSentinel.fdf
+--- a/ArmVirtPkg/ArmVirtSentinel.fdf	1969-12-31 18:00:00
++++ b/ArmVirtPkg/ArmVirtSentinel.fdf	2026-10-13 01:21:18
+@@ -0,0 +1,127 @@
++#
++#  Copyright (c) 2011-2015, ARM Limited. All rights reserved.
++#  Copyright (c) 2014, Linaro Limited. All rights reserved.
++#  Copyright (c) 2015 - 2016, Intel Corporation. All rights reserved.
++#
++#  SPDX-License-Identifier: BSD-2-Clause-Patent
++#
++
++################################################################################
++#
++# FD Section
++# The [FD] Section is made up of the definition statements and a
++# description of what goes into  the Flash Device Image.  Each FD section
++# defines one flash "device" image.  A flash device image may be one of
++# the following: Removable media bootable image (like a boot floppy
++# image,) an Option ROM image (that would be "flashed" into an add-in
++# card,) a System "Flash"  image (that would be burned into a system's
++# flash) or an Update ("Capsule") image that will be used to update and
++# existing system flash.
++#
++################################################################################
++
++[Defines]
++!if $(FD_SIZE_IN_MB) == 2
++  DEFINE FVMAIN_COMPACT_SIZE  = 0x1ff000
++!endif
++!if $(FD_SIZE_IN_MB) == 3
++  DEFINE FVMAIN_COMPACT_SIZE  = 0x2ff000
++!endif
++
++[FD.SENTINEL_EFI]
++BaseAddress   = 0x00000000|gArmTokenSpaceGuid.PcdFdBaseAddress  # QEMU assigns 0 - 0x8000000 for a BootROM
++Size          = $(FD_SIZE)|gArmTokenSpaceGuid.PcdFdSize         # The size in bytes of the FLASH Device
++ErasePolarity = 1
++
++# This one is tricky, it must be: BlockSize * NumBlocks = Size
++BlockSize     = 0x00001000
++NumBlocks     = $(FD_NUM_BLOCKS)
++
++################################################################################
++#
++# Following are lists of FD Region layout which correspond to the locations of different
++# images within the flash device.
++#
++# Regions must be defined in ascending order and may not overlap.
++#
++# A Layout Region start with a eight digit hex offset (leading "0x" required) followed by
++# the pipe "|" character, followed by the size of the region, also in hex with the leading
++# "0x" characters. Like:
++# Offset|Size
++# PcdOffsetCName|PcdSizeCName
++# RegionType <FV, DATA, or FILE>
++#
++################################################################################
++
++#
++# UEFI has trouble dealing with FVs that reside at physical address 0x0.
++# So instead, put a hardcoded 'jump to 0x1000' at offset 0x0, and put the
++# real FV at offset 0x1000
++#
++0x00000000|0x00001000
++DATA = {
++  0x00, 0x04, 0x00, 0x14   # 'b 0x1000' in AArch64 ASM
++}
++
++0x00001000|$(FVMAIN_COMPACT_SIZE)
++gArmTokenSpaceGuid.PcdFvBaseAddress|gArmTokenSpaceGuid.PcdFvSize
++FV = FVMAIN_COMPACT
++
++!include VarStore.fdf.inc
++
++################################################################################
++#
++# FV Section
++#
++# [FV] section is used to define what components or modules are placed within a flash
++# device file.  This section also defines order the components and modules are positioned
++# within the image.  The [FV] section consists of define statements, set statements and
++# module statements.
++#
++################################################################################
++
++!include ArmVirtSentinelFvMain.fdf.inc
++
++[FV.FVMAIN_COMPACT]
++FvAlignment        = 16
++ERASE_POLARITY     = 1
++MEMORY_MAPPED      = TRUE
++STICKY_WRITE       = TRUE
++LOCK_CAP           = TRUE
++LOCK_STATUS        = TRUE
++WRITE_DISABLED_CAP = TRUE
++WRITE_ENABLED_CAP  = TRUE
++WRITE_STATUS       = TRUE
++WRITE_LOCK_CAP     = TRUE
++WRITE_LOCK_STATUS  = TRUE
++READ_DISABLED_CAP  = TRUE
++READ_ENABLED_CAP   = TRUE
++READ_STATUS        = TRUE
++READ_LOCK_CAP      = TRUE
++READ_LOCK_STATUS   = TRUE
++
++  INF ArmPlatformPkg/Sec/Sec.inf
++  INF MdeModulePkg/Core/Pei/PeiMain.inf
++  INF ArmPlatformPkg/PlatformPei/PlatformPeim.inf
++  INF ArmVirtPkg/MemoryInitPei/MemoryInitPeim.inf
++  INF ArmPkg/Drivers/CpuPei/CpuPei.inf
++  INF MdeModulePkg/Core/DxeIplPeim/DxeIpl.inf
++
++!if $(DEBUG_TO_MEM)
++  INF OvmfPkg/MemDebugLogPei/MemDebugLogPei.inf
++!endif
++
++!if $(TPM2_ENABLE) == TRUE
++  INF MdeModulePkg/Universal/PCD/Pei/Pcd.inf
++  INF MdeModulePkg/Universal/ResetSystemPei/ResetSystemPei.inf
++  INF OvmfPkg/Tcg/Tcg2Config/Tcg2ConfigPei.inf
++  INF SecurityPkg/Tcg/Tcg2Pei/Tcg2Pei.inf
++!endif
++
++  FILE FV_IMAGE = 9E21FD93-9C72-4c15-8C4B-E77F1DB2D792 {
++    SECTION GUIDED EE4E5898-3914-4259-9D6E-DC7BD79403CF PROCESSING_REQUIRED = TRUE {
++      SECTION FV_IMAGE = FVMAIN
++    }
++  }
++
++!include ArmVirtRules.fdf.inc
+diff -ruN a/ArmVirtPkg/ArmVirtSentinelFvMain.fdf.inc b/ArmVirtPkg/ArmVirtSentinelFvMain.fdf.inc
+--- a/ArmVirtPkg/ArmVirtSentinelFvMain.fdf.inc	1969-12-31 18:00:00
++++ b/ArmVirtPkg/ArmVirtSentinelFvMain.fdf.inc	2026-10-13 01:21:18
+@@ -0,0 +1,200 @@
++#
++#  Copyright (c) 2011-2015, ARM Limited. All rights reserved.
++#  Copyright (c) 2014-2016, Linaro Limited. All rights reserved.
++#  Copyright (c) 2015 - 2017, Intel Corporation. All rights reserved.
++#
++#  SPDX-License-Identifier: BSD-2-Clause-Patent
++#
++
++################################################################################
++#
++# FV Section
++#
++# [FV] section is used to define what components or modules are placed within a flash
++# device file.  This section also defines order the components and modules are positioned
++# within the image.  The [FV] section consists of define statements, set statements and
++# module statements.
++#
++################################################################################
++
++[FV.FvMain]
++FvNameGuid         = 64074afe-340a-4be6-94ba-91b5b4d0f71e
++BlockSize          = 0x40
++NumBlocks          = 0         # This FV gets compressed so make it just big enough
++FvAlignment        = 16        # FV alignment and FV attributes setting.
++ERASE_POLARITY     = 1
++MEMORY_MAPPED      = TRUE
++STICKY_WRITE       = TRUE
++LOCK_CAP           = TRUE
++LOCK_STATUS        = TRUE
++WRITE_DISABLED_CAP = TRUE
++WRITE_ENABLED_CAP  = TRUE
++WRITE_STATUS       = TRUE
++WRITE_LOCK_CAP     = TRUE
++WRITE_LOCK_STATUS  = TRUE
++READ_DISABLED_CAP  = TRUE
++READ_ENABLED_CAP   = TRUE
++READ_STATUS        = TRUE
++READ_LOCK_CAP      = TRUE
++READ_LOCK_STATUS   = TRUE
++
++  INF MdeModulePkg/Core/Dxe/DxeMain.inf
++  INF MdeModulePkg/Universal/PCD/Dxe/Pcd.inf
++  INF OvmfPkg/Fdt/VirtioFdtDxe/VirtioFdtDxe.inf
++  INF EmbeddedPkg/Drivers/FdtClientDxe/FdtClientDxe.inf
++  INF OvmfPkg/Fdt/HighMemDxe/HighMemDxe.inf
++
++  #
++  # PI DXE Drivers producing Architectural Protocols (EFI Services)
++  #
++  INF ArmPkg/Drivers/CpuDxe/CpuDxe.inf
++  INF MdeModulePkg/Core/RuntimeDxe/RuntimeDxe.inf
++  INF MdeModulePkg/Universal/SecurityStubDxe/SecurityStubDxe.inf
++  INF MdeModulePkg/Universal/CapsuleRuntimeDxe/CapsuleRuntimeDxe.inf
++  INF MdeModulePkg/Universal/FaultTolerantWriteDxe/FaultTolerantWriteDxe.inf
++!if $(QEMU_PV_VARS) == TRUE
++  INF OvmfPkg/VirtMmCommunicationDxe/VirtMmCommunication.inf
++  INF MdeModulePkg/Universal/Variable/RuntimeDxe/VariableSmmRuntimeDxe.inf
++!else
++  INF MdeModulePkg/Universal/Variable/RuntimeDxe/VariableRuntimeDxe.inf
++!endif
++!if $(SECURE_BOOT_ENABLE) == TRUE
++  INF SecurityPkg/VariableAuthenticated/SecureBootConfigDxe/SecureBootConfigDxe.inf
++!endif
++  INF MdeModulePkg/Universal/MonotonicCounterRuntimeDxe/MonotonicCounterRuntimeDxe.inf
++  INF MdeModulePkg/Universal/ResetSystemRuntimeDxe/ResetSystemRuntimeDxe.inf
++  INF EmbeddedPkg/RealTimeClockRuntimeDxe/RealTimeClockRuntimeDxe.inf
++  INF MdeModulePkg/Universal/Metronome/Metronome.inf
++  INF MdeModulePkg/Universal/HiiDatabaseDxe/HiiDatabaseDxe.inf
++
++  #
++  # Multiple Console IO support
++  #
++  INF MdeModulePkg/Universal/Console/ConPlatformDxe/ConPlatformDxe.inf
++  INF MdeModulePkg/Universal/Console/ConSplitterDxe/ConSplitterDxe.inf
++  INF MdeModulePkg/Universal/Console/GraphicsConsoleDxe/GraphicsConsoleDxe.inf
++  INF MdeModulePkg/Universal/Console/TerminalDxe/TerminalDxe.inf
++  INF MdeModulePkg/Universal/SerialDxe/SerialDxe.inf
++
++  INF ArmPkg/Drivers/ArmGicDxe/ArmGicDxe.inf
++  INF ArmPkg/Drivers/TimerDxe/TimerDxe.inf
++  INF MdeModulePkg/Universal/WatchdogTimerDxe/WatchdogTimer.inf
++
++  #
++  # FAT filesystem + GPT/MBR partitioning + UDF filesystem + virtio-fs
++  #
++  INF MdeModulePkg/Universal/Disk/DiskIoDxe/DiskIoDxe.inf
++  INF MdeModulePkg/Universal/Disk/PartitionDxe/PartitionDxe.inf
++  INF FatPkg/EnhancedFatDxe/Fat.inf
++  INF MdeModulePkg/Universal/Disk/UnicodeCollation/EnglishDxe/EnglishDxe.inf
++  INF MdeModulePkg/Universal/Disk/UdfDxe/UdfDxe.inf
++
++  #
++  # Status Code Routing
++  #
++  INF MdeModulePkg/Universal/ReportStatusCodeRouter/RuntimeDxe/ReportStatusCodeRouterRuntimeDxe.inf
++
++  #
++  # Platform Driver
++  #
++  INF OvmfPkg/VirtioBlkDxe/VirtioBlk.inf
++!if $(NETWORK_ENABLE) == TRUE
++!endif
++  INF OvmfPkg/VirtioRngDxe/VirtioRng.inf
++
++!include OvmfPkg/Include/Fdf/ShellDxe.fdf.inc
++
++  #
++  # Bds
++  #
++  INF MdeModulePkg/Universal/DevicePathDxe/DevicePathDxe.inf
++  INF MdeModulePkg/Universal/DisplayEngineDxe/DisplayEngineDxe.inf
++  INF MdeModulePkg/Universal/SetupBrowserDxe/SetupBrowserDxe.inf
++  INF MdeModulePkg/Universal/DriverHealthManagerDxe/DriverHealthManagerDxe.inf
++  INF MdeModulePkg/Universal/BdsDxe/BdsDxe.inf
++  INF MdeModulePkg/Application/UiApp/UiApp.inf
++  INF MdeModulePkg/Application/BootManagerMenuApp/BootManagerMenuApp.inf
++  INF OvmfPkg/QemuKernelLoaderFsDxe/QemuKernelLoaderFsDxe.inf
++
++  #
++  # Networking stack
++  #
++!include NetworkPkg/Network.fdf.inc
++
++
++  #
++  # SCSI Bus and Disk Driver
++  #
++  INF MdeModulePkg/Bus/Scsi/ScsiBusDxe/ScsiBusDxe.inf
++  INF MdeModulePkg/Bus/Scsi/ScsiDiskDxe/ScsiDiskDxe.inf
++
++  #
++  # NVME Driver
++  #
++  INF MdeModulePkg/Bus/Pci/NvmExpressDxe/NvmExpressDxe.inf
++
++  #
++  # SMBIOS Support
++  #
++  INF MdeModulePkg/Universal/SmbiosDxe/SmbiosDxe.inf
++  INF OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.inf
++
++  #
++  # ACPI Support
++  #
++  INF ArmVirtPkg/SentinelPlatformDxe/SentinelPlatformDxe.inf
++  INF MdeModulePkg/Universal/Acpi/AcpiTableDxe/AcpiTableDxe.inf
++  INF MdeModulePkg/Universal/Acpi/BootGraphicsResourceTableDxe/BootGraphicsResourceTableDxe.inf
++  !include DynamicTablesPkg/DynamicTables.fdf.inc
++  INF ArmVirtPkg/SentinelCfgMgrDxe/ConfigurationManagerDxe.inf
++
++  #
++  # PCI support
++  #
++  INF UefiCpuPkg/CpuMmio2Dxe/CpuMmio2Dxe.inf
++  INF MdeModulePkg/Bus/Pci/PciHostBridgeDxe/PciHostBridgeDxe.inf
++  INF MdeModulePkg/Bus/Pci/PciBusDxe/PciBusDxe.inf
++  INF OvmfPkg/PciHotPlugInitDxe/PciHotPlugInit.inf
++  INF OvmfPkg/VirtioPciDeviceDxe/VirtioPciDeviceDxe.inf
++  INF OvmfPkg/Virtio10Dxe/Virtio10.inf
++
++  #
++  # Video support
++  #
++  INF ArmVirtPkg/SentinelRamfbDxe/SentinelRamfbDxe.inf
++  INF OvmfPkg/PlatformDxe/Platform.inf
++
++  #
++  # USB Support
++  #
++  INF MdeModulePkg/Bus/Pci/UhciDxe/UhciDxe.inf
++  INF MdeModulePkg/Bus/Pci/EhciDxe/EhciDxe.inf
++  INF MdeModulePkg/Bus/Pci/XhciDxe/XhciDxe.inf
++  INF MdeModulePkg/Bus/Usb/UsbBusDxe/UsbBusDxe.inf
++  INF MdeModulePkg/Bus/Usb/UsbKbDxe/UsbKbDxe.inf
++  INF MdeModulePkg/Bus/Usb/UsbMassStorageDxe/UsbMassStorageDxe.inf
++
++  #
++  # Hash2 Protocol producer
++  #
++  INF SecurityPkg/Hash2DxeCrypto/Hash2DxeCrypto.inf
++
++  #
++  # TPM2 support
++  #
++!if $(TPM2_ENABLE) == TRUE
++  INF SecurityPkg/Tcg/Tcg2Dxe/Tcg2Dxe.inf
++!if $(TPM2_CONFIG_ENABLE) == TRUE
++  INF SecurityPkg/Tcg/Tcg2Config/Tcg2ConfigDxe.inf
++!endif
++!endif
++
++  #
++  # TianoCore logo (splash screen)
++  #
++  INF MdeModulePkg/Logo/LogoDxe.inf
++
++  #
++  # Ramdisk support
++  #
++  INF MdeModulePkg/Universal/Disk/RamDiskDxe/RamDiskDxe.inf
+diff -ruN a/ArmVirtPkg/SentinelCfgMgrDxe/AslTables/Dsdt.asl b/ArmVirtPkg/SentinelCfgMgrDxe/AslTables/Dsdt.asl
+--- a/ArmVirtPkg/SentinelCfgMgrDxe/AslTables/Dsdt.asl	1969-12-31 18:00:00
++++ b/ArmVirtPkg/SentinelCfgMgrDxe/AslTables/Dsdt.asl	2026-10-13 01:21:18
+@@ -0,0 +1,21 @@
++/** @file
++  Differentiated System Description Table Fields (DSDT)
++
++  Copyright (c) 2021 - 2022, ARM Ltd. All rights reserved.<BR>
++    SPDX-License-Identifier: BSD-2-Clause-Patent
++
++**/
++
++DefinitionBlock ("DsdtTable.aml", "DSDT", 2, "ARMLTD", "ARM-KVMT", 1) {
++  Scope (_SB) {
++    //
++    // Most ACPI tables for Kvmtool firmware are
++    // dynamically generated. The AML code is also
++    // generated at runtime for most components in
++    // appropriate SSDTs.
++    // Although there may not be much to describe
++    // in the DSDT, the DSDT table is mandatory.
++    // Therefore, add an empty stub for DSDT.
++    //
++  } // Scope (_SB)
++}
+diff -ruN a/ArmVirtPkg/SentinelCfgMgrDxe/ConfigurationManager.c b/ArmVirtPkg/SentinelCfgMgrDxe/ConfigurationManager.c
+--- a/ArmVirtPkg/SentinelCfgMgrDxe/ConfigurationManager.c	1969-12-31 18:00:00
++++ b/ArmVirtPkg/SentinelCfgMgrDxe/ConfigurationManager.c	2026-10-13 01:21:18
+@@ -0,0 +1,1153 @@
++/** @file
++  Configuration Manager Dxe
++
++  Copyright (c) 2021 - 2024, Arm Limited. All rights reserved.<BR>
++
++  SPDX-License-Identifier: BSD-2-Clause-Patent
++
++  @par Glossary:
++    - Cm or CM   - Configuration Manager
++    - Obj or OBJ - Object
++**/
++
++#include <IndustryStandard/DebugPort2Table.h>
++#include <IndustryStandard/IoRemappingTable.h>
++#include <IndustryStandard/MemoryMappedConfigurationSpaceAccessTable.h>
++#include <IndustryStandard/SerialPortConsoleRedirectionTable.h>
++#include <Library/BaseMemoryLib.h>
++#include <Library/DebugLib.h>
++#include <Library/DynamicPlatRepoLib.h>
++#include <Library/HobLib.h>
++#include <Library/HwInfoParserLib.h>
++#include <Library/IoLib.h>
++#include <Library/PcdLib.h>
++#include <Library/TableHelperLib.h>
++#include <Library/UefiBootServicesTableLib.h>
++#include <Protocol/AcpiTable.h>
++#include <Protocol/ConfigurationManagerProtocol.h>
++
++#include "ConfigurationManager.h"
++
++//
++// The platform configuration repository information.
++//
++STATIC
++EDKII_PLATFORM_REPOSITORY_INFO  mKvmtoolPlatRepositoryInfo = {
++  //
++  // Configuration Manager information
++  //
++  { CONFIGURATION_MANAGER_REVISION, CFG_MGR_OEM_ID },
++
++  //
++  // ACPI Table List
++  //
++  {
++    //
++    // FADT Table
++    //
++    {
++      EFI_ACPI_6_3_FIXED_ACPI_DESCRIPTION_TABLE_SIGNATURE,
++      EFI_ACPI_6_3_FIXED_ACPI_DESCRIPTION_TABLE_REVISION,
++      CREATE_STD_ACPI_TABLE_GEN_ID (EStdAcpiTableIdFadt),
++      NULL
++    },
++    //
++    // GTDT Table
++    //
++    {
++      EFI_ACPI_6_3_GENERIC_TIMER_DESCRIPTION_TABLE_SIGNATURE,
++      EFI_ACPI_6_3_GENERIC_TIMER_DESCRIPTION_TABLE_REVISION,
++      CREATE_STD_ACPI_TABLE_GEN_ID (EStdAcpiTableIdGtdt),
++      NULL
++    },
++    //
++    // MADT Table
++    //
++    {
++      EFI_ACPI_6_3_MULTIPLE_APIC_DESCRIPTION_TABLE_SIGNATURE,
++      EFI_ACPI_6_3_MULTIPLE_APIC_DESCRIPTION_TABLE_REVISION,
++      CREATE_STD_ACPI_TABLE_GEN_ID (EStdAcpiTableIdMadt),
++      NULL
++    },
++    //
++    // SPCR Table
++    //
++    {
++      EFI_ACPI_6_3_SERIAL_PORT_CONSOLE_REDIRECTION_TABLE_SIGNATURE,
++      EFI_ACPI_SERIAL_PORT_CONSOLE_REDIRECTION_TABLE_REVISION,
++      CREATE_STD_ACPI_TABLE_GEN_ID (EStdAcpiTableIdSpcr),
++      NULL
++    },
++    //
++    // DSDT Table
++    //
++    {
++      EFI_ACPI_6_3_DIFFERENTIATED_SYSTEM_DESCRIPTION_TABLE_SIGNATURE,
++      0, // Unused
++      CREATE_STD_ACPI_TABLE_GEN_ID (EStdAcpiTableIdDsdt),
++      (EFI_ACPI_DESCRIPTION_HEADER *)dsdt_aml_code
++    },
++    //
++    // SSDT Cpu Hierarchy Table
++    //
++    {
++      EFI_ACPI_6_3_SECONDARY_SYSTEM_DESCRIPTION_TABLE_SIGNATURE,
++      0, // Unused
++      CREATE_STD_ACPI_TABLE_GEN_ID (EStdAcpiTableIdSsdtCpuTopology),
++      NULL
++    },
++    //
++    // PCI MCFG Table
++    //
++    {
++      EFI_ACPI_6_3_PCI_EXPRESS_MEMORY_MAPPED_CONFIGURATION_SPACE_BASE_ADDRESS_DESCRIPTION_TABLE_SIGNATURE,
++      EFI_ACPI_MEMORY_MAPPED_CONFIGURATION_SPACE_ACCESS_TABLE_REVISION,
++      CREATE_STD_ACPI_TABLE_GEN_ID (EStdAcpiTableIdMcfg),
++      NULL
++    },
++    //
++    // SSDT table describing the PCI root complex
++    //
++    {
++      EFI_ACPI_6_3_SECONDARY_SYSTEM_DESCRIPTION_TABLE_SIGNATURE,
++      0, // Unused
++      CREATE_STD_ACPI_TABLE_GEN_ID (EStdAcpiTableIdSsdtPciExpress),
++      NULL
++    },
++    //
++    // IORT Table
++    //
++    {
++      EFI_ACPI_6_3_IO_REMAPPING_TABLE_SIGNATURE,
++      EFI_ACPI_IO_REMAPPING_TABLE_REVISION_00,
++      CREATE_STD_ACPI_TABLE_GEN_ID (EStdAcpiTableIdIort),
++      NULL
++    },
++  },
++
++  //
++  // Power management profile information
++  //
++  { EFI_ACPI_6_3_PM_PROFILE_ENTERPRISE_SERVER },    // PowerManagement Profile
++
++  //
++  // ITS group node
++  //
++  {
++    //
++    // Reference token for this Iort node
++    //
++    REFERENCE_TOKEN (ItsGroupInfo),
++    //
++    // The number of ITS identifiers in the ITS node.
++    //
++    1,
++    //
++    // Reference token for the ITS identifier array
++    //
++    REFERENCE_TOKEN (ItsIdentifierArray)
++  },
++
++  //
++  // ITS identifier array
++  //
++  {
++    { 0 },                            // The ITS Identifier
++  },
++
++  //
++  // Root Complex node info
++  //
++  {
++    //
++    // Reference token for this Iort node
++    //
++    REFERENCE_TOKEN (RootComplexInfo),
++    //
++    // Number of ID mappings
++    //
++    1,
++    //
++    // Reference token for the ID mapping array
++    //
++    REFERENCE_TOKEN (DeviceIdMapping[0]),
++    //
++    // Memory access properties : Cache coherent attributes
++    //
++    EFI_ACPI_IORT_MEM_ACCESS_PROP_CCA,
++    //
++    // Memory access properties : Allocation hints
++    //
++    0,
++    //
++    // Memory access properties : Memory access flags
++    //
++    0,
++    //
++    // ATS attributes
++    //
++    EFI_ACPI_IORT_ROOT_COMPLEX_ATS_UNSUPPORTED,
++    //
++    // PCI segment number
++    //
++    0,
++    ///
++    /// Memory address size limit
++    ///
++    MEMORY_ADDRESS_SIZE_LIMIT
++  },
++
++  //
++  // Array of Device ID mappings
++  //
++  {
++    //
++    // Device ID mapping for Root complex node
++    // RootComplex -> ITS Group
++    //
++    {
++      //
++      // Input base
++      //
++      0x0,
++      //
++      // Number of input IDs
++      //
++      0x0000FFFF,
++      //
++      // Output Base
++      //
++      0x0,
++      //
++      // Output reference
++      //
++      REFERENCE_TOKEN (ItsGroupInfo),
++      //
++      // Flags
++      //
++      0
++    },
++  },
++};
++
++/**
++  A helper function for returning the Configuration Manager Objects.
++
++  @param [in]       CmObjectId     The Configuration Manager Object ID.
++  @param [in]       Object         Pointer to the Object(s).
++  @param [in]       ObjectSize     Total size of the Object(s).
++  @param [in]       ObjectCount    Number of Objects.
++  @param [in, out]  CmObjectDesc   Pointer to the Configuration Manager Object
++                                   descriptor describing the requested Object.
++
++  @retval EFI_SUCCESS           Success.
++**/
++STATIC
++EFI_STATUS
++EFIAPI
++HandleCmObject (
++  IN  CONST CM_OBJECT_ID                CmObjectId,
++  IN        VOID                        *Object,
++  IN  CONST UINTN                       ObjectSize,
++  IN  CONST UINTN                       ObjectCount,
++  IN  OUT   CM_OBJ_DESCRIPTOR   *CONST  CmObjectDesc
++  )
++{
++  CmObjectDesc->ObjectId = CmObjectId;
++  CmObjectDesc->Size     = ObjectSize;
++  CmObjectDesc->Data     = Object;
++  CmObjectDesc->Count    = ObjectCount;
++  DEBUG ((
++    DEBUG_INFO,
++    "INFO: CmObjectId = " FMT_CM_OBJECT_ID ", "
++                                           "Ptr = 0x%p, Size = %lu, Count = %lu\n",
++    CmObjectId,
++    CmObjectDesc->Data,
++    CmObjectDesc->Size,
++    CmObjectDesc->Count
++    ));
++  return EFI_SUCCESS;
++}
++
++/**
++  A helper function for returning the Configuration Manager Objects that
++  match the token.
++
++  @param [in]  This               Pointer to the Configuration Manager Protocol.
++  @param [in]  CmObjectId         The Configuration Manager Object ID.
++  @param [in]  Object             Pointer to the Object(s).
++  @param [in]  ObjectSize         Total size of the Object(s).
++  @param [in]  ObjectCount        Number of Objects.
++  @param [in]  Token              A token identifying the object.
++  @param [in]  HandlerProc        A handler function to search the object
++                                  referenced by the token.
++  @param [in, out]  CmObjectDesc  Pointer to the Configuration Manager Object
++                                  descriptor describing the requested Object.
++
++  @retval EFI_SUCCESS           Success.
++  @retval EFI_INVALID_PARAMETER A parameter is invalid.
++  @retval EFI_NOT_FOUND         The required object information is not found.
++**/
++STATIC
++EFI_STATUS
++EFIAPI
++HandleCmObjectRefByToken (
++  IN  CONST EDKII_CONFIGURATION_MANAGER_PROTOCOL  *CONST  This,
++  IN  CONST CM_OBJECT_ID                                  CmObjectId,
++  IN        VOID                                          *Object,
++  IN  CONST UINTN                                         ObjectSize,
++  IN  CONST UINTN                                         ObjectCount,
++  IN  CONST CM_OBJECT_TOKEN                               Token,
++  IN  CONST CM_OBJECT_HANDLER_PROC                        HandlerProc,
++  IN  OUT   CM_OBJ_DESCRIPTOR                     *CONST  CmObjectDesc
++  )
++{
++  EFI_STATUS  Status;
++
++  CmObjectDesc->ObjectId = CmObjectId;
++  if (Token == CM_NULL_TOKEN) {
++    CmObjectDesc->Size  = ObjectSize;
++    CmObjectDesc->Data  = Object;
++    CmObjectDesc->Count = ObjectCount;
++    Status              = EFI_SUCCESS;
++  } else {
++    Status = HandlerProc (This, CmObjectId, Token, CmObjectDesc);
++  }
++
++  DEBUG ((
++    DEBUG_INFO,
++    "INFO: Token = 0x%p, CmObjectId = " FMT_CM_OBJECT_ID ", "
++                                                         "Ptr = 0x%p, Size = %lu, Count = %lu\n",
++    (VOID *)Token,
++    CmObjectId,
++    CmObjectDesc->Data,
++    CmObjectDesc->Size,
++    CmObjectDesc->Count
++    ));
++  return Status;
++}
++
++/**
++  Return an ITS identifier array.
++
++  @param [in]  This        Pointer to the Configuration Manager Protocol.
++  @param [in]  CmObjectId  The Configuration Manager Object ID.
++  @param [in]  Token       A token for identifying the object
++  @param [out] CmObject    Pointer to the Configuration Manager Object
++                           descriptor describing the requested Object.
++
++  @retval EFI_SUCCESS           Success.
++  @retval EFI_INVALID_PARAMETER A parameter is invalid.
++  @retval EFI_NOT_FOUND         The required object information is not found.
++**/
++EFI_STATUS
++EFIAPI
++GetItsIdentifierArray (
++  IN  CONST EDKII_CONFIGURATION_MANAGER_PROTOCOL  *CONST  This,
++  IN  CONST CM_OBJECT_ID                                  CmObjectId,
++  IN  CONST CM_OBJECT_TOKEN                               Token,
++  OUT       CM_OBJ_DESCRIPTOR                     *CONST  CmObject
++  )
++{
++  EDKII_PLATFORM_REPOSITORY_INFO  *PlatformRepo;
++
++  if ((This == NULL) || (CmObject == NULL)) {
++    ASSERT (This != NULL);
++    ASSERT (CmObject != NULL);
++    return EFI_INVALID_PARAMETER;
++  }
++
++  PlatformRepo = This->PlatRepoInfo;
++
++  if (Token != (CM_OBJECT_TOKEN)&PlatformRepo->ItsIdentifierArray) {
++    return EFI_NOT_FOUND;
++  }
++
++  CmObject->ObjectId = CmObjectId;
++  CmObject->Size     = sizeof (PlatformRepo->ItsIdentifierArray);
++  CmObject->Data     = (VOID *)&PlatformRepo->ItsIdentifierArray;
++  CmObject->Count    = ARRAY_SIZE (PlatformRepo->ItsIdentifierArray);
++  return EFI_SUCCESS;
++}
++
++/**
++  Return a device Id mapping array.
++
++  @param [in]  This        Pointer to the Configuration Manager Protocol.
++  @param [in]  CmObjectId  The Configuration Manager Object ID.
++  @param [in]  Token       A token for identifying the object
++  @param [out] CmObject    Pointer to the Configuration Manager Object
++                           descriptor describing the requested Object.
++
++  @retval EFI_SUCCESS           Success.
++  @retval EFI_INVALID_PARAMETER A parameter is invalid.
++  @retval EFI_NOT_FOUND         The required object information is not found.
++**/
++EFI_STATUS
++EFIAPI
++GetDeviceIdMappingArray (
++  IN  CONST EDKII_CONFIGURATION_MANAGER_PROTOCOL  *CONST  This,
++  IN  CONST CM_OBJECT_ID                                  CmObjectId,
++  IN  CONST CM_OBJECT_TOKEN                               Token,
++  OUT       CM_OBJ_DESCRIPTOR                     *CONST  CmObject
++  )
++{
++  EDKII_PLATFORM_REPOSITORY_INFO  *PlatformRepo;
++
++  if ((This == NULL) || (CmObject == NULL)) {
++    ASSERT (This != NULL);
++    ASSERT (CmObject != NULL);
++    return EFI_INVALID_PARAMETER;
++  }
++
++  PlatformRepo = This->PlatRepoInfo;
++
++  if (Token != (CM_OBJECT_TOKEN)&PlatformRepo->DeviceIdMapping[0]) {
++    return EFI_NOT_FOUND;
++  }
++
++  CmObject->ObjectId = CmObjectId;
++  CmObject->Size     = sizeof (CM_ARM_ID_MAPPING);
++  CmObject->Data     = (VOID *)Token;
++  CmObject->Count    = 1;
++  return EFI_SUCCESS;
++}
++
++/**
++  Function pointer called by the parser to add information.
++
++  Callback function that the parser can use to add new
++  CmObj. This function must copy the CmObj data and not rely on
++  the parser preserving the CmObj memory.
++  This function is responsible of the Token allocation.
++
++  @param  [in]  ParserHandle  A handle to the parser instance.
++  @param  [in]  Context       A pointer to the caller's context provided in
++                              HwInfoParserInit ().
++  @param  [in]  CmObjDesc     CM_OBJ_DESCRIPTOR containing the CmObj(s) to add.
++  @param  [in]  NewToken      Token for this object. If CM_NULL_TOKEN, then
++                              a new token is generated.
++  @param  [out] Token         If provided and success, contain the token
++                              generated for the CmObj.
++
++  @retval EFI_SUCCESS             The function completed successfully.
++  @retval EFI_INVALID_PARAMETER   Invalid parameter.
++**/
++STATIC
++EFI_STATUS
++EFIAPI
++HwInfoAdd (
++  IN        HW_INFO_PARSER_HANDLE  ParserHandle,
++  IN        VOID                   *Context,
++  IN  CONST CM_OBJ_DESCRIPTOR      *CmObjDesc,
++  IN  CONST CM_OBJECT_TOKEN        NewToken,
++  OUT       CM_OBJECT_TOKEN        *Token OPTIONAL
++  )
++{
++  EFI_STATUS                      Status;
++  EDKII_PLATFORM_REPOSITORY_INFO  *PlatformRepo;
++
++  if ((ParserHandle == NULL)  ||
++      (Context == NULL)       ||
++      (CmObjDesc == NULL))
++  {
++    ASSERT (ParserHandle != NULL);
++    ASSERT (Context != NULL);
++    ASSERT (CmObjDesc != NULL);
++    return EFI_INVALID_PARAMETER;
++  }
++
++  PlatformRepo = (EDKII_PLATFORM_REPOSITORY_INFO *)Context;
++
++  DEBUG_CODE_BEGIN ();
++  //
++  // Print the received objects.
++  //
++  ParseCmObjDesc (CmObjDesc);
++  DEBUG_CODE_END ();
++
++  Status = DynPlatRepoAddObject (
++             PlatformRepo->DynamicPlatformRepo,
++             CmObjDesc,
++             NewToken,
++             Token
++             );
++  if (EFI_ERROR (Status)) {
++    ASSERT_EFI_ERROR (Status);
++  }
++
++  return Status;
++}
++
++/**
++  Cleanup the platform configuration repository.
++
++  @param [in]  This        Pointer to the Configuration Manager Protocol.
++
++  @retval EFI_SUCCESS             Success
++  @retval EFI_INVALID_PARAMETER   A parameter is invalid.
++**/
++STATIC
++EFI_STATUS
++EFIAPI
++CleanupPlatformRepository (
++  IN  CONST EDKII_CONFIGURATION_MANAGER_PROTOCOL  *CONST  This
++  )
++{
++  EFI_STATUS                      Status;
++  EDKII_PLATFORM_REPOSITORY_INFO  *PlatformRepo;
++
++  if (This == NULL) {
++    ASSERT (This != NULL);
++    return EFI_INVALID_PARAMETER;
++  }
++
++  PlatformRepo = This->PlatRepoInfo;
++
++  //
++  // Shutdown the dynamic repo and free all objects.
++  //
++  Status = DynamicPlatRepoShutdown (PlatformRepo->DynamicPlatformRepo);
++  if (EFI_ERROR (Status)) {
++    ASSERT_EFI_ERROR (Status);
++    return Status;
++  }
++
++  //
++  // Shutdown parser.
++  //
++  Status = HwInfoParserShutdown (PlatformRepo->FdtParserHandle);
++  if (EFI_ERROR (Status)) {
++    ASSERT_EFI_ERROR (Status);
++  }
++
++  return Status;
++}
++
++/**
++  Initialize the platform configuration repository.
++
++  @param [in]  This        Pointer to the Configuration Manager Protocol.
++
++  @retval EFI_SUCCESS             Success
++  @retval EFI_INVALID_PARAMETER   A parameter is invalid.
++  @retval EFI_OUT_OF_RESOURCES    An allocation has failed.
++**/
++STATIC
++EFI_STATUS
++EFIAPI
++InitializePlatformRepository (
++  IN  CONST EDKII_CONFIGURATION_MANAGER_PROTOCOL  *CONST  This
++  )
++{
++  EFI_STATUS                      Status;
++  EDKII_PLATFORM_REPOSITORY_INFO  *PlatformRepo;
++  VOID                            *Hob;
++
++  if (This == NULL) {
++    ASSERT (This != NULL);
++    return EFI_INVALID_PARAMETER;
++  }
++
++  Hob = GetFirstGuidHob (&gFdtHobGuid);
++  if ((Hob == NULL) || (GET_GUID_HOB_DATA_SIZE (Hob) != sizeof (UINT64))) {
++    ASSERT (FALSE);
++    ASSERT (GET_GUID_HOB_DATA_SIZE (Hob) != sizeof (UINT64));
++    return EFI_NOT_FOUND;
++  }
++
++  PlatformRepo          = This->PlatRepoInfo;
++  PlatformRepo->FdtBase = (VOID *)*(UINTN *)GET_GUID_HOB_DATA (Hob);
++
++  //
++  // Initialise the dynamic platform repository.
++  //
++  Status = DynamicPlatRepoInit (&PlatformRepo->DynamicPlatformRepo);
++  if (EFI_ERROR (Status)) {
++    ASSERT_EFI_ERROR (Status);
++    return Status;
++  }
++
++  //
++  // Initialise the FDT parser
++  //
++  Status = HwInfoParserInit (
++             PlatformRepo->FdtBase,
++             PlatformRepo,
++             HwInfoAdd,
++             &PlatformRepo->FdtParserHandle
++             );
++  if (EFI_ERROR (Status)) {
++    ASSERT_EFI_ERROR (Status);
++    goto ErrorHandler;
++  }
++
++  Status = HwInfoParse (PlatformRepo->FdtParserHandle);
++  if (EFI_ERROR (Status)) {
++    ASSERT_EFI_ERROR (Status);
++    goto ErrorHandler;
++  }
++
++  Status = DynamicPlatRepoFinalise (PlatformRepo->DynamicPlatformRepo);
++  if (EFI_ERROR (Status)) {
++    ASSERT_EFI_ERROR (Status);
++    goto ErrorHandler;
++  }
++
++  return EFI_SUCCESS;
++
++ErrorHandler:
++  CleanupPlatformRepository (This);
++  return Status;
++}
++
++/**
++  Return a standard namespace object.
++
++  @param [in]      This        Pointer to the Configuration Manager Protocol.
++  @param [in]      CmObjectId  The Configuration Manager Object ID.
++  @param [in]      Token       An optional token identifying the object. If
++                               unused this must be CM_NULL_TOKEN.
++  @param [in, out] CmObject    Pointer to the Configuration Manager Object
++                               descriptor describing the requested Object.
++
++  @retval EFI_SUCCESS           Success.
++  @retval EFI_INVALID_PARAMETER A parameter is invalid.
++  @retval EFI_NOT_FOUND         The required object information is not found.
++**/
++EFI_STATUS
++EFIAPI
++GetStandardNameSpaceObject (
++  IN  CONST EDKII_CONFIGURATION_MANAGER_PROTOCOL  *CONST  This,
++  IN  CONST CM_OBJECT_ID                                  CmObjectId,
++  IN  CONST CM_OBJECT_TOKEN                               Token OPTIONAL,
++  IN  OUT   CM_OBJ_DESCRIPTOR                     *CONST  CmObject
++  )
++{
++  EFI_STATUS                      Status;
++  EDKII_PLATFORM_REPOSITORY_INFO  *PlatformRepo;
++  UINTN                           AcpiTableCount;
++  BOOLEAN                         PciSupportPresent;
++  CM_OBJ_DESCRIPTOR               CmObjDesc;
++
++  if ((This == NULL) || (CmObject == NULL)) {
++    ASSERT (This != NULL);
++    ASSERT (CmObject != NULL);
++    return EFI_INVALID_PARAMETER;
++  }
++
++  Status            = EFI_NOT_FOUND;
++  PlatformRepo      = This->PlatRepoInfo;
++  PciSupportPresent = TRUE;
++
++  switch (GET_CM_OBJECT_ID (CmObjectId)) {
++    case EStdObjCfgMgrInfo:
++      Status = HandleCmObject (
++                 CmObjectId,
++                 &PlatformRepo->CmInfo,
++                 sizeof (PlatformRepo->CmInfo),
++                 1,
++                 CmObject
++                 );
++      break;
++
++    case EStdObjAcpiTableList:
++      AcpiTableCount = ARRAY_SIZE (PlatformRepo->CmAcpiTableList);
++
++      //
++      // Get Pci interrupt map information.
++      //
++      Status = DynamicPlatRepoGetObject (
++                 PlatformRepo->DynamicPlatformRepo,
++                 CREATE_CM_ARCH_COMMON_OBJECT_ID (
++                   EArchCommonObjPciInterruptMapInfo
++                   ),
++                 CM_NULL_TOKEN,
++                 &CmObjDesc
++                 );
++      if (Status == EFI_NOT_FOUND) {
++        //
++        // The last 3 tables are for PCIe. If PCIe information is not
++        // present, Kvmtool was launched without the PCIe option.
++        // Therefore, reduce the table count by 3.
++        //
++        AcpiTableCount   -= 3;
++        PciSupportPresent = FALSE;
++      } else if (EFI_ERROR (Status)) {
++        ASSERT_EFI_ERROR (Status);
++        return Status;
++      }
++
++      if (PciSupportPresent) {
++        //
++        // Get the Gic version.
++        //
++        Status = DynamicPlatRepoGetObject (
++                   PlatformRepo->DynamicPlatformRepo,
++                   CREATE_CM_ARM_OBJECT_ID (EArmObjGicDInfo),
++                   CM_NULL_TOKEN,
++                   &CmObjDesc
++                   );
++        if (EFI_ERROR (Status)) {
++          ASSERT_EFI_ERROR (Status);
++          return Status;
++        }
++
++        if (((CM_ARM_GICD_INFO *)CmObjDesc.Data)->GicVersion < 3) {
++          //
++          // IORT is only required for GicV3/4
++          //
++          AcpiTableCount -= 1;
++        } else {
++          //
++          // Check if we have support for ITS.
++          //
++          Status = DynamicPlatRepoGetObject (
++                     PlatformRepo->DynamicPlatformRepo,
++                     CREATE_CM_ARM_OBJECT_ID (EArmObjGicItsInfo),
++                     CM_NULL_TOKEN,
++                     &CmObjDesc
++                     );
++          if (EFI_ERROR (Status)) {
++            //
++            // IORT is only required for GicV3/4 if ITS is present.
++            //
++            AcpiTableCount -= 1;
++          }
++        }
++      }
++
++      Status = HandleCmObject (
++                 CmObjectId,
++                 PlatformRepo->CmAcpiTableList,
++                 (sizeof (PlatformRepo->CmAcpiTableList[0]) * AcpiTableCount),
++                 AcpiTableCount,
++                 CmObject
++                 );
++      break;
++
++    default:
++      Status = EFI_NOT_FOUND;
++      DEBUG ((
++        DEBUG_ERROR,
++        "ERROR: CmObjectId " FMT_CM_OBJECT_ID ". Status = %r\n",
++        CmObjectId,
++        Status
++        ));
++      break;
++  }
++
++  return Status;
++}
++
++/**
++  Return an ArchCommon namespace object.
++
++  @param [in]      This        Pointer to the Configuration Manager Protocol.
++  @param [in]      CmObjectId  The Configuration Manager Object ID.
++  @param [in]      Token       An optional token identifying the object. If
++                               unused this must be CM_NULL_TOKEN.
++  @param [in, out] CmObject    Pointer to the Configuration Manager Object
++                               descriptor describing the requested Object.
++
++  @retval EFI_SUCCESS           Success.
++  @retval EFI_INVALID_PARAMETER A parameter is invalid.
++  @retval EFI_NOT_FOUND         The required object information is not found.
++**/
++EFI_STATUS
++EFIAPI
++GetArchCommonNameSpaceObject (
++  IN  CONST EDKII_CONFIGURATION_MANAGER_PROTOCOL  *CONST  This,
++  IN  CONST CM_OBJECT_ID                                  CmObjectId,
++  IN  CONST CM_OBJECT_TOKEN                               Token OPTIONAL,
++  IN  OUT   CM_OBJ_DESCRIPTOR                     *CONST  CmObject
++  )
++{
++  EFI_STATUS                      Status;
++  EDKII_PLATFORM_REPOSITORY_INFO  *PlatformRepo;
++
++  if ((This == NULL) || (CmObject == NULL)) {
++    ASSERT (This != NULL);
++    ASSERT (CmObject != NULL);
++    return EFI_INVALID_PARAMETER;
++  }
++
++  Status       = EFI_NOT_FOUND;
++  PlatformRepo = This->PlatRepoInfo;
++
++  //
++  // First check among the static objects.
++  //
++  switch (GET_CM_OBJECT_ID (CmObjectId)) {
++    case EArchCommonObjPowerManagementProfileInfo:
++      Status = HandleCmObject (
++                 CmObjectId,
++                 &PlatformRepo->PmProfileInfo,
++                 sizeof (PlatformRepo->PmProfileInfo),
++                 1,
++                 CmObject
++                 );
++      break;
++
++    default:
++      //
++      // No match found among the static objects.
++      // Check the dynamic objects.
++      //
++      Status = DynamicPlatRepoGetObject (
++                 PlatformRepo->DynamicPlatformRepo,
++                 CmObjectId,
++                 Token,
++                 CmObject
++                 );
++      break;
++  } // switch
++
++  if (Status == EFI_NOT_FOUND) {
++    DEBUG ((
++      DEBUG_INFO,
++      "INFO: CmObjectId " FMT_CM_OBJECT_ID ". Status = %r\n",
++      CmObjectId,
++      Status
++      ));
++  } else {
++    ASSERT_EFI_ERROR (Status);
++  }
++
++  return Status;
++}
++
++/**
++  Return an ARM namespace object.
++
++  @param [in]      This        Pointer to the Configuration Manager Protocol.
++  @param [in]      CmObjectId  The Configuration Manager Object ID.
++  @param [in]      Token       An optional token identifying the object. If
++                               unused this must be CM_NULL_TOKEN.
++  @param [in, out] CmObject    Pointer to the Configuration Manager Object
++                               descriptor describing the requested Object.
++
++  @retval EFI_SUCCESS           Success.
++  @retval EFI_INVALID_PARAMETER A parameter is invalid.
++  @retval EFI_NOT_FOUND         The required object information is not found.
++**/
++EFI_STATUS
++EFIAPI
++GetArmNameSpaceObject (
++  IN  CONST EDKII_CONFIGURATION_MANAGER_PROTOCOL  *CONST  This,
++  IN  CONST CM_OBJECT_ID                                  CmObjectId,
++  IN  CONST CM_OBJECT_TOKEN                               Token OPTIONAL,
++  IN  OUT   CM_OBJ_DESCRIPTOR                     *CONST  CmObject
++  )
++{
++  EFI_STATUS                      Status;
++  EDKII_PLATFORM_REPOSITORY_INFO  *PlatformRepo;
++
++  if ((This == NULL) || (CmObject == NULL)) {
++    ASSERT (This != NULL);
++    ASSERT (CmObject != NULL);
++    return EFI_INVALID_PARAMETER;
++  }
++
++  Status       = EFI_NOT_FOUND;
++  PlatformRepo = This->PlatRepoInfo;
++
++  //
++  // First check among the static objects.
++  //
++  switch (GET_CM_OBJECT_ID (CmObjectId)) {
++    case EArmObjItsGroup:
++      Status = HandleCmObject (
++                 CmObjectId,
++                 &PlatformRepo->ItsGroupInfo,
++                 sizeof (PlatformRepo->ItsGroupInfo),
++                 1,
++                 CmObject
++                 );
++      break;
++
++    case EArmObjGicItsIdentifierArray:
++      Status = HandleCmObjectRefByToken (
++                 This,
++                 CmObjectId,
++                 PlatformRepo->ItsIdentifierArray,
++                 sizeof (PlatformRepo->ItsIdentifierArray),
++                 ARRAY_SIZE (PlatformRepo->ItsIdentifierArray),
++                 Token,
++                 GetItsIdentifierArray,
++                 CmObject
++                 );
++      break;
++
++    case EArmObjRootComplex:
++      Status = HandleCmObject (
++                 CmObjectId,
++                 &PlatformRepo->RootComplexInfo,
++                 sizeof (PlatformRepo->RootComplexInfo),
++                 1,
++                 CmObject
++                 );
++      break;
++
++    case EArmObjIdMappingArray:
++      Status = HandleCmObjectRefByToken (
++                 This,
++                 CmObjectId,
++                 PlatformRepo->DeviceIdMapping,
++                 sizeof (PlatformRepo->DeviceIdMapping),
++                 ARRAY_SIZE (PlatformRepo->DeviceIdMapping),
++                 Token,
++                 GetDeviceIdMappingArray,
++                 CmObject
++                 );
++      break;
++
++    default:
++      //
++      // No match found among the static objects.
++      // Check the dynamic objects.
++      //
++      Status = DynamicPlatRepoGetObject (
++                 PlatformRepo->DynamicPlatformRepo,
++                 CmObjectId,
++                 Token,
++                 CmObject
++                 );
++      break;
++  } // switch
++
++  if (Status == EFI_NOT_FOUND) {
++    DEBUG ((
++      DEBUG_INFO,
++      "INFO: CmObjectId " FMT_CM_OBJECT_ID ". Status = %r\n",
++      CmObjectId,
++      Status
++      ));
++  } else {
++    ASSERT_EFI_ERROR (Status);
++  }
++
++  return Status;
++}
++
++/**
++  Return an OEM namespace object.
++
++  @param [in]      This        Pointer to the Configuration Manager Protocol.
++  @param [in]      CmObjectId  The Configuration Manager Object ID.
++  @param [in]      Token       An optional token identifying the object. If
++                               unused this must be CM_NULL_TOKEN.
++  @param [in, out] CmObject    Pointer to the Configuration Manager Object
++                               descriptor describing the requested Object.
++
++  @retval EFI_SUCCESS           Success.
++  @retval EFI_INVALID_PARAMETER A parameter is invalid.
++  @retval EFI_NOT_FOUND         The required object information is not found.
++**/
++EFI_STATUS
++EFIAPI
++GetOemNameSpaceObject (
++  IN  CONST EDKII_CONFIGURATION_MANAGER_PROTOCOL  *CONST  This,
++  IN  CONST CM_OBJECT_ID                                  CmObjectId,
++  IN  CONST CM_OBJECT_TOKEN                               Token OPTIONAL,
++  IN  OUT   CM_OBJ_DESCRIPTOR                     *CONST  CmObject
++  )
++{
++  EFI_STATUS  Status;
++
++  Status = EFI_SUCCESS;
++  if ((This == NULL) || (CmObject == NULL)) {
++    ASSERT (This != NULL);
++    ASSERT (CmObject != NULL);
++    return EFI_INVALID_PARAMETER;
++  }
++
++  switch (GET_CM_OBJECT_ID (CmObjectId)) {
++    default:
++      Status = EFI_NOT_FOUND;
++      DEBUG ((
++        DEBUG_ERROR,
++        "ERROR: CmObjectId " FMT_CM_OBJECT_ID ". Status = %r\n",
++        CmObjectId,
++        Status
++        ));
++      break;
++  }
++
++  return Status;
++}
++
++/**
++  The GetObject function defines the interface implemented by the
++  Configuration Manager Protocol for returning the Configuration
++  Manager Objects.
++
++  @param [in]      This        Pointer to the Configuration Manager Protocol.
++  @param [in]      CmObjectId  The Configuration Manager Object ID.
++  @param [in]      Token       An optional token identifying the object. If
++                               unused this must be CM_NULL_TOKEN.
++  @param [in, out] CmObject    Pointer to the Configuration Manager Object
++                               descriptor describing the requested Object.
++
++  @retval EFI_SUCCESS           Success.
++  @retval EFI_INVALID_PARAMETER A parameter is invalid.
++  @retval EFI_NOT_FOUND         The required object information is not found.
++**/
++EFI_STATUS
++EFIAPI
++ArmKvmtoolPlatformGetObject (
++  IN  CONST EDKII_CONFIGURATION_MANAGER_PROTOCOL  *CONST  This,
++  IN  CONST CM_OBJECT_ID                                  CmObjectId,
++  IN  CONST CM_OBJECT_TOKEN                               Token OPTIONAL,
++  IN  OUT   CM_OBJ_DESCRIPTOR                     *CONST  CmObject
++  )
++{
++  EFI_STATUS  Status;
++
++  if ((This == NULL) || (CmObject == NULL)) {
++    ASSERT (This != NULL);
++    ASSERT (CmObject != NULL);
++    return EFI_INVALID_PARAMETER;
++  }
++
++  switch (GET_CM_NAMESPACE_ID (CmObjectId)) {
++    case EObjNameSpaceStandard:
++      Status = GetStandardNameSpaceObject (This, CmObjectId, Token, CmObject);
++      break;
++    case EObjNameSpaceArchCommon:
++      Status = GetArchCommonNameSpaceObject (This, CmObjectId, Token, CmObject);
++      break;
++    case EObjNameSpaceArm:
++      Status = GetArmNameSpaceObject (This, CmObjectId, Token, CmObject);
++      break;
++    case EObjNameSpaceOem:
++      Status = GetOemNameSpaceObject (This, CmObjectId, Token, CmObject);
++      break;
++    default:
++      Status = EFI_INVALID_PARAMETER;
++      DEBUG ((
++        DEBUG_ERROR,
++        "ERROR: Unknown Namespace CmObjectId " FMT_CM_OBJECT_ID ". "
++                                                                "Status = %r\n",
++        CmObjectId,
++        Status
++        ));
++      break;
++  }
++
++  return Status;
++}
++
++/**
++  The SetObject function defines the interface implemented by the
++  Configuration Manager Protocol for updating the Configuration
++  Manager Objects.
++
++  @param [in]      This        Pointer to the Configuration Manager Protocol.
++  @param [in]      CmObjectId  The Configuration Manager Object ID.
++  @param [in]      Token       An optional token identifying the object. If
++                               unused this must be CM_NULL_TOKEN.
++  @param [in]      CmObject    Pointer to the Configuration Manager Object
++                               descriptor describing the Object.
++
++  @retval EFI_UNSUPPORTED  This operation is not supported.
++**/
++EFI_STATUS
++EFIAPI
++ArmKvmtoolPlatformSetObject (
++  IN  CONST EDKII_CONFIGURATION_MANAGER_PROTOCOL  *CONST  This,
++  IN  CONST CM_OBJECT_ID                                  CmObjectId,
++  IN  CONST CM_OBJECT_TOKEN                               Token OPTIONAL,
++  IN        CM_OBJ_DESCRIPTOR                     *CONST  CmObject
++  )
++{
++  return EFI_UNSUPPORTED;
++}
++
++//
++// A structure describing the configuration manager protocol interface.
++//
++STATIC
++CONST
++EDKII_CONFIGURATION_MANAGER_PROTOCOL  mKvmtoolPlatformConfigManagerProtocol = {
++  CREATE_REVISION (1,          0),
++  ArmKvmtoolPlatformGetObject,
++  ArmKvmtoolPlatformSetObject,
++  &mKvmtoolPlatRepositoryInfo
++};
++
++/**
++  Entrypoint of Configuration Manager Dxe.
++
++  @param  ImageHandle
++  @param  SystemTable
++
++  @retval EFI_SUCCESS
++  @retval EFI_LOAD_ERROR
++  @retval EFI_OUT_OF_RESOURCES
++**/
++EFI_STATUS
++EFIAPI
++ConfigurationManagerDxeInitialize (
++  IN EFI_HANDLE        ImageHandle,
++  IN EFI_SYSTEM_TABLE  *SystemTable
++  )
++{
++  EFI_STATUS  Status;
++
++  Status = gBS->InstallProtocolInterface (
++                  &ImageHandle,
++                  &gEdkiiConfigurationManagerProtocolGuid,
++                  EFI_NATIVE_INTERFACE,
++                  (VOID *)&mKvmtoolPlatformConfigManagerProtocol
++                  );
++  if (EFI_ERROR (Status)) {
++    DEBUG ((
++      DEBUG_ERROR,
++      "ERROR: Failed to get Install Configuration Manager Protocol." \
++      " Status = %r\n",
++      Status
++      ));
++    return Status;
++  }
++
++  Status = InitializePlatformRepository (
++             &mKvmtoolPlatformConfigManagerProtocol
++             );
++  if (EFI_ERROR (Status)) {
++    DEBUG ((
++      DEBUG_ERROR,
++      "ERROR: Failed to initialize the Platform Configuration Repository." \
++      " Status = %r\n",
++      Status
++      ));
++    goto ErrorHandler;
++  }
++
++  return Status;
++
++ErrorHandler:
++  gBS->UninstallProtocolInterface (
++         &ImageHandle,
++         &gEdkiiConfigurationManagerProtocolGuid,
++         (VOID *)&mKvmtoolPlatformConfigManagerProtocol
++         );
++  return Status;
++}
++
++/**
++  Unload function for this image.
++
++  @param ImageHandle   Handle for the image of this driver.
++
++  @retval EFI_SUCCESS  Driver unloaded successfully.
++  @retval other        Driver can not unloaded.
++**/
++EFI_STATUS
++EFIAPI
++ConfigurationManagerDxeUnloadImage (
++  IN EFI_HANDLE  ImageHandle
++  )
++{
++  return CleanupPlatformRepository (&mKvmtoolPlatformConfigManagerProtocol);
++}
+diff -ruN a/ArmVirtPkg/SentinelCfgMgrDxe/ConfigurationManager.h b/ArmVirtPkg/SentinelCfgMgrDxe/ConfigurationManager.h
+--- a/ArmVirtPkg/SentinelCfgMgrDxe/ConfigurationManager.h	1969-12-31 18:00:00
++++ b/ArmVirtPkg/SentinelCfgMgrDxe/ConfigurationManager.h	2026-10-13 01:21:18
+@@ -0,0 +1,122 @@
++/** @file
++
++  Copyright (c) 2021 - 2022, Arm Limited. All rights reserved.<BR>
++
++  SPDX-License-Identifier: BSD-2-Clause-Patent
++
++  @par Glossary:
++    - Cm or CM   - Configuration Manager
++    - Obj or OBJ - Object
++**/
++
++#pragma once
++
++///
++/// C array containing the compiled AML template.
++/// This symbol is defined in the auto generated C file
++/// containing the AML bytecode array.
++///
++extern CHAR8  dsdt_aml_code[];
++
++///
++/// The configuration manager version.
++///
++#define CONFIGURATION_MANAGER_REVISION  CREATE_REVISION (1, 0)
++
++///
++/// The OEM ID
++///
++#define CFG_MGR_OEM_ID  { 'A', 'R', 'M', 'L', 'T', 'D' }
++
++///
++/// Memory address size limit. Assume the whole address space.
++///
++#define MEMORY_ADDRESS_SIZE_LIMIT  64
++
++/** A function that prepares Configuration Manager Objects for returning.
++
++  @param [in]  This        Pointer to the Configuration Manager Protocol.
++  @param [in]  CmObjectId  The Configuration Manager Object ID.
++  @param [in]  Token       A token for identifying the object.
++  @param [out] CmObject    Pointer to the Configuration Manager Object
++                           descriptor describing the requested Object.
++
++  @retval EFI_SUCCESS           Success.
++  @retval EFI_INVALID_PARAMETER A parameter is invalid.
++  @retval EFI_NOT_FOUND         The required object information is not found.
++**/
++typedef EFI_STATUS (*CM_OBJECT_HANDLER_PROC) (
++  IN  CONST EDKII_CONFIGURATION_MANAGER_PROTOCOL  *CONST  This,
++  IN  CONST CM_OBJECT_ID                                  CmObjectId,
++  IN  CONST CM_OBJECT_TOKEN                               Token,
++  IN  OUT   CM_OBJ_DESCRIPTOR                     *CONST  CmObject
++  );
++
++///
++/// A helper macro for mapping a reference token.
++///
++#define REFERENCE_TOKEN(Field)                                     \
++          (CM_OBJECT_TOKEN)((UINT8*)&mKvmtoolPlatRepositoryInfo +  \
++           OFFSET_OF (EDKII_PLATFORM_REPOSITORY_INFO, Field))
++
++///
++/// The number of ACPI tables to install
++///
++#define PLAT_ACPI_TABLE_COUNT  9
++
++///
++/// A structure describing the platform configuration
++/// manager repository information
++///
++typedef struct PlatformRepositoryInfo {
++  ///
++  /// Configuration Manager Information.
++  ///
++  CM_STD_OBJ_CONFIGURATION_MANAGER_INFO           CmInfo;
++
++  ///
++  /// List of ACPI tables
++  ///
++  CM_STD_OBJ_ACPI_TABLE_INFO                      CmAcpiTableList[PLAT_ACPI_TABLE_COUNT];
++
++  ///
++  /// Power management profile information
++  ///
++  CM_ARCH_COMMON_POWER_MANAGEMENT_PROFILE_INFO    PmProfileInfo;
++
++  ///
++  /// ITS Group node
++  ///
++  CM_ARM_ITS_GROUP_NODE                           ItsGroupInfo;
++
++  ///
++  /// ITS Identifier array
++  ///
++  CM_ARM_ITS_IDENTIFIER                           ItsIdentifierArray[1];
++
++  ///
++  /// PCI Root complex node
++  ///
++  CM_ARM_ROOT_COMPLEX_NODE                        RootComplexInfo;
++
++  ///
++  /// Array of DeviceID mapping
++  ///
++  CM_ARM_ID_MAPPING                               DeviceIdMapping[1];
++
++  ///
++  /// Dynamic platform repository.
++  /// CmObj created by parsing the Kvmtool device tree are stored here.
++  ///
++  DYNAMIC_PLATFORM_REPOSITORY_INFO                *DynamicPlatformRepo;
++
++  ///
++  /// Base address of the FDT.
++  ///
++  VOID                                            *FdtBase;
++
++  ///
++  /// A handle to the FDT HwInfoParser.
++  ///
++  HW_INFO_PARSER_HANDLE                           FdtParserHandle;
++} EDKII_PLATFORM_REPOSITORY_INFO;
+diff -ruN a/ArmVirtPkg/SentinelCfgMgrDxe/ConfigurationManagerDxe.inf b/ArmVirtPkg/SentinelCfgMgrDxe/ConfigurationManagerDxe.inf
+--- a/ArmVirtPkg/SentinelCfgMgrDxe/ConfigurationManagerDxe.inf	1969-12-31 18:00:00
++++ b/ArmVirtPkg/SentinelCfgMgrDxe/ConfigurationManagerDxe.inf	2026-10-13 01:21:18
+@@ -0,0 +1,53 @@
++## @file
++#  Configuration Manager Dxe
++#
++#  Copyright (c) 2021 - 2022, Arm Limited. All rights reserved.<BR>
++#
++#  SPDX-License-Identifier: BSD-2-Clause-Patent
++##
++
++[Defines]
++  INF_VERSION                    = 0x0001001B
++  BASE_NAME                      = ConfigurationManagerDxe
++  FILE_GUID                      = 5e2b9c84-1d7f-4a36-8c0e-b4f19a6d2e75
++  MODULE_TYPE                    = DXE_DRIVER
++  VERSION_STRING                 = 1.0
++  ENTRY_POINT                    = ConfigurationManagerDxeInitialize
++  UNLOAD_IMAGE                   = ConfigurationManagerDxeUnloadImage
++
++#
++# The following information is for reference only and not required by the build tools.
++#
++#  VALID_ARCHITECTURES           = AARCH64
++#
++
++[Sources]
++  AslTables/Dsdt.asl
++  ConfigurationManager.c
++  ConfigurationManager.h
++  ConfigurationManagerDxe.inf
++
++[Packages]
++  ArmVirtPkg/ArmVirtPkg.dec
++  DynamicTablesPkg/DynamicTablesPkg.dec
++  MdeModulePkg/MdeModulePkg.dec
++  MdePkg/MdePkg.dec
++
++[LibraryClasses]
++  DynamicPlatRepoLib
++  HobLib
++  HwInfoParserLib
++  PrintLib
++  TableHelperLib
++  UefiBootServicesTableLib
++  UefiDriverEntryPoint
++  UefiRuntimeServicesTableLib
++
++[Protocols]
++  gEdkiiConfigurationManagerProtocolGuid
++
++[Guids]
++  gFdtHobGuid
++
++[Depex]
++  gEdkiiPlatformHasAcpiGuid
+diff -ruN a/ArmVirtPkg/SentinelPlatformDxe/SentinelPlatformDxe.c b/ArmVirtPkg/SentinelPlatformDxe/SentinelPlatformDxe.c
+--- a/ArmVirtPkg/SentinelPlatformDxe/SentinelPlatformDxe.c	1969-12-31 18:00:00
++++ b/ArmVirtPkg/SentinelPlatformDxe/SentinelPlatformDxe.c	2026-10-13 01:21:18
+@@ -0,0 +1,46 @@
++/** @file
++  Sentinel's virtual machine (libkrun): the hardware is described to the OS both
++  ways, by ACPI tables generated from the device tree (DynamicTablesPkg) and by
++  the device tree itself, so each OS takes the one it uses. The UEFI variable
++  store is emulated in RAM (libkrun has no flash).
++
++  SPDX-License-Identifier: BSD-2-Clause-Patent
++**/
++
++#include <Guid/PlatformHasAcpi.h>
++#include <Guid/PlatformHasDeviceTree.h>
++#include <Library/DebugLib.h>
++#include <Library/PcdLib.h>
++#include <Library/UefiBootServicesTableLib.h>
++
++EFI_STATUS
++EFIAPI
++SentinelPlatformDxeEntryPoint (
++  IN EFI_HANDLE        ImageHandle,
++  IN EFI_SYSTEM_TABLE  *SystemTable
++  )
++{
++  EFI_STATUS  Status;
++
++  if (PcdGetBool (PcdEmuVariableNvModeEnable)) {
++    // The driver implementing the variable service can now be dispatched.
++    Status = gBS->InstallProtocolInterface (
++                    &gImageHandle,
++                    &gEdkiiNvVarStoreFormattedGuid,
++                    EFI_NATIVE_INTERFACE,
++                    NULL
++                    );
++    ASSERT_EFI_ERROR (Status);
++  }
++
++  Status = gBS->InstallMultipleProtocolInterfaces (
++                  &ImageHandle,
++                  &gEdkiiPlatformHasAcpiGuid,
++                  NULL,
++                  &gEdkiiPlatformHasDeviceTreeGuid,
++                  NULL,
++                  NULL
++                  );
++  ASSERT_EFI_ERROR (Status);
++  return Status;
++}
+diff -ruN a/ArmVirtPkg/SentinelPlatformDxe/SentinelPlatformDxe.inf b/ArmVirtPkg/SentinelPlatformDxe/SentinelPlatformDxe.inf
+--- a/ArmVirtPkg/SentinelPlatformDxe/SentinelPlatformDxe.inf	1969-12-31 18:00:00
++++ b/ArmVirtPkg/SentinelPlatformDxe/SentinelPlatformDxe.inf	2026-10-13 01:21:18
+@@ -0,0 +1,39 @@
++## @file
++#  Sentinel's virtual machine: ACPI and the device tree, RAM-backed variables.
++#
++#  SPDX-License-Identifier: BSD-2-Clause-Patent
++##
++
++[Defines]
++  INF_VERSION                    = 0x0001001B
++  BASE_NAME                      = SentinelPlatformDxe
++  FILE_GUID                      = 7c3f1a62-2d5e-4b8e-9a41-6f0d2c9e5b17
++  MODULE_TYPE                    = DXE_DRIVER
++  VERSION_STRING                 = 1.0
++  ENTRY_POINT                    = SentinelPlatformDxeEntryPoint
++
++[Sources]
++  SentinelPlatformDxe.c
++
++[Packages]
++  EmbeddedPkg/EmbeddedPkg.dec
++  MdeModulePkg/MdeModulePkg.dec
++  MdePkg/MdePkg.dec
++
++[LibraryClasses]
++  BaseLib
++  DebugLib
++  PcdLib
++  UefiBootServicesTableLib
++  UefiDriverEntryPoint
++
++[Guids]
++  gEdkiiNvVarStoreFormattedGuid                   ## SOMETIMES_PRODUCES ## PROTOCOL
++  gEdkiiPlatformHasAcpiGuid                       ## PRODUCES ## PROTOCOL
++  gEdkiiPlatformHasDeviceTreeGuid                 ## PRODUCES ## PROTOCOL
++
++[Pcd]
++  gEfiMdeModulePkgTokenSpaceGuid.PcdEmuVariableNvModeEnable  ## CONSUMES
++
++[Depex]
++  TRUE
+diff -ruN a/ArmVirtPkg/SentinelRamfbDxe/SentinelRamfb.c b/ArmVirtPkg/SentinelRamfbDxe/SentinelRamfb.c
+--- a/ArmVirtPkg/SentinelRamfbDxe/SentinelRamfb.c	1969-12-31 18:00:00
++++ b/ArmVirtPkg/SentinelRamfbDxe/SentinelRamfb.c	2026-10-13 01:21:18
+@@ -0,0 +1,436 @@
++/** @file
++  The Graphics Output Protocol on Sentinel's boot framebuffer (libkrun's ramfb): QEMU's ramfb
++  driver, with the configuration written to the register page the device tree names
++  ("sentinel,ramfb") instead of fw_cfg, and one mode, the display's size.
++
++  Copyright (c) 2018, Red Hat Inc.
++
++  SPDX-License-Identifier: BSD-2-Clause-Patent
++
++**/
++
++#include <Protocol/GraphicsOutput.h>
++
++#include <Library/BaseLib.h>
++#include <Library/BaseMemoryLib.h>
++#include <Library/DebugLib.h>
++#include <Library/DevicePathLib.h>
++#include <Library/FrameBufferBltLib.h>
++#include <Library/MemoryAllocationLib.h>
++#include <Library/UefiBootServicesTableLib.h>
++#include <Library/IoLib.h>
++#include <Protocol/FdtClient.h>
++
++#include <Guid/QemuRamfb.h>
++
++#define RAMFB_FORMAT  0x34325258 /* DRM_FORMAT_XRGB8888 */
++#define RAMFB_BPP     4
++
++// The register page (libkrun devices::ramfb).
++#define RAMFB_ADDRESS_LOW   0x00
++#define RAMFB_ADDRESS_HIGH  0x04
++#define RAMFB_WIDTH         0x08
++#define RAMFB_HEIGHT        0x0c
++#define RAMFB_STRIDE        0x10
++#define RAMFB_FOURCC        0x14
++#define RAMFB_ENABLE        0x18
++#define RAMFB_MAX_WIDTH     0x20
++#define RAMFB_MAX_HEIGHT    0x24
++
++STATIC EFI_HANDLE              mRamfbHandle;
++STATIC EFI_HANDLE              mGopHandle;
++STATIC FRAME_BUFFER_CONFIGURE  *mQemuRamfbFrameBufferBltConfigure;
++STATIC UINTN                   mQemuRamfbFrameBufferBltConfigureSize;
++STATIC UINTN                   mRamfbRegisters;
++
++STATIC EFI_GRAPHICS_OUTPUT_MODE_INFORMATION  mQemuRamfbModeInfo[] = {
++  {
++    0,    // Version
++    0,    // HorizontalResolution: the display's (RAMFB_MAX_WIDTH)
++    0,    // VerticalResolution: the display's (RAMFB_MAX_HEIGHT)
++  }
++};
++
++STATIC EFI_GRAPHICS_OUTPUT_PROTOCOL_MODE  mQemuRamfbMode = {
++  ARRAY_SIZE (mQemuRamfbModeInfo),                // MaxMode
++  0,                                              // Mode
++  mQemuRamfbModeInfo,                             // Info
++  sizeof (EFI_GRAPHICS_OUTPUT_MODE_INFORMATION),  // SizeOfInfo
++};
++
++STATIC
++EFI_STATUS
++EFIAPI
++QemuRamfbGraphicsOutputQueryMode (
++  IN  EFI_GRAPHICS_OUTPUT_PROTOCOL          *This,
++  IN  UINT32                                ModeNumber,
++  OUT UINTN                                 *SizeOfInfo,
++  OUT EFI_GRAPHICS_OUTPUT_MODE_INFORMATION  **Info
++  )
++{
++  EFI_GRAPHICS_OUTPUT_MODE_INFORMATION  *ModeInfo;
++
++  if ((Info == NULL) || (SizeOfInfo == NULL) ||
++      (ModeNumber >= mQemuRamfbMode.MaxMode))
++  {
++    return EFI_INVALID_PARAMETER;
++  }
++
++  ModeInfo = &mQemuRamfbModeInfo[ModeNumber];
++
++  *Info = AllocateCopyPool (
++            sizeof (EFI_GRAPHICS_OUTPUT_MODE_INFORMATION),
++            ModeInfo
++            );
++  if (*Info == NULL) {
++    return EFI_OUT_OF_RESOURCES;
++  }
++
++  *SizeOfInfo = sizeof (EFI_GRAPHICS_OUTPUT_MODE_INFORMATION);
++
++  return EFI_SUCCESS;
++}
++
++STATIC
++EFI_STATUS
++EFIAPI
++QemuRamfbGraphicsOutputSetMode (
++  IN  EFI_GRAPHICS_OUTPUT_PROTOCOL  *This,
++  IN  UINT32                        ModeNumber
++  )
++{
++  EFI_GRAPHICS_OUTPUT_MODE_INFORMATION  *ModeInfo;
++  EFI_GRAPHICS_OUTPUT_BLT_PIXEL         Black;
++  RETURN_STATUS                         Status;
++
++  if (ModeNumber >= mQemuRamfbMode.MaxMode) {
++    return EFI_UNSUPPORTED;
++  }
++
++  ModeInfo = &mQemuRamfbModeInfo[ModeNumber];
++
++  DEBUG ((
++    DEBUG_INFO,
++    "Ramfb: SetMode %u (%ux%u)\n",
++    ModeNumber,
++    ModeInfo->HorizontalResolution,
++    ModeInfo->VerticalResolution
++    ));
++
++  Status = FrameBufferBltConfigure (
++             (VOID *)(UINTN)mQemuRamfbMode.FrameBufferBase,
++             ModeInfo,
++             mQemuRamfbFrameBufferBltConfigure,
++             &mQemuRamfbFrameBufferBltConfigureSize
++             );
++
++  if (Status == RETURN_BUFFER_TOO_SMALL) {
++    if (mQemuRamfbFrameBufferBltConfigure != NULL) {
++      FreePool (mQemuRamfbFrameBufferBltConfigure);
++    }
++
++    mQemuRamfbFrameBufferBltConfigure =
++      AllocatePool (mQemuRamfbFrameBufferBltConfigureSize);
++    if (mQemuRamfbFrameBufferBltConfigure == NULL) {
++      mQemuRamfbFrameBufferBltConfigureSize = 0;
++      return EFI_OUT_OF_RESOURCES;
++    }
++
++    Status = FrameBufferBltConfigure (
++               (VOID *)(UINTN)mQemuRamfbMode.FrameBufferBase,
++               ModeInfo,
++               mQemuRamfbFrameBufferBltConfigure,
++               &mQemuRamfbFrameBufferBltConfigureSize
++               );
++  }
++
++  if (RETURN_ERROR (Status)) {
++    ASSERT (Status == RETURN_UNSUPPORTED);
++    return Status;
++  }
++
++  mQemuRamfbMode.Mode = ModeNumber;
++  mQemuRamfbMode.Info = ModeInfo;
++
++  MmioWrite32 (mRamfbRegisters + RAMFB_ADDRESS_LOW, (UINT32)mQemuRamfbMode.FrameBufferBase);
++  MmioWrite32 (mRamfbRegisters + RAMFB_ADDRESS_HIGH, (UINT32)RShiftU64 (mQemuRamfbMode.FrameBufferBase, 32));
++  MmioWrite32 (mRamfbRegisters + RAMFB_WIDTH, ModeInfo->HorizontalResolution);
++  MmioWrite32 (mRamfbRegisters + RAMFB_HEIGHT, ModeInfo->VerticalResolution);
++  MmioWrite32 (mRamfbRegisters + RAMFB_STRIDE, ModeInfo->HorizontalResolution * RAMFB_BPP);
++  MmioWrite32 (mRamfbRegisters + RAMFB_FOURCC, RAMFB_FORMAT);
++  MmioWrite32 (mRamfbRegisters + RAMFB_ENABLE, 1);
++
++  //
++  // clear screen
++  //
++  ZeroMem (&Black, sizeof (Black));
++  Status = FrameBufferBlt (
++             mQemuRamfbFrameBufferBltConfigure,
++             &Black,
++             EfiBltVideoFill,
++             0,                               // SourceX -- ignored
++             0,                               // SourceY -- ignored
++             0,                               // DestinationX
++             0,                               // DestinationY
++             ModeInfo->HorizontalResolution,  // Width
++             ModeInfo->VerticalResolution,    // Height
++             0                                // Delta -- ignored
++             );
++  if (RETURN_ERROR (Status)) {
++    DEBUG ((
++      DEBUG_WARN,
++      "%a: clearing the screen failed: %r\n",
++      __func__,
++      Status
++      ));
++  }
++
++  return EFI_SUCCESS;
++}
++
++STATIC
++EFI_STATUS
++EFIAPI
++QemuRamfbGraphicsOutputBlt (
++  IN  EFI_GRAPHICS_OUTPUT_PROTOCOL       *This,
++  IN  EFI_GRAPHICS_OUTPUT_BLT_PIXEL      *BltBuffer  OPTIONAL,
++  IN  EFI_GRAPHICS_OUTPUT_BLT_OPERATION  BltOperation,
++  IN  UINTN                              SourceX,
++  IN  UINTN                              SourceY,
++  IN  UINTN                              DestinationX,
++  IN  UINTN                              DestinationY,
++  IN  UINTN                              Width,
++  IN  UINTN                              Height,
++  IN  UINTN                              Delta
++  )
++{
++  return FrameBufferBlt (
++           mQemuRamfbFrameBufferBltConfigure,
++           BltBuffer,
++           BltOperation,
++           SourceX,
++           SourceY,
++           DestinationX,
++           DestinationY,
++           Width,
++           Height,
++           Delta
++           );
++}
++
++STATIC EFI_GRAPHICS_OUTPUT_PROTOCOL  mQemuRamfbGraphicsOutput = {
++  QemuRamfbGraphicsOutputQueryMode,
++  QemuRamfbGraphicsOutputSetMode,
++  QemuRamfbGraphicsOutputBlt,
++  &mQemuRamfbMode,
++};
++
++EFI_STATUS
++EFIAPI
++InitializeQemuRamfb (
++  IN EFI_HANDLE        ImageHandle,
++  IN EFI_SYSTEM_TABLE  *SystemTable
++  )
++{
++  EFI_DEVICE_PATH_PROTOCOL  *RamfbDevicePath;
++  EFI_DEVICE_PATH_PROTOCOL  *GopDevicePath;
++  VOID                      *DevicePath;
++  VENDOR_DEVICE_PATH        VendorDeviceNode;
++  ACPI_ADR_DEVICE_PATH      AcpiDeviceNode;
++  EFI_STATUS                Status;
++  EFI_PHYSICAL_ADDRESS      FbBase;
++  UINTN                     FbSize, MaxFbSize, Pages;
++  UINTN                     Index;
++  FDT_CLIENT_PROTOCOL       *FdtClient;
++  CONST UINT64              *Reg;
++  UINT32                    RegSize;
++  UINTN                     AddressCells, SizeCells;
++
++  Status = gBS->LocateProtocol (&gFdtClientProtocolGuid, NULL, (VOID **)&FdtClient);
++  if (EFI_ERROR (Status)) {
++    return EFI_NOT_FOUND;
++  }
++
++  Status = FdtClient->FindCompatibleNodeReg (
++                        FdtClient,
++                        "sentinel,ramfb",
++                        (CONST VOID **)&Reg,
++                        &AddressCells,
++                        &SizeCells,
++                        &RegSize
++                        );
++  if (EFI_ERROR (Status) || (AddressCells != 2) || (RegSize < sizeof (UINT64))) {
++    DEBUG ((DEBUG_INFO, "Ramfb: no boot framebuffer\n"));
++    return EFI_NOT_FOUND;
++  }
++
++  mRamfbRegisters                             = (UINTN)SwapBytes64 (Reg[0]);
++  mQemuRamfbModeInfo[0].HorizontalResolution = MmioRead32 (mRamfbRegisters + RAMFB_MAX_WIDTH);
++  mQemuRamfbModeInfo[0].VerticalResolution   = MmioRead32 (mRamfbRegisters + RAMFB_MAX_HEIGHT);
++  if ((mQemuRamfbModeInfo[0].HorizontalResolution == 0) || (mQemuRamfbModeInfo[0].VerticalResolution == 0)) {
++    return EFI_NOT_FOUND;
++  }
++
++  MaxFbSize = 0;
++  for (Index = 0; Index < ARRAY_SIZE (mQemuRamfbModeInfo); Index++) {
++    mQemuRamfbModeInfo[Index].PixelsPerScanLine =
++      mQemuRamfbModeInfo[Index].HorizontalResolution;
++    mQemuRamfbModeInfo[Index].PixelFormat =
++      PixelBlueGreenRedReserved8BitPerColor;
++    FbSize = RAMFB_BPP *
++             mQemuRamfbModeInfo[Index].HorizontalResolution *
++             mQemuRamfbModeInfo[Index].VerticalResolution;
++    if (MaxFbSize < FbSize) {
++      MaxFbSize = FbSize;
++    }
++
++    DEBUG ((
++      DEBUG_INFO,
++      "Ramfb: Mode %lu: %ux%u, %lu kB\n",
++      (UINT64)Index,
++      mQemuRamfbModeInfo[Index].HorizontalResolution,
++      mQemuRamfbModeInfo[Index].VerticalResolution,
++      (UINT64)(FbSize / 1024)
++      ));
++  }
++
++  Pages     = EFI_SIZE_TO_PAGES (MaxFbSize);
++  MaxFbSize = EFI_PAGES_TO_SIZE (Pages);
++  FbBase    = (EFI_PHYSICAL_ADDRESS)(UINTN)AllocateReservedPages (Pages);
++  if (FbBase == 0) {
++    DEBUG ((DEBUG_ERROR, "Ramfb: memory allocation failed\n"));
++    return EFI_OUT_OF_RESOURCES;
++  }
++
++  DEBUG ((
++    DEBUG_INFO,
++    "Ramfb: Framebuffer at 0x%lx, %lu kB, %lu pages\n",
++    (UINT64)FbBase,
++    (UINT64)(MaxFbSize / 1024),
++    (UINT64)Pages
++    ));
++  mQemuRamfbMode.FrameBufferSize = MaxFbSize;
++  mQemuRamfbMode.FrameBufferBase = FbBase;
++
++  QemuRamfbGraphicsOutputSetMode (&mQemuRamfbGraphicsOutput, 0);
++
++  //
++  // ramfb vendor devpath
++  //
++  VendorDeviceNode.Header.Type    = HARDWARE_DEVICE_PATH;
++  VendorDeviceNode.Header.SubType = HW_VENDOR_DP;
++  CopyGuid (&VendorDeviceNode.Guid, &gQemuRamfbGuid);
++  SetDevicePathNodeLength (
++    &VendorDeviceNode.Header,
++    sizeof (VENDOR_DEVICE_PATH)
++    );
++
++  RamfbDevicePath = AppendDevicePathNode (
++                      NULL,
++                      (EFI_DEVICE_PATH_PROTOCOL *)&VendorDeviceNode
++                      );
++  if (RamfbDevicePath == NULL) {
++    Status = EFI_OUT_OF_RESOURCES;
++    goto FreeFramebuffer;
++  }
++
++  Status = gBS->InstallMultipleProtocolInterfaces (
++                  &mRamfbHandle,
++                  &gEfiDevicePathProtocolGuid,
++                  RamfbDevicePath,
++                  NULL
++                  );
++  if (EFI_ERROR (Status)) {
++    DEBUG ((
++      DEBUG_ERROR,
++      "Ramfb: install Ramfb Vendor DevicePath failed: %r\n",
++      Status
++      ));
++    goto FreeRamfbDevicePath;
++  }
++
++  //
++  // gop devpath + protocol
++  //
++  AcpiDeviceNode.Header.Type    = ACPI_DEVICE_PATH;
++  AcpiDeviceNode.Header.SubType = ACPI_ADR_DP;
++  AcpiDeviceNode.ADR            = ACPI_DISPLAY_ADR (
++                                    1,                                      // DeviceIdScheme
++                                    0,                                      // HeadId
++                                    0,                                      // NonVgaOutput
++                                    1,                                      // BiosCanDetect
++                                    0,                                      // VendorInfo
++                                    ACPI_ADR_DISPLAY_TYPE_EXTERNAL_DIGITAL, // Type
++                                    0,                                      // Port
++                                    0                                       // Index
++                                    );
++  SetDevicePathNodeLength (
++    &AcpiDeviceNode.Header,
++    sizeof (ACPI_ADR_DEVICE_PATH)
++    );
++
++  GopDevicePath = AppendDevicePathNode (
++                    RamfbDevicePath,
++                    (EFI_DEVICE_PATH_PROTOCOL *)&AcpiDeviceNode
++                    );
++  if (GopDevicePath == NULL) {
++    Status = EFI_OUT_OF_RESOURCES;
++    goto FreeRamfbHandle;
++  }
++
++  Status = gBS->InstallMultipleProtocolInterfaces (
++                  &mGopHandle,
++                  &gEfiDevicePathProtocolGuid,
++                  GopDevicePath,
++                  &gEfiGraphicsOutputProtocolGuid,
++                  &mQemuRamfbGraphicsOutput,
++                  NULL
++                  );
++  if (EFI_ERROR (Status)) {
++    DEBUG ((
++      DEBUG_ERROR,
++      "Ramfb: install GOP DevicePath failed: %r\n",
++      Status
++      ));
++    goto FreeGopDevicePath;
++  }
++
++  Status = gBS->OpenProtocol (
++                  mRamfbHandle,
++                  &gEfiDevicePathProtocolGuid,
++                  &DevicePath,
++                  gImageHandle,
++                  mGopHandle,
++                  EFI_OPEN_PROTOCOL_BY_CHILD_CONTROLLER
++                  );
++  if (EFI_ERROR (Status)) {
++    DEBUG ((DEBUG_ERROR, "Ramfb: OpenProtocol failed: %r\n", Status));
++    goto FreeGopHandle;
++  }
++
++  return EFI_SUCCESS;
++
++FreeGopHandle:
++  gBS->UninstallMultipleProtocolInterfaces (
++         mGopHandle,
++         &gEfiDevicePathProtocolGuid,
++         GopDevicePath,
++         &gEfiGraphicsOutputProtocolGuid,
++         &mQemuRamfbGraphicsOutput,
++         NULL
++         );
++FreeGopDevicePath:
++  FreePool (GopDevicePath);
++FreeRamfbHandle:
++  gBS->UninstallMultipleProtocolInterfaces (
++         mRamfbHandle,
++         &gEfiDevicePathProtocolGuid,
++         RamfbDevicePath,
++         NULL
++         );
++FreeRamfbDevicePath:
++  FreePool (RamfbDevicePath);
++FreeFramebuffer:
++  FreePages ((VOID *)(UINTN)mQemuRamfbMode.FrameBufferBase, Pages);
++  return Status;
++}
+diff -ruN a/ArmVirtPkg/SentinelRamfbDxe/SentinelRamfbDxe.inf b/ArmVirtPkg/SentinelRamfbDxe/SentinelRamfbDxe.inf
+--- a/ArmVirtPkg/SentinelRamfbDxe/SentinelRamfbDxe.inf	1969-12-31 18:00:00
++++ b/ArmVirtPkg/SentinelRamfbDxe/SentinelRamfbDxe.inf	2026-10-13 01:21:18
+@@ -0,0 +1,44 @@
++## @file
++#  The Graphics Output Protocol on Sentinel's boot framebuffer (libkrun's ramfb).
++#
++#  Copyright (c) 2018, Red Hat Inc.
++#  SPDX-License-Identifier: BSD-2-Clause-Patent
++##
++
++[Defines]
++  INF_VERSION                    = 0x0001001B
++  BASE_NAME                      = SentinelRamfbDxe
++  FILE_GUID                      = 2b6e9d14-7a3c-4f05-b8e1-9c4d0a5f3e62
++  MODULE_TYPE                    = DXE_DRIVER
++  VERSION_STRING                 = 1.0
++  ENTRY_POINT                    = InitializeQemuRamfb
++
++[Sources]
++  SentinelRamfb.c
++
++[Packages]
++  EmbeddedPkg/EmbeddedPkg.dec
++  MdePkg/MdePkg.dec
++  MdeModulePkg/MdeModulePkg.dec
++  OvmfPkg/OvmfPkg.dec
++
++[LibraryClasses]
++  BaseLib
++  BaseMemoryLib
++  DebugLib
++  DevicePathLib
++  FrameBufferBltLib
++  IoLib
++  MemoryAllocationLib
++  UefiBootServicesTableLib
++  UefiDriverEntryPoint
++
++[Protocols]
++  gEfiGraphicsOutputProtocolGuid                ## PRODUCES
++  gFdtClientProtocolGuid                        ## CONSUMES
++
++[Guids]
++  gQemuRamfbGuid
++
++[Depex]
++  gFdtClientProtocolGuid

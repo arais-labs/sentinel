@@ -1,0 +1,1438 @@
+libkrun: show a screen and map Venus memory with upstream virglrenderer on macOS (Venus only, no vrend).
+- 2D resources the renderer refuses stay in guest pages, copied to the display on flush.
+- Global-ring fences complete immediately when the renderer has none (2D work is synchronous).
+- The cursor queue is serviced (it never was: once full, the guest's display updates blocked
+  behind it). Its newest UPDATE_CURSOR goes to the GPU worker, which hands the cursor image to a new
+  optional display callback, update_cursor.
+- Each input device gets its own id: they all shared one, so only the last (the pointer) reached
+  the guest and the keyboard was lost.
+- A virtio-snd device (one stereo S16 48 kHz playback stream) whose PCM goes to a host fd as it
+  plays, its buffers completed in real time: krun_sound_device_new.
+- A freed blob releases its host mapping (destroying a mapped resource leaked its memory for
+  the life of the VM).
+- Guest RAM on macOS is owned memory in 2 MiB chunks: plain anonymous memory mapped into the
+  guest was charged twice once the host wrote into it (every disk read), doubling the VM's
+  footprint. The balloon's free-page reporting returns memory to macOS: a reported range leaves
+  the guest, gets fresh chunks (freeing the old) and is mapped back (madvise cannot free pages
+  mapped into the guest).
+- Blob mapping accepts shm exports, which is what upstream Venus produces on macOS.
+- SET_SCANOUT_BLOB shows GPU-rendered buffers (copied from the blob's host mapping on flush).
+- The VMM worker that maps GPU blobs into the guest is started on macOS (it was never started).
+- HVF uses a 4 KiB IPA granule (macOS 26+), so blobs map at the guest's 4 KiB placement on any
+  guest kernel.
+
+diff -ru a/include/libkrun.h b/include/libkrun.h
+--- a/include/libkrun.h	2026-10-09 07:35:04
++++ b/include/libkrun.h	2026-10-12 14:35:53
+@@ -20,6 +20,7 @@
+ typedef void* KrunVmmHandle;
+ typedef void* KrunBalloonDevice;
+ typedef void* KrunRngDevice;
++typedef void* KrunSoundDevice;
+ typedef void* KrunVsockDevice;
+ typedef void* KrunBlockDevice;
+ typedef void* KrunNetDevice;
+@@ -28,14 +29,14 @@
+ typedef void* KrunDisplayBackend;
+ typedef void* KrunGpuDevice;
+ typedef void* KrunInputDevice;
+-typedef void* KrunAttachDevice; /* KrunFsDevice | KrunConsoleDevice | KrunBlockDevice | KrunNetDevice | KrunGpuDevice | KrunInputDevice | KrunVhostUserDevice | KrunBalloonDevice | KrunRngDevice | KrunVsockDevice */
++typedef void* KrunAttachDevice; /* KrunFsDevice | KrunConsoleDevice | KrunBlockDevice | KrunNetDevice | KrunGpuDevice | KrunInputDevice | KrunVhostUserDevice | KrunBalloonDevice | KrunRngDevice | KrunSoundDevice | KrunVsockDevice */
+ typedef void* KrunError; /* KrunVmmError | KrunVtableError */
+ typedef void* KrunPushStr; /* KrunVtablePushStr */
+ 
+ #ifndef KRUN_PRIMITIVES_DEFINED
+ #define KRUN_PRIMITIVES_DEFINED
+ 
+-typedef void* KrunObject; /* KrunVmmError | KrunMmioDeviceManager | KrunFsDevice | KrunConsoleDevice | KrunConsoleBuilder | KrunFsOverlay | KrunPayload | KrunNitroConfig | KrunVmmBuilder | KrunVmm | KrunVmmHandle | KrunBalloonDevice | KrunRngDevice | KrunVsockDevice | KrunBlockDevice | KrunNetDevice | KrunDisplayInfoBuilder | KrunVhostUserDevice | KrunDisplayBackend | KrunGpuDevice | KrunInputDevice */
++typedef void* KrunObject; /* KrunVmmError | KrunMmioDeviceManager | KrunFsDevice | KrunConsoleDevice | KrunConsoleBuilder | KrunFsOverlay | KrunPayload | KrunNitroConfig | KrunVmmBuilder | KrunVmm | KrunVmmHandle | KrunBalloonDevice | KrunRngDevice | KrunSoundDevice | KrunVsockDevice | KrunBlockDevice | KrunNetDevice | KrunDisplayInfoBuilder | KrunVhostUserDevice | KrunDisplayBackend | KrunGpuDevice | KrunInputDevice */
+ 
+ typedef uint64_t KrunResult;
+ #define KRUN_RESULT_SUCCESS 0
+@@ -476,6 +477,14 @@
+ typedef KrunRngDevice (*krun_rng_device_new_fn)(KrunError* err_out);
+ void krun_rng_device_destroy(KrunRngDevice handle);
+ typedef void (*krun_rng_device_destroy_fn)(KrunRngDevice handle);
++
++/* SoundDevice ------------------------------------------------------- */
++
++/** Create a sound device with one stereo playback stream (S16, 48 kHz). The stream's PCM is written to `fd` as it plays; what the fd cannot take at once is dropped. Takes ownership of `fd`. */
++KrunSoundDevice krun_sound_device_new(int fd, KrunError* err_out);
++typedef KrunSoundDevice (*krun_sound_device_new_fn)(int fd, KrunError* err_out);
++void krun_sound_device_destroy(KrunSoundDevice handle);
++typedef void (*krun_sound_device_destroy_fn)(KrunSoundDevice handle);
+ 
+ /* VsockDevice ------------------------------------------------------- */
+ 
+diff -ru a/src/devices/src/virtio/balloon/device.rs b/src/devices/src/virtio/balloon/device.rs
+--- a/src/devices/src/virtio/balloon/device.rs	2026-10-09 07:35:04
++++ b/src/devices/src/virtio/balloon/device.rs	2026-10-12 14:35:53
+@@ -54,10 +54,22 @@
+     pub(crate) acked_features: u64,
+     pub(crate) activate_evt: EventFd,
+     pub(crate) device_state: DeviceState,
++    // macOS: released pages go back through the VMM worker (see process_frq).
++    #[cfg(target_os = "macos")]
++    pub(crate) map_sender: Option<crossbeam_channel::Sender<utils::worker_message::WorkerMessage>>,
+     config: VirtioBalloonConfig,
+ }
+ 
+ impl Balloon {
++    /// macOS: the VMM worker channel reported pages are released through.
++    #[cfg(target_os = "macos")]
++    pub fn set_map_sender(
++        &mut self,
++        sender: Option<crossbeam_channel::Sender<utils::worker_message::WorkerMessage>>,
++    ) {
++        self.map_sender = sender;
++    }
++
+     pub fn new() -> super::Result<Balloon> {
+         Ok(Balloon {
+             queues: None,
+@@ -66,6 +78,8 @@
+             activate_evt: EventFd::new(utils::eventfd::EFD_NONBLOCK)
+                 .map_err(BalloonError::EventFd)?,
+             device_state: DeviceState::Inactive,
++            #[cfg(target_os = "macos")]
++            map_sender: None,
+             config: VirtioBalloonConfig::default(),
+         })
+     }
+@@ -92,14 +106,31 @@
+             let index = head.index;
+             for desc in head.into_iter() {
+                 let host_addr = mem.get_host_address(desc.addr).unwrap();
++                // macOS keeps pages that are mapped into the guest whatever madvise says: the
++                // VMM worker takes the range out of the guest, replaces it and maps it back.
++                #[cfg(target_os = "macos")]
++                if let Some(sender) = &self.map_sender {
++                    let (reply, done) = crossbeam_channel::bounded(1);
++                    let message = utils::worker_message::WorkerMessage::ReleaseMemory(
++                        reply,
++                        host_addr as u64,
++                        vm_memory::Address::raw_value(&desc.addr),
++                        desc.len as u64,
++                    );
++                    if sender.send(message).is_ok() && done.recv().unwrap_or(false) {
++                        continue;
++                    }
++                }
+                 debug!(
+                     "balloon: should release guest_addr={:?} host_addr={:p} len={}",
+                     desc.addr, host_addr, desc.len
+                 );
+                 #[cfg(target_os = "linux")]
+                 let advice = libc::MADV_DONTNEED;
++                // MADV_FREE only frees lazily: the pages kept counting against the VM's footprint
++                // until the system was short of memory. REUSABLE returns them at once.
+                 #[cfg(target_os = "macos")]
+-                let advice = libc::MADV_FREE;
++                let advice = libc::MADV_FREE_REUSABLE;
+                 #[cfg(unix)]
+                 unsafe {
+                     libc::madvise(
+diff -ru a/src/devices/src/virtio/gpu/device.rs b/src/devices/src/virtio/gpu/device.rs
+--- a/src/devices/src/virtio/gpu/device.rs	2026-10-09 07:35:04
++++ b/src/devices/src/virtio/gpu/device.rs	2026-10-12 14:35:53
+@@ -1,5 +1,9 @@
+ use std::io::Write;
++use std::sync::{Arc, Mutex};
++use std::os::fd::{AsRawFd, BorrowedFd};
+ 
++use nix::fcntl::{FcntlArg, OFlag, fcntl};
++
+ #[cfg(target_os = "macos")]
+ use crossbeam_channel::Sender;
+ use vm_memory::{ByteValued, GuestMemoryMmap};
+@@ -8,7 +12,9 @@
+     ActivateError, ActivateResult, DeviceQueue, DeviceState, QueueConfig, VirtioDevice,
+     VirtioShmRegion, fs::ExportTable,
+ };
++use super::super::descriptor_utils::Reader;
+ use super::defs;
++use super::protocol::GpuCommand;
+ use super::defs::uapi;
+ use super::defs::uapi::virtio_gpu_config;
+ use super::virtio_gpu::virgl_flags_to_capsets;
+@@ -66,6 +72,10 @@
+             display_backend,
+             // Blobs are mapped into the guest in host pages, which can be
+             // larger than the guest's (16 KiB on Apple silicon).
++            // macOS maps guest memory with a 4 KiB granule (hvf), so blobs need no larger alignment.
++            #[cfg(target_os = "macos")]
++            blob_alignment: 4096,
++            #[cfg(not(target_os = "macos"))]
+             blob_alignment: unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as u32,
+         })
+     }
+@@ -200,7 +210,7 @@
+         interrupt: InterruptTransport,
+         queues: Vec<DeviceQueue>,
+     ) -> ActivateResult {
+-        let [control_q, _cursor_q]: [_; defs::NUM_QUEUES] = queues.try_into().map_err(|_| {
++        let [control_q, cursor_q]: [_; defs::NUM_QUEUES] = queues.try_into().map_err(|_| {
+             error!(
+                 "Cannot perform activate. Expected {} queue(s)",
+                 defs::NUM_QUEUES
+@@ -213,7 +223,57 @@
+             None => panic!("virtio_gpu: missing SHM region"),
+         };
+ 
+-        // cursor queue not used by worker
++        // The cursor queue: requests complete at once (a full queue blocks the guest's display
++        // updates); the newest cursor image is handed to the worker, which owns the resources, and
++        // the worker is woken through the control queue's event.
++        let cursor = Arc::new(Mutex::new(None));
++        {
++            let evt = cursor_q.event.try_clone().unwrap();
++            let wake = control_q.event.try_clone().unwrap();
++            // SAFETY: evt is valid for the duration of the fcntl calls.
++            let fd = unsafe { BorrowedFd::borrow_raw(evt.as_raw_fd()) };
++            let flags =
++                OFlag::from_bits_retain(fcntl(fd, FcntlArg::F_GETFL).unwrap()) & !OFlag::O_NONBLOCK;
++            fcntl(fd, FcntlArg::F_SETFL(flags)).unwrap();
++            let mut queue = cursor_q.queue;
++            let mem = mem.clone();
++            let interrupt = interrupt.clone();
++            let cursor = cursor.clone();
++            std::thread::Builder::new()
++                .name("gpu cursor".into())
++                .spawn(move || {
++                    loop {
++                        if evt.read().is_err() {
++                            continue;
++                        }
++                        let mut used = false;
++                        let mut update = None;
++                        while let Some(head) = queue.pop(&mem) {
++                            if let Ok(mut reader) = Reader::new(&mem, head.clone())
++                                && let Ok((_, GpuCommand::UpdateCursor(info))) =
++                                    GpuCommand::decode(&mut reader)
++                            {
++                                update = Some(info);
++                            }
++                            if let Err(e) = queue.add_used(&mem, head.index, 0) {
++                                error!("gpu: cursor queue add_used: {e:?}");
++                            }
++                            used = true;
++                        }
++                        if let Some(info) = update {
++                            *cursor.lock().unwrap() = Some(info);
++                            if let Err(e) = wake.write(1) {
++                                error!("gpu: cannot wake the worker for the cursor: {e:?}");
++                            }
++                        }
++                        if used && let Err(e) = interrupt.try_signal_used_queue() {
++                            error!("gpu: cursor queue interrupt: {e:?}");
++                        }
++                    }
++                })
++                .unwrap();
++        }
++
+         let worker = Worker::new(
+             control_q,
+             mem.clone(),
+@@ -225,6 +285,7 @@
+             self.export_table.take(),
+             self.displays.clone(),
+             self.display_backend,
++            cursor,
+         );
+         worker.run();
+ 
+diff -ru a/src/devices/src/virtio/gpu/virtio_gpu.rs b/src/devices/src/virtio/gpu/virtio_gpu.rs
+--- a/src/devices/src/virtio/gpu/virtio_gpu.rs	2026-10-09 07:35:04
++++ b/src/devices/src/virtio/gpu/virtio_gpu.rs	2026-10-12 14:35:53
+@@ -33,13 +33,14 @@
+     RUTABAGA_MAP_ACCESS_WRITE, RUTABAGA_PATH_TYPE_PIPEWIRE, RUTABAGA_PATH_TYPE_X11,
+ };
+ use rutabaga_gfx::{
+-    RUTABAGA_MAP_CACHE_MASK, RUTABAGA_PATH_TYPE_WAYLAND, ResourceCreate3D, ResourceCreateBlob,
++    RUTABAGA_MAP_CACHE_MASK, RUTABAGA_PATH_TYPE_WAYLAND, RUTABAGA_PIPE_TEXTURE_2D, ResourceCreate3D,
++    ResourceCreateBlob,
+     Rutabaga, RutabagaBuilder, RutabagaDescriptor, RutabagaFence, RutabagaFenceHandler,
+     RutabagaIovec, RutabagaPath, RutabagaResult, Transfer3D, VirtioFsLookup,
+ };
+ #[cfg(target_os = "macos")]
+ use utils::worker_message::WorkerMessage;
+-use vm_memory::{GuestAddress, GuestMemoryBackend, GuestMemoryMmap, VolatileSlice};
++use vm_memory::{Bytes, GuestAddress, GuestMemoryBackend, GuestMemoryMmap, VolatileSlice};
+ 
+ use super::{GpuError, Result};
+ use crate::display::DisplayInfo;
+@@ -153,6 +154,7 @@
+     format: Option<ResourceFormat>,
+     size: u64, // only for blob resources
+     shmem_offset: Option<u64>,
++    host_ptr: Option<u64>, // blob resources mapped on the host
+     rutabaga_external_mapping: bool,
+ }
+ 
+@@ -174,6 +176,7 @@
+             size,
+             format,
+             shmem_offset: None,
++            host_ptr: None,
+             rutabaga_external_mapping: false,
+         }
+     }
+@@ -181,8 +184,18 @@
+ 
+ pub struct VirtioGpuScanout {
+     resource_id: u32,
++    // Set for SET_SCANOUT_BLOB: where the pixels are inside the blob.
++    blob: Option<BlobScanout>,
+ }
+ 
++#[derive(Copy, Clone)]
++struct BlobScanout {
++    width: u32,
++    height: u32,
++    stride: u32,
++    offset: u32,
++}
++
+ pub struct VirtioGpu {
+     rutabaga: Rutabaga,
+     resources: BTreeMap<u32, VirtioGpuResource>,
+@@ -192,6 +205,10 @@
+     scanouts: [Option<VirtioGpuScanout>; VIRTIO_GPU_MAX_SCANOUTS as usize],
+     displays: Box<[DisplayInfo]>,
+     display_backend: DisplayBackendInstance,
++    // 2D resources the renderer cannot create (Venus without vrend): their pixels stay in the
++    // guest's backing pages and are copied to the display on flush.
++    guest_2d: BTreeMap<u32, Vec<(GuestAddress, usize)>>,
++    guest_mem: Option<GuestMemoryMmap>,
+ }
+ 
+ impl VirtioGpu {
+@@ -388,6 +405,8 @@
+             scanouts: Default::default(),
+             displays,
+             display_backend,
++            guest_2d: BTreeMap::new(),
++            guest_mem: None,
+             #[cfg(target_os = "macos")]
+             map_sender,
+         }
+@@ -424,8 +443,17 @@
+         resource_id: u32,
+         resource_create_3d: ResourceCreate3D,
+     ) -> VirtioGpuResult {
+-        self.rutabaga
+-            .resource_create_3d(resource_id, resource_create_3d)?;
++        if let Err(e) = self
++            .rutabaga
++            .resource_create_3d(resource_id, resource_create_3d)
++        {
++            if resource_create_3d.target != RUTABAGA_PIPE_TEXTURE_2D
++                || ResourceFormat::try_from(resource_create_3d.format).is_err()
++            {
++                return Err(e.into());
++            }
++            self.guest_2d.insert(resource_id, Vec::new());
++        }
+ 
+         let format = ResourceFormat::try_from(resource_create_3d.format).ok();
+         if format.is_none() {
+@@ -463,8 +491,19 @@
+             return Err(ErrUnspec);
+         }
+ 
++        if self.guest_2d.remove(&resource_id).is_some() {
++            return Ok(OkNoData);
++        }
++
+         if resource.rutabaga_external_mapping {
+             self.rutabaga.unmap(resource_id)?;
++        } else if resource.host_ptr.is_some() {
++            // The host mapping (the guest's window onto the blob, scanout and cursor reads) goes
++            // with the resource: virglrenderer destroys a mapped resource without unmapping it,
++            // which left every freed blob's memory allocated for the life of the VM.
++            if let Err(e) = self.rutabaga.unmap(resource_id) {
++                warn!("gpu: cannot unmap freed resource {resource_id}: {e}");
++            }
+         }
+ 
+         self.rutabaga.unref_resource(resource_id)?;
+@@ -528,10 +567,50 @@
+             format,
+         )?;
+ 
+-        *scanout = Some(VirtioGpuScanout { resource_id });
++        *scanout = Some(VirtioGpuScanout {
++            resource_id,
++            blob: None,
++        });
+         Ok(OkNoData)
+     }
+ 
++    /// Shows a blob resource (a GPU-rendered buffer) on a scanout.
++    #[allow(clippy::too_many_arguments)]
++    pub fn set_scanout_blob(
++        &mut self,
++        scanout_id: u32,
++        resource_id: u32,
++        width: u32,
++        height: u32,
++        format: u32,
++        stride: u32,
++        offset: u32,
++    ) -> VirtioGpuResult {
++        if resource_id == 0 {
++            return self.set_scanout(scanout_id, 0, width, height);
++        }
++        let format = ResourceFormat::try_from(format).map_err(|_| ErrInvalidParameter)?;
++        let resource = self
++            .resources
++            .get_mut(&resource_id)
++            .ok_or(ErrInvalidResourceId)?;
++        resource.format = Some(format);
++        // The blob's pixels are read through its host mapping on flush.
++        if resource.host_ptr.is_none() {
++            resource.host_ptr = Some(self.rutabaga.map(resource_id).map_err(|_| ErrUnspec)?.ptr);
++        }
++        self.set_scanout(scanout_id, resource_id, width, height)?;
++        if let Some(scanout) = self.scanouts[scanout_id as usize].as_mut() {
++            scanout.blob = Some(BlobScanout {
++                width,
++                height,
++                stride,
++                offset,
++            });
++        }
++        Ok(OkNoData)
++    }
++
+     fn read_2d_resource(
+         rutabaga: &mut Rutabaga,
+         resource: VirtioGpuResource,
+@@ -571,7 +650,31 @@
+ 
+         for scanout_id in resource.scanouts.iter_enabled() {
+             let (frame_id, buffer) = self.display_backend.alloc_frame(scanout_id)?;
+-            if let Err(e) = Self::read_2d_resource(&mut self.rutabaga, resource, buffer) {
++            let blob = self.scanouts[scanout_id as usize]
++                .as_ref()
++                .and_then(|scanout| scanout.blob);
++            if let (Some(blob), Some(ptr)) = (blob, resource.host_ptr) {
++                let row = blob.width as usize * 4;
++                for y in 0..blob.height as usize {
++                    let src = (ptr + blob.offset as u64 + (y * blob.stride as usize) as u64)
++                        as *const u8;
++                    let dst = &mut buffer[y * row..(y + 1) * row];
++                    // SAFETY: the blob stays mapped while it is a scanout; rows lie within it.
++                    unsafe { std::ptr::copy_nonoverlapping(src, dst.as_mut_ptr(), row) };
++                }
++            } else if let Some(backing) = self.guest_2d.get(&resource_id) {
++                let mem = self.guest_mem.as_ref().ok_or(ErrUnspec)?;
++                let mut offset = 0;
++                for &(addr, len) in backing {
++                    let n = len.min(buffer.len() - offset);
++                    mem.read_slice(&mut buffer[offset..offset + n], addr)
++                        .map_err(|_| ErrUnspec)?;
++                    offset += n;
++                    if offset == buffer.len() {
++                        break;
++                    }
++                }
++            } else if let Err(e) = Self::read_2d_resource(&mut self.rutabaga, resource, buffer) {
+                 log::error!("Failed to read resource {resource_id} for scanout {scanout_id}: {e}");
+                 return Err(ErrUnspec);
+             }
+@@ -589,6 +692,100 @@
+         Ok(OkNoData)
+     }
+ 
++    /// Hands the cursor image of `resource_id` (0: hidden) to the display. Cursor updates have no
++    /// reply, so failures are only logged.
++    pub fn update_cursor(&mut self, scanout_id: u32, resource_id: u32, hot_x: u32, hot_y: u32) {
++        if resource_id == 0 {
++            if let Err(e) = self
++                .display_backend
++                .update_cursor(scanout_id, 0, 0, 0, 0, None)
++            {
++                log::warn!("gpu: cannot hide the cursor: {e}");
++            }
++            return;
++        }
++        let Some(resource) = self.resources.get(&resource_id).copied() else {
++            return;
++        };
++        // A blob has no dimensions: virtio-gpu cursors are 64x64 (the guest's cursor plane size).
++        let (width, height) = match (resource.width, resource.height) {
++            (0, 0) => (64, 64),
++            size => size,
++        };
++        // DRM cursor planes are 64x64; anything far larger is not a cursor.
++        if width == 0 || height == 0 || width > 256 || height > 256 {
++            return;
++        }
++        let mut pixels = vec![0u8; width as usize * height as usize * ResourceFormat::BYTES_PER_PIXEL];
++        if let Some(backing) = self.guest_2d.get(&resource_id) {
++            let Some(mem) = self.guest_mem.as_ref() else {
++                return;
++            };
++            let mut offset = 0;
++            for &(addr, len) in backing {
++                let n = len.min(pixels.len() - offset);
++                if mem.read_slice(&mut pixels[offset..offset + n], addr).is_err() {
++                    return;
++                }
++                offset += n;
++                if offset == pixels.len() {
++                    break;
++                }
++            }
++        } else if resource.size >= pixels.len() as u64 {
++            // A blob: read through its host mapping (kept, as for blob scanouts).
++            let ptr = match resource.host_ptr {
++                Some(ptr) => ptr,
++                None => match self.rutabaga.map(resource_id) {
++                    Ok(mapping) => {
++                        if let Some(r) = self.resources.get_mut(&resource_id) {
++                            r.host_ptr = Some(mapping.ptr);
++                        }
++                        mapping.ptr
++                    }
++                    Err(e) => {
++                        log::warn!("gpu: cannot map the cursor: {e}");
++                        return;
++                    }
++                },
++            };
++            // SAFETY: the blob stays mapped while the resource exists and holds `size` bytes.
++            unsafe { std::ptr::copy_nonoverlapping(ptr as *const u8, pixels.as_mut_ptr(), pixels.len()) };
++        } else {
++            // A resource the renderer holds (vrend's 2D textures, which some guests' GBM makes
++            // cursors of): read back, as for scanouts, with the guest's last transfer in it.
++            let transfer = Transfer3D {
++                x: 0,
++                y: 0,
++                z: 0,
++                w: width,
++                h: height,
++                d: 1,
++                level: 0,
++                stride: width * ResourceFormat::BYTES_PER_PIXEL as u32,
++                layer_stride: 0,
++                offset: 0,
++            };
++            if let Err(e) =
++                self.rutabaga
++                    .transfer_read(0, resource_id, transfer, Some(IoSliceMut::new(&mut pixels)))
++            {
++                log::warn!("gpu: cannot read the cursor: {e}");
++                return;
++            }
++        }
++        if let Err(e) = self.display_backend.update_cursor(
++            scanout_id,
++            hot_x.min(width - 1),
++            hot_y.min(height - 1),
++            width,
++            height,
++            Some(&pixels),
++        ) {
++            log::warn!("gpu: cannot show the cursor: {e}");
++        }
++    }
++
+     pub fn display_info(&self) -> VirtioGpuResult {
+         let display_info = self
+             .displays
+@@ -615,6 +792,9 @@
+         resource_id: u32,
+         transfer: Transfer3D,
+     ) -> VirtioGpuResult {
++        if self.guest_2d.contains_key(&resource_id) {
++            return Ok(OkNoData); // read from the backing pages on flush
++        }
+         self.rutabaga
+             .transfer_write(ctx_id, resource_id, transfer, None)?;
+         Ok(OkNoData)
+@@ -644,6 +824,11 @@
+         mem: &GuestMemoryMmap,
+         vecs: Vec<(GuestAddress, usize)>,
+     ) -> VirtioGpuResult {
++        if let Some(backing) = self.guest_2d.get_mut(&resource_id) {
++            *backing = vecs;
++            self.guest_mem = Some(mem.clone());
++            return Ok(OkNoData);
++        }
+         let rutabaga_iovecs = sglist_to_rutabaga_iovecs(&vecs[..], mem).map_err(|_| ErrUnspec)?;
+         self.rutabaga.attach_backing(resource_id, rutabaga_iovecs)?;
+         Ok(OkNoData)
+@@ -651,6 +836,10 @@
+ 
+     /// Detaches any previously attached iovecs from the resource.
+     pub fn detach_backing(&mut self, resource_id: u32) -> VirtioGpuResult {
++        if let Some(backing) = self.guest_2d.get_mut(&resource_id) {
++            backing.clear();
++            return Ok(OkNoData);
++        }
+         self.rutabaga.detach_backing(resource_id)?;
+         Ok(OkNoData)
+     }
+@@ -731,7 +920,19 @@
+     /// Creates a fence with the RutabagaFence that can be used to determine when the previous
+     /// command completed.
+     pub fn create_fence(&mut self, rutabaga_fence: RutabagaFence) -> VirtioGpuResult {
+-        self.rutabaga.create_fence(rutabaga_fence)?;
++        if let Err(e) = self.rutabaga.create_fence(rutabaga_fence) {
++            // Without vrend the global ring has no renderer fence; its commands (2D) are synchronous,
++            // so the fence is already complete.
++            if rutabaga_fence.flags & VIRTIO_GPU_FLAG_INFO_RING_IDX != 0 {
++                return Err(e.into());
++            }
++            let mut fence_state = self.fence_state.lock().unwrap();
++            let done = fence_state
++                .completed_fences
++                .entry(VirtioGpuRing::Global)
++                .or_insert(0);
++            *done = (*done).max(rutabaga_fence.fence_id);
++        }
+         Ok(OkNoData)
+     }
+ 
+@@ -949,7 +1150,12 @@
+         if let Ok(export) = self.rutabaga.export_blob(resource_id)
+             && let Some(mesa_handle) = export.as_mesa_handle()
+         {
+-            if mesa_handle.handle_type == RUTABAGA_HANDLE_TYPE_MEM_DMABUF {
++            // Upstream virglrenderer exports Venus memory on macOS as shm; both kinds are mapped
++            // through the host pointer. rutabaga_gfx does not re-export its shm handle type on macOS.
++            const HANDLE_TYPE_MEM_SHM: u32 = 0x0004;
++            if mesa_handle.handle_type == RUTABAGA_HANDLE_TYPE_MEM_DMABUF
++                || mesa_handle.handle_type == HANDLE_TYPE_MEM_SHM
++            {
+                 let guest_addr = checked_blob_map_addr(
+                     shm_region.guest_addr,
+                     offset,
+@@ -962,6 +1168,7 @@
+                     map_ptr, guest_addr, resource.size
+                 );
+ 
++                resource.host_ptr = Some(map_ptr);
+                 let (reply_sender, reply_receiver) = unbounded();
+                 self.map_sender
+                     .send(WorkerMessage::GpuAddMapping(
+diff -ru a/src/devices/src/virtio/gpu/worker.rs b/src/devices/src/virtio/gpu/worker.rs
+--- a/src/devices/src/virtio/gpu/worker.rs	2026-10-09 07:35:04
++++ b/src/devices/src/virtio/gpu/worker.rs	2026-10-12 14:35:53
+@@ -20,6 +20,7 @@
+ use super::super::{DeviceQueue, GpuError, Queue as VirtQueue};
+ use super::protocol::{
+     GpuCommand, GpuResponse, VirtioGpuResult, virtio_gpu_ctrl_hdr, virtio_gpu_mem_entry,
++    virtio_gpu_update_cursor,
+ };
+ use super::virtio_gpu::VirtioGpu;
+ use crate::display::DisplayInfo;
+@@ -42,6 +43,8 @@
+     export_table: Option<ExportTable>,
+     displays: Box<[DisplayInfo]>,
+     display_backend: DisplayBackend<'static>,
++    // The newest cursor update from the cursor queue (device.rs), applied here.
++    cursor: Arc<Mutex<Option<virtio_gpu_update_cursor>>>,
+ }
+ 
+ impl Worker {
+@@ -56,6 +59,7 @@
+         export_table: Option<ExportTable>,
+         displays: Box<[DisplayInfo]>,
+         display_backend: DisplayBackend<'static>,
++        cursor: Arc<Mutex<Option<virtio_gpu_update_cursor>>>,
+     ) -> Self {
+         // Clone the eventfd so we have our own file description, then set it to blocking mode.
+         let control_evt = control_q.event.try_clone().unwrap();
+@@ -77,6 +81,7 @@
+             export_table,
+             displays,
+             display_backend,
++            cursor,
+         }
+     }
+ 
+@@ -105,6 +110,14 @@
+                 error!("Failed to read control_evt: {e:?}");
+                 continue;
+             }
++            if let Some(info) = self.cursor.lock().unwrap().take() {
++                virtio_gpu.update_cursor(
++                    info.pos.scanout_id,
++                    info.resource_id,
++                    info.hot_x,
++                    info.hot_y,
++                );
++            }
+             if self.process_queue(&mut virtio_gpu, &self.control_queue.clone())
+                 && let Err(e) = self.interrupt.try_signal_used_queue()
+             {
+@@ -193,12 +206,8 @@
+                 }
+             }
+             GpuCommand::ResourceDetachBacking(info) => virtio_gpu.detach_backing(info.resource_id),
+-            GpuCommand::UpdateCursor(_info) => {
+-                panic!("virtio_gpu: GpuCommand:UpdateCursor unimplemented");
+-            }
+-            GpuCommand::MoveCursor(_info) => {
+-                panic!("virtio_gpu: GpuCommand::MoveCursor unimplemented");
+-            }
++            // No cursor plane: the host pointer stays visible over the window.
++            GpuCommand::UpdateCursor(_info) | GpuCommand::MoveCursor(_info) => Ok(GpuResponse::OkNoData),
+             GpuCommand::ResourceAssignUuid(info) => {
+                 let resource_id = info.resource_id;
+                 virtio_gpu.resource_assign_uuid(resource_id)
+@@ -337,9 +346,15 @@
+                     mem,
+                 )
+             }
+-            GpuCommand::SetScanoutBlob(_info) => {
+-                panic!("virtio_gpu: GpuCommand::SetScanoutBlob unimplemented");
+-            }
++            GpuCommand::SetScanoutBlob(info) => virtio_gpu.set_scanout_blob(
++                info.scanout_id,
++                info.resource_id,
++                info.width,
++                info.height,
++                info.format,
++                info.strides[0],
++                info.offsets[0],
++            ),
+             GpuCommand::ResourceMapBlob(info) => {
+                 let resource_id = info.resource_id;
+                 let offset = info.offset;
+diff -ru a/src/devices/src/virtio/mod.rs b/src/devices/src/virtio/mod.rs
+--- a/src/devices/src/virtio/mod.rs	2026-10-09 07:35:04
++++ b/src/devices/src/virtio/mod.rs	2026-10-12 14:35:53
+@@ -33,6 +33,7 @@
+ mod queue;
+ #[cfg(not(feature = "tee"))]
+ pub mod rng;
++pub mod snd;
+ #[cfg(feature = "vhost-user")]
+ pub mod vhost_user;
+ pub mod vsock;
+@@ -53,6 +54,7 @@
+ pub use self::queue::{Descriptor, DescriptorChain, Queue};
+ #[cfg(not(feature = "tee"))]
+ pub use self::rng::*;
++pub use self::snd::Sound;
+ #[cfg(feature = "vhost-user")]
+ pub use self::vhost_user::VhostUserDevice;
+ pub use self::vsock::*;
+diff -ru a/src/devices/src/virtio/snd/device.rs b/src/devices/src/virtio/snd/device.rs
+--- a/src/devices/src/virtio/snd/device.rs	1969-12-31 18:00:00
++++ b/src/devices/src/virtio/snd/device.rs	2026-10-12 14:35:53
+@@ -0,0 +1,234 @@
++use std::collections::VecDeque;
++use std::io::{Read, Write};
++use std::os::fd::{AsRawFd, OwnedFd};
++use std::sync::Arc;
++use std::sync::atomic::{AtomicBool, Ordering};
++use std::time::{Duration, Instant};
++
++use vm_memory::GuestMemoryMmap;
++
++use super::super::descriptor_utils::{Reader, Writer};
++use super::super::{ActivateError, ActivateResult, DeviceQueue, DeviceState, QueueConfig, VirtioDevice};
++use super::TYPE_SND;
++use crate::virtio::InterruptTransport;
++
++const VIRTIO_F_VERSION_1: u32 = 32;
++const CONTROL: usize = 0;
++const TX: usize = 2;
++static QUEUE_CONFIG: [QueueConfig; 4] = [QueueConfig::new(64), QueueConfig::new(64), QueueConfig::new(256), QueueConfig::new(64)];
++
++// Request codes and status (virtio 1.2, 5.14).
++const R_JACK_INFO: u32 = 1;
++const R_PCM_INFO: u32 = 0x100;
++const R_PCM_SET_PARAMS: u32 = 0x101;
++const R_PCM_PREPARE: u32 = 0x102;
++const R_PCM_RELEASE: u32 = 0x103;
++const R_PCM_START: u32 = 0x104;
++const R_PCM_STOP: u32 = 0x105;
++const R_CHMAP_INFO: u32 = 0x200;
++const S_OK: u32 = 0x8000;
++const S_BAD_MSG: u32 = 0x8001;
++const S_NOT_SUPP: u32 = 0x8002;
++
++const FMT_S16: u8 = 5;
++const RATE_48000: u8 = 7;
++const CHANNELS: u8 = 2;
++const BYTES_PER_SECOND: u64 = 48_000 * 4;
++
++pub struct Sound {
++    output: Option<OwnedFd>,
++    acked_features: u64,
++    device_state: DeviceState,
++    stop: Arc<AtomicBool>,
++}
++
++impl Sound {
++    /// `output` receives the stream's interleaved S16LE stereo PCM; it is made non-blocking, and
++    /// what it cannot take at once is dropped (playback never waits for the host).
++    pub fn new(output: OwnedFd) -> Self {
++        let fd = output.as_raw_fd();
++        // SAFETY: fd is owned and valid.
++        unsafe { libc::fcntl(fd, libc::F_SETFL, libc::fcntl(fd, libc::F_GETFL) | libc::O_NONBLOCK) };
++        Self { output: Some(output), acked_features: 0, device_state: DeviceState::Inactive, stop: Arc::new(AtomicBool::new(false)) }
++    }
++
++    pub fn id(&self) -> &str {
++        "snd"
++    }
++}
++
++fn le32(b: &[u8], at: usize) -> u32 {
++    b.get(at..at + 4).map_or(0, |s| u32::from_le_bytes(s.try_into().unwrap()))
++}
++
++// One item of a query-info reply, padded or cut to the size the guest asked for.
++fn item(out: &mut Vec<u8>, data: &[u8], size: usize) {
++    let n = data.len().min(size);
++    out.extend_from_slice(&data[..n]);
++    out.resize(out.len() + size - n, 0);
++}
++
++fn control(request: &[u8], flush: &mut bool) -> Vec<u8> {
++    let code = le32(request, 0);
++    let (start, count, size) = (le32(request, 4) as usize, le32(request, 8) as usize, le32(request, 12) as usize);
++    let mut reply = S_OK.to_le_bytes().to_vec();
++    match code {
++        R_JACK_INFO if start + count > 0 => reply = S_BAD_MSG.to_le_bytes().to_vec(),
++        R_JACK_INFO => {}
++        R_PCM_INFO | R_CHMAP_INFO if start + count > 1 => reply = S_BAD_MSG.to_le_bytes().to_vec(),
++        R_PCM_INFO => {
++            for _ in 0..count {
++                let mut info = Vec::with_capacity(32);
++                info.extend_from_slice(&0u32.to_le_bytes()); // hda_fn_nid
++                info.extend_from_slice(&0u32.to_le_bytes()); // features
++                info.extend_from_slice(&(1u64 << FMT_S16).to_le_bytes());
++                info.extend_from_slice(&(1u64 << RATE_48000).to_le_bytes());
++                info.extend_from_slice(&[0, CHANNELS, CHANNELS, 0, 0, 0, 0, 0]); // output, channels min/max
++                item(&mut reply, &info, size);
++            }
++        }
++        R_CHMAP_INFO => {
++            for _ in 0..count {
++                let mut info = 0u32.to_le_bytes().to_vec(); // hda_fn_nid
++                info.extend_from_slice(&[0, CHANNELS, 3, 4]); // output, 2 channels: front left, front right
++                info.resize(24, 0);
++                item(&mut reply, &info, size);
++            }
++        }
++        R_PCM_SET_PARAMS => {
++            let supported = le32(request, 4) == 0
++                && request.get(20) == Some(&CHANNELS)
++                && request.get(21) == Some(&FMT_S16)
++                && request.get(22) == Some(&RATE_48000);
++            if !supported {
++                reply = S_NOT_SUPP.to_le_bytes().to_vec();
++            }
++        }
++        R_PCM_PREPARE | R_PCM_START => {}
++        R_PCM_STOP | R_PCM_RELEASE => *flush = true, // pending buffers complete now
++        _ => reply = S_NOT_SUPP.to_le_bytes().to_vec(),
++    }
++    reply
++}
++
++fn run(mem: GuestMemoryMmap, interrupt: InterruptTransport, mut queues: Vec<DeviceQueue>, output: OwnedFd, stop: Arc<AtomicBool>) {
++    let mut pending: VecDeque<(u16, Instant)> = VecDeque::new();
++    let mut playing_until = Instant::now();
++    while !stop.load(Ordering::Relaxed) {
++        let wait = pending.front().map_or(Duration::from_millis(100), |(_, due)| due.saturating_duration_since(Instant::now()));
++        let mut fds = [CONTROL, TX].map(|q| libc::pollfd { fd: queues[q].event.as_raw_fd(), events: libc::POLLIN, revents: 0 });
++        // SAFETY: fds is a valid array of pollfd.
++        unsafe { libc::poll(fds.as_mut_ptr(), 2, wait.as_millis().min(100) as i32) };
++        let mut used = false;
++        let mut flush = false;
++
++        if fds[0].revents & libc::POLLIN != 0 {
++            let _ = queues[CONTROL].event.read();
++            while let Some(head) = queues[CONTROL].queue.pop(&mem) {
++                let (Ok(mut reader), Ok(mut writer)) = (Reader::new(&mem, head.clone()), Writer::new(&mem, head.clone())) else { continue };
++                let mut request = Vec::new();
++                let _ = reader.read_to_end(&mut request);
++                let _ = writer.write_all(&control(&request, &mut flush));
++                let _ = queues[CONTROL].queue.add_used(&mem, head.index, writer.bytes_written() as u32);
++                used = true;
++            }
++        }
++        if fds[1].revents & libc::POLLIN != 0 {
++            let _ = queues[TX].event.read();
++            while let Some(head) = queues[TX].queue.pop(&mem) {
++                let (Ok(mut reader), Ok(mut writer)) = (Reader::new(&mem, head.clone()), Writer::new(&mem, head.clone())) else { continue };
++                let mut data = Vec::new();
++                let _ = reader.read_to_end(&mut data);
++                let pcm = data.get(4..).unwrap_or_default();
++                // SAFETY: the fd is open for the device's lifetime; a short or failed write drops audio.
++                let _ = unsafe { libc::write(output.as_raw_fd(), pcm.as_ptr().cast(), pcm.len()) };
++                let mut status = S_OK.to_le_bytes().to_vec();
++                status.extend_from_slice(&0u32.to_le_bytes()); // latency_bytes
++                let _ = writer.write_all(&status);
++                let start = playing_until.max(Instant::now());
++                playing_until = start + Duration::from_micros(pcm.len() as u64 * 1_000_000 / BYTES_PER_SECOND);
++                pending.push_back((head.index, playing_until));
++            }
++        }
++        let now = Instant::now();
++        while let Some(&(index, due)) = pending.front() {
++            if !flush && due > now {
++                break;
++            }
++            pending.pop_front();
++            let _ = queues[TX].queue.add_used(&mem, index, 8);
++            used = true;
++        }
++        if flush {
++            playing_until = now;
++        }
++        if used && let Err(e) = interrupt.try_signal_used_queue() {
++            error!("snd: interrupt: {e:?}");
++        }
++    }
++}
++
++impl VirtioDevice for Sound {
++    fn avail_features(&self) -> u64 {
++        1 << VIRTIO_F_VERSION_1
++    }
++
++    fn acked_features(&self) -> u64 {
++        self.acked_features
++    }
++
++    fn set_acked_features(&mut self, acked_features: u64) {
++        self.acked_features = acked_features
++    }
++
++    fn device_type(&self) -> u32 {
++        TYPE_SND
++    }
++
++    fn device_name(&self) -> &str {
++        "snd"
++    }
++
++    fn queue_config(&self) -> &[QueueConfig] {
++        &QUEUE_CONFIG
++    }
++
++    fn read_config(&self, offset: u64, data: &mut [u8]) {
++        // jacks, streams, chmaps
++        let config: Vec<u8> = [0u32, 1, 1].iter().flat_map(|v| v.to_le_bytes()).collect();
++        let start = (offset as usize).min(config.len());
++        let n = data.len().min(config.len() - start);
++        data[..n].copy_from_slice(&config[start..start + n]);
++    }
++
++    fn write_config(&mut self, offset: u64, data: &[u8]) {
++        warn!("snd: guest wrote device config (offset={offset:x}, len={:x})", data.len());
++    }
++
++    fn activate(&mut self, mem: GuestMemoryMmap, interrupt: InterruptTransport, queues: Vec<DeviceQueue>) -> ActivateResult {
++        if queues.len() != QUEUE_CONFIG.len() {
++            return Err(ActivateError::BadActivate);
++        }
++        let output = self.output.as_ref().and_then(|fd| fd.try_clone().ok()).ok_or(ActivateError::BadActivate)?;
++        self.stop = Arc::new(AtomicBool::new(false));
++        let stop = self.stop.clone();
++        let thread_mem = mem.clone();
++        let thread_interrupt = interrupt.clone();
++        std::thread::Builder::new()
++            .name("snd".into())
++            .spawn(move || run(thread_mem, thread_interrupt, queues, output, stop))
++            .map_err(|_| ActivateError::BadActivate)?;
++        self.device_state = DeviceState::Activated(mem, interrupt);
++        Ok(())
++    }
++
++    fn is_activated(&self) -> bool {
++        self.device_state.is_activated()
++    }
++
++    fn reset(&mut self) -> bool {
++        self.stop.store(true, Ordering::Relaxed);
++        self.device_state = DeviceState::Inactive;
++        true
++    }
++}
+diff -ru a/src/devices/src/virtio/snd/mod.rs b/src/devices/src/virtio/snd/mod.rs
+--- a/src/devices/src/virtio/snd/mod.rs	1969-12-31 18:00:00
++++ b/src/devices/src/virtio/snd/mod.rs	2026-10-12 14:35:53
+@@ -0,0 +1,8 @@
++//! virtio-snd with one playback stream (stereo, S16, 48 kHz). Its PCM goes to a host file
++//! descriptor as it arrives; the host decides what to do with it (sentinel-workspace encodes it
++//! for the viewer). Buffers complete at their playback time, so the guest's audio clock is real.
++mod device;
++
++pub use self::device::Sound;
++
++pub const TYPE_SND: u32 = 25;
+diff -ru a/src/display/libkrun_display.h b/src/display/libkrun_display.h
+--- a/src/display/libkrun_display.h	2026-10-09 07:35:04
++++ b/src/display/libkrun_display.h	2026-10-12 14:35:53
+@@ -146,6 +146,23 @@
+ typedef int32_t (*krun_display_present_frame_fn)(void *instance, uint32_t scanout_id, uint32_t frame_id, const struct krun_rect* damage_area);
+ 
+ /**
++ * Sets the cursor image shown over a scanout (the guest's hardware cursor plane).
++ *
++ * Arguments:
++ * "instance"          - pointer to the display backend instance
++ * "scanout_id"        - the scanout the cursor belongs to
++ * "hot_x", "hot_y"    - the hotspot inside the image
++ * "width", "height"   - the image size in pixels
++ * "pixels"            - width * height B8G8R8A8 pixels (premultiplied alpha), rows packed; NULL hides the cursor.
++ *                       Valid only for the duration of the call.
++ *
++ * Returns:
++ * Zero on success or a negative error code (KRUN_DISPLAY_ERR_*) otherwise.
++ */
++typedef int32_t (*krun_display_update_cursor_fn)(void *instance, uint32_t scanout_id, uint32_t hot_x, uint32_t hot_y,
++                                                 uint32_t width, uint32_t height, const uint8_t *pixels);
++
++/**
+  * Defines the set of callbacks for a display implementation.
+  * This structure holds function pointers that a display backend implements to integrate with the libkrun.
+  *
+@@ -168,6 +185,7 @@
+     krun_display_configure_scanout_fn   configure_scanout; // Required by KRUN_DISPLAY_FEATURE_BASIC_FRAMEBUFFER
+     krun_display_alloc_frame_fn         alloc_frame; // Required by KRUN_DISPLAY_FEATURE_BASIC_FRAMEBUFFER
+     krun_display_present_frame_fn       present_frame; // Required by KRUN_DISPLAY_FEATURE_BASIC_FRAMEBUFFER
++    krun_display_update_cursor_fn       update_cursor; // (optional) without it the cursor is not shown
+ };
+ 
+ union krun_display_vtable {
+diff -ru a/src/display/src/c_to_rust.rs b/src/display/src/c_to_rust.rs
+--- a/src/display/src/c_to_rust.rs	2026-10-09 07:35:04
++++ b/src/display/src/c_to_rust.rs	2026-10-12 14:35:53
+@@ -132,6 +132,40 @@
+     }
+ }
+ 
++impl DisplayBackendInstance {
++    /// Sets the cursor image (B8G8R8A8, premultiplied, `width * height` pixels), or hides it
++    /// (`None`). A backend without cursor support ignores it.
++    pub fn update_cursor(
++        &mut self,
++        scanout_id: u32,
++        hot_x: u32,
++        hot_y: u32,
++        width: u32,
++        height: u32,
++        pixels: Option<&[u8]>,
++    ) -> Result<(), DisplayBackendError> {
++        let Some(update_cursor) = self.vtable.update_cursor else {
++            return Ok(());
++        };
++        if let Some(pixels) = pixels
++            && pixels.len() != width as usize * height as usize * ResourceFormat::BYTES_PER_PIXEL
++        {
++            return Err(DisplayBackendError::InvalidParam);
++        }
++        into_rust_result!(unsafe {
++            update_cursor(
++                self.instance,
++                scanout_id,
++                hot_x,
++                hot_y,
++                width,
++                height,
++                pixels.map_or(null(), |p| p.as_ptr()),
++            )
++        })
++    }
++}
++
+ #[derive(Copy, Clone)]
+ #[repr(C)]
+ pub struct DisplayBackend<'userdata> {
+diff -ru a/src/display/src/rust_to_c.rs b/src/display/src/rust_to_c.rs
+--- a/src/display/src/rust_to_c.rs	2026-10-09 07:35:04
++++ b/src/display/src/rust_to_c.rs	2026-10-12 14:35:53
+@@ -144,6 +144,7 @@
+                     present_frame: Some(present_frame::<I>),
+                     alloc_frame: Some(alloc_frame::<I>),
+                     disable_scanout: Some(disable_scanout_fb::<I>),
++                    update_cursor: None,
+                 },
+             },
+         }
+diff -ru a/src/hvf/src/lib.rs b/src/hvf/src/lib.rs
+--- a/src/hvf/src/lib.rs	2026-10-09 07:35:04
++++ b/src/hvf/src/lib.rs	2026-10-12 14:35:53
+@@ -270,6 +270,19 @@
+             }
+         }
+ 
++        // A 4 KiB stage-2 granule (macOS 26+): GPU blobs are mapped into the guest at the 4 KiB
++        // granularity Linux guests place them at, instead of the host's 16 KiB pages.
++        if let Ok(set_ipa_granule) = unsafe {
++            HVF.get::<unsafe extern "C" fn(hv_vm_config_t, u32) -> hv_return_t>(
++                b"hv_vm_config_set_ipa_granule",
++            )
++        } {
++            const HV_IPA_GRANULE_4KB: u32 = 0;
++            if unsafe { set_ipa_granule(config, HV_IPA_GRANULE_4KB) } != HV_SUCCESS {
++                return Err(Error::IpaSet);
++            }
++        }
++
+         let mut ipa_size_default: u32 = 0;
+         let ret = unsafe { hv_vm_config_get_default_ipa_size(&mut ipa_size_default as *mut _) };
+         if ret != HV_SUCCESS {
+diff -ru a/src/libkrun/src/api/device_builders.rs b/src/libkrun/src/api/device_builders.rs
+--- a/src/libkrun/src/api/device_builders.rs	2026-10-09 07:35:04
++++ b/src/libkrun/src/api/device_builders.rs	2026-10-12 14:35:53
+@@ -1125,6 +1125,10 @@
+ impl<'a> AttachDevice<'a> for BalloonDevice {
+     #[cfg_attr(feature = "ffi", ffier(skip))]
+     fn attach(self: Box<Self>, ctx: &mut AttachContext) -> Result<(), VmmError> {
++        #[cfg(target_os = "macos")]
++        {
++            self.inner.lock().unwrap().set_map_sender(ctx.map_sender());
++        }
+         ctx.subscribe_events(self.inner.clone())?;
+         ctx.register("balloon", self.inner)
+     }
+@@ -1158,6 +1162,32 @@
+     }
+ }
+ 
++pub struct SoundDevice {
++    pub(crate) inner: Arc<Mutex<devices::virtio::Sound>>,
++}
++
++#[cfg_attr(feature = "ffi", ffier::export)]
++impl SoundDevice {
++    /// Create a sound device with one stereo playback stream (S16, 48 kHz).
++    ///
++    /// The stream's PCM is written to `fd` as it plays; what the fd cannot take at once is
++    /// dropped. Takes ownership of `fd`.
++    pub fn new(fd: OwnedFd) -> Result<Self, VmmError> {
++        Ok(Self {
++            inner: Arc::new(Mutex::new(devices::virtio::Sound::new(fd))),
++        })
++    }
++}
++
++#[cfg_attr(feature = "ffi", ffier::export)]
++impl<'a> AttachDevice<'a> for SoundDevice {
++    #[cfg_attr(feature = "ffi", ffier(skip))]
++    fn attach(self: Box<Self>, ctx: &mut AttachContext) -> Result<(), VmmError> {
++        let id = self.inner.lock().unwrap().id().to_string();
++        ctx.register(&id, self.inner)
++    }
++}
++
+ export_bitflags! {
+     bitflags::bitflags! {
+         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+@@ -1888,7 +1918,9 @@
+         let input = Input::new(config_backend, events_backend)
+             .map_err(|e| VmmError::Internal(format!("input: {e:?}")))?;
+         let inner = Arc::new(Mutex::new(input));
+-        let id = inner.lock().unwrap().id().to_string();
++        // Unique per device, as for consoles and file systems: the transport keys devices by id,
++        // so a second input device under the same id replaced the first (the guest saw one).
++        let id = format!("{}{}", inner.lock().unwrap().id(), ctx.device_index());
+         ctx.register(&id, inner)
+     }
+ }
+diff -ru a/src/libkrun/src/api/mod.rs b/src/libkrun/src/api/mod.rs
+--- a/src/libkrun/src/api/mod.rs	2026-10-09 07:35:04
++++ b/src/libkrun/src/api/mod.rs	2026-10-12 14:35:53
+@@ -36,6 +36,7 @@
+ pub use device_builders::NetFlags;
+ #[cfg(not(feature = "tee"))]
+ pub use device_builders::RngDevice;
++pub use device_builders::SoundDevice;
+ #[cfg(all(feature = "vhost-user", target_os = "linux"))]
+ pub use device_builders::VhostUserDevice;
+ pub use device_builders::{
+@@ -113,6 +114,8 @@
+     #[cfg(not(feature = "tee"))]
+     crate::api::device_builders::AttachDevice for crate::api::device_builders::RngDevice,
+     crate::api::device_builders::AttachDevice for crate::api::device_builders::VsockDevice,
++    crate::api::device_builders::SoundDevice = 25,
++    crate::api::device_builders::AttachDevice for crate::api::device_builders::SoundDevice,
+     trait ffier_builtins::PushStr = 12,
+     trait ffier_builtins::Error = 13,
+     Error for crate::api::error::VmmError,
+diff -ru a/src/libkrun/src/api/vmm_builder.rs b/src/libkrun/src/api/vmm_builder.rs
+--- a/src/libkrun/src/api/vmm_builder.rs	2026-10-09 07:35:04
++++ b/src/libkrun/src/api/vmm_builder.rs	2026-10-12 14:35:53
+@@ -456,7 +456,12 @@
+             {
+                 builder_cfg.split_irqchip
+             }
+-            #[cfg(not(target_arch = "x86_64"))]
++            // macOS maps GPU blobs into the guest through the worker (GpuAddMapping).
++            #[cfg(all(not(target_arch = "x86_64"), target_os = "macos"))]
++            {
++                true
++            }
++            #[cfg(all(not(target_arch = "x86_64"), not(target_os = "macos")))]
+             {
+                 false
+             }
+diff -ru a/src/libkrun/src/vmm/builder.rs b/src/libkrun/src/vmm/builder.rs
+--- a/src/libkrun/src/vmm/builder.rs	2026-10-09 07:35:04
++++ b/src/libkrun/src/vmm/builder.rs	2026-10-12 14:35:53
+@@ -1801,6 +1801,43 @@
+ }
+ 
+ #[allow(clippy::too_many_arguments)]
++/// Guest memory on macOS: RAM is memory owned by this process (vstate::map_owned_memory), charged
++/// once. Ordinary anonymous memory mapped into the guest was charged twice once the host wrote
++/// into it (every disk read does), doubling the VM's reported footprint. The shared-memory windows
++/// (GPU blobs, file system DAX) stay plain mappings: blobs are mapped over them.
++#[cfg(target_os = "macos")]
++fn hvf_guest_memory(
++    ranges: &[(GuestAddress, usize)],
++    ram_regions: usize,
++) -> std::result::Result<GuestMemoryMmap, StartMicrovmError> {
++    let error = |what: String| StartMicrovmError::GuestMemoryMmap(what);
++    let mut regions = Vec::with_capacity(ranges.len());
++    for (index, &(guest_addr, size)) in ranges.iter().enumerate() {
++        let region = if index < ram_regions {
++            let host_addr = crate::vmm::vstate::map_owned_memory(None, size as u64)
++                .ok_or_else(|| error("cannot allocate guest memory".into()))?;
++            // SAFETY: the allocation is readable and writable, `size` bytes, and lives as long
++            // as the VM (it is never deallocated).
++            unsafe {
++                vm_memory::mmap::MmapRegion::build_raw(
++                    host_addr as *mut u8,
++                    size,
++                    libc::PROT_READ | libc::PROT_WRITE,
++                    libc::MAP_ANONYMOUS | libc::MAP_PRIVATE,
++                )
++            }
++            .map_err(|e| error(format!("{e:?}")))?
++        } else {
++            vm_memory::mmap::MmapRegion::new(size).map_err(|e| error(format!("{e:?}")))?
++        };
++        regions.push(
++            vm_memory::GuestRegionMmap::new(region, guest_addr)
++                .ok_or_else(|| error("guest memory region overflows".into()))?,
++        );
++    }
++    GuestMemoryMmap::from_regions(regions).map_err(|e| error(format!("{e:?}")))
++}
++
+ pub fn create_guest_memory(
+     mem_size: usize,
+     kernel_bundle: Option<&crate::vmm::vmm_config::kernel_bundle::KernelBundle>,
+@@ -1907,6 +1944,8 @@
+     let _ = use_vhost_user;
+ 
+     // Add SHM regions before creating guest memory
++    #[cfg(target_os = "macos")]
++    let ram_regions = arch_mem_regions.len();
+     arch_mem_regions.extend(shm_manager.regions());
+ 
+     let guest_mem = if use_vhost_user {
+@@ -1962,6 +2001,11 @@
+         #[cfg(not(all(feature = "vhost-user", target_os = "linux")))]
+         unreachable!()
+     } else {
++        #[cfg(target_os = "macos")]
++        {
++            hvf_guest_memory(&arch_mem_regions, ram_regions)?
++        }
++        #[cfg(not(target_os = "macos"))]
+         GuestMemoryMmap::from_ranges(&arch_mem_regions)
+             .map_err(|e| StartMicrovmError::GuestMemoryMmap(format!("{e:?}")))?
+     };
+diff -ru a/src/libkrun/src/vmm/macos/vstate.rs b/src/libkrun/src/vmm/macos/vstate.rs
+--- a/src/libkrun/src/vmm/macos/vstate.rs	2026-10-09 07:35:04
++++ b/src/libkrun/src/vmm/macos/vstate.rs	2026-10-12 14:35:53
+@@ -150,6 +150,29 @@
+         }
+     }
+ 
++    /// Frees the guest RAM the guest released and maps the range back. While a range is mapped
++    /// into the guest, macOS keeps its pages whatever madvise says: the range leaves the guest,
++    /// fresh chunks replace it (freeing the old ones), and it comes back.
++    pub fn release_memory(
++        &self,
++        reply_sender: Sender<bool>,
++        host_addr: u64,
++        guest_addr: u64,
++        len: u64,
++    ) {
++        // Only whole chunks of guest RAM can be freed (OWNED_CHUNK).
++        if host_addr % OWNED_CHUNK != 0 || len % OWNED_CHUNK != 0 || len == 0 {
++            reply_sender.send(false).unwrap();
++            return;
++        }
++        let released = self.hvf_vm.unmap_memory(guest_addr, len).is_ok()
++            && map_owned_memory(Some(host_addr), len) == Some(host_addr);
++        if let Err(e) = self.hvf_vm.map_memory(host_addr, guest_addr, len) {
++            error!("release_memory: cannot map guest memory back: {e:?}");
++        }
++        reply_sender.send(released).unwrap();
++    }
++
+     pub fn remove_mapping(&self, reply_sender: Sender<bool>, guest_addr: u64, len: u64) {
+         debug!("remove_mapping: guest_addr={guest_addr:x}, len={len}");
+         if let Err(e) = self.hvf_vm.unmap_memory(guest_addr, len) {
+@@ -158,6 +181,105 @@
+         } else {
+             reply_sender.send(true).unwrap();
+         }
++    }
++}
++
++// Mach memory entries (mach/memory_entry.h, mach/mach_vm.h).
++unsafe extern "C" {
++    fn mach_make_memory_entry_64(
++        target_task: u32,
++        size: *mut u64,
++        offset: u64,
++        permission: i32,
++        object_handle: *mut u32,
++        parent_entry: u32,
++    ) -> i32;
++    fn mach_memory_entry_ownership(entry: u32, owner: u32, ledger_tag: i32, ledger_flags: i32) -> i32;
++    fn mach_port_deallocate(task: u32, name: u32) -> i32;
++    fn mach_vm_map(
++        target_task: u32,
++        address: *mut u64,
++        size: u64,
++        mask: u64,
++        flags: i32,
++        object: u32,
++        offset: u64,
++        copy: i32,
++        cur_protection: i32,
++        max_protection: i32,
++        inheritance: u32,
++    ) -> i32;
++}
++
++/// Guest RAM is built from owned memory in chunks of this size (the guest reports free memory in
++/// aligned blocks of at least 2 MiB). Replacing a whole chunk frees it; a part of a larger object
++/// would stay allocated as long as the rest of the object is mapped.
++pub(crate) const OWNED_CHUNK: u64 = 2 << 20;
++
++/// New zeroed memory owned by this process, at `address` (replacing what is mapped there, whose
++/// pages are freed) or anywhere (aligned to OWNED_CHUNK). Guest RAM is made of it: owned memory
++/// is charged to the VM once, however the host writes into it (plain anonymous memory mapped into
++/// the guest was charged twice once the host wrote it, e.g. on every disk read). Returns the
++/// address.
++pub(crate) fn map_owned_memory(address: Option<u64>, len: u64) -> Option<u64> {
++    const VM_PROT_RW: i32 = 0x1 | 0x2;
++    const VM_FLAGS_ANYWHERE: i32 = 0x1;
++    const VM_INHERIT_COPY: u32 = 1;
++    #[allow(deprecated)]
++    // SAFETY: Mach calls on this task's own address space; a fixed address is a range of guest
++    // RAM the guest no longer uses.
++    let task = unsafe { libc::mach_task_self() };
++    let base = match address {
++        Some(address) => address,
++        None => {
++            // Reserve the range, aligned, then fill it with owned chunks.
++            let mut reserved = 0u64;
++            // SAFETY: maps zero-fill memory anywhere in this task.
++            let ret = unsafe {
++                mach_vm_map(task, &mut reserved, len, OWNED_CHUNK - 1, VM_FLAGS_ANYWHERE, 0, 0, 0,
++                            VM_PROT_RW, VM_PROT_RW, VM_INHERIT_COPY)
++            };
++            if ret != 0 {
++                return None;
++            }
++            reserved
++        }
++    };
++    let mut offset = 0;
++    while offset < len {
++        let size = OWNED_CHUNK.min(len - offset);
++        if !map_owned_chunk(task, base + offset, size) {
++            return None;
++        }
++        offset += size;
++    }
++    Some(base)
++}
++
++// One purgeable (non-volatile: never discarded) memory object owned by this task, mapped over
++// `[address, address + size)`. The mapping holds its only reference.
++fn map_owned_chunk(task: u32, address: u64, size: u64) -> bool {
++    const MAP_MEM_NAMED_CREATE: i32 = 0x0002_0000;
++    const MAP_MEM_PURGABLE: i32 = 0x0004_0000; // ownership needs it
++    const VM_PROT_RW: i32 = 0x1 | 0x2;
++    const VM_FLAGS_OVERWRITE: i32 = 0x4000; // with VM_FLAGS_FIXED (0)
++    const VM_LEDGER_TAG_DEFAULT: i32 = 1;
++    const VM_INHERIT_COPY: u32 = 1;
++    // SAFETY: Mach calls on this task's own address space, over a range it owns.
++    unsafe {
++        let mut entry_size = size;
++        let mut entry = 0u32;
++        if mach_make_memory_entry_64(task, &mut entry_size, 0, MAP_MEM_NAMED_CREATE | MAP_MEM_PURGABLE | VM_PROT_RW,
++                                     &mut entry, 0) != 0
++        {
++            return false;
++        }
++        let mut mapped = address;
++        let ok = mach_memory_entry_ownership(entry, task, VM_LEDGER_TAG_DEFAULT, 0) == 0
++            && mach_vm_map(task, &mut mapped, size, 0, VM_FLAGS_OVERWRITE, entry, 0, 0, VM_PROT_RW, VM_PROT_RW,
++                           VM_INHERIT_COPY) == 0;
++        mach_port_deallocate(task, entry);
++        ok
+     }
+ }
+ 
+diff -ru a/src/libkrun/src/vmm/mod.rs b/src/libkrun/src/vmm/mod.rs
+--- a/src/libkrun/src/vmm/mod.rs	2026-10-09 07:35:04
++++ b/src/libkrun/src/vmm/mod.rs	2026-10-12 14:35:53
+@@ -432,6 +432,18 @@
+     pub fn remove_mapping(&self, reply_sender: Sender<bool>, guest_addr: u64, len: u64) {
+         self.vm.remove_mapping(reply_sender, guest_addr, len);
+     }
++
++    #[cfg(target_os = "macos")]
++    pub fn release_memory(
++        &self,
++        reply_sender: Sender<bool>,
++        host_addr: u64,
++        guest_addr: u64,
++        len: u64,
++    ) {
++        self.vm
++            .release_memory(reply_sender, host_addr, guest_addr, len);
++    }
+ }
+ 
+ impl Subscriber for Vmm {
+diff -ru a/src/libkrun/src/vmm/worker.rs b/src/libkrun/src/vmm/worker.rs
+--- a/src/libkrun/src/vmm/worker.rs	2026-10-09 07:35:04
++++ b/src/libkrun/src/vmm/worker.rs	2026-10-12 14:35:53
+@@ -49,6 +49,8 @@
+             WorkerMessage::GpuAddMapping(s, h, g, l) => self.add_mapping(s, h, g, l),
+             #[cfg(target_os = "macos")]
+             WorkerMessage::GpuRemoveMapping(s, g, l) => self.remove_mapping(s, g, l),
++            #[cfg(target_os = "macos")]
++            WorkerMessage::ReleaseMemory(s, h, g, l) => self.release_memory(s, h, g, l),
+             #[cfg(all(target_arch = "x86_64", not(target_os = "windows")))]
+             WorkerMessage::GsiRoute(sender, entries) => {
+                 let mut routing = kvm_bindings::KvmIrqRouting::new(entries.len()).unwrap();
+diff -ru a/src/utils/src/worker_message.rs b/src/utils/src/worker_message.rs
+--- a/src/utils/src/worker_message.rs	2026-10-09 07:35:04
++++ b/src/utils/src/worker_message.rs	2026-10-12 14:35:53
+@@ -18,6 +18,10 @@
+     GpuAddMapping(crossbeam_channel::Sender<bool>, u64, u64, u64),
+     #[cfg(target_os = "macos")]
+     GpuRemoveMapping(crossbeam_channel::Sender<bool>, u64, u64),
++    /// Guest RAM the guest gave back (balloon free-page reporting): host address, guest address,
++    /// length. Its pages are dropped and the range is mapped again, empty.
++    #[cfg(target_os = "macos")]
++    ReleaseMemory(crossbeam_channel::Sender<bool>, u64, u64, u64),
+     #[cfg(not(target_os = "windows"))]
+     ConvertMemory(crossbeam_channel::Sender<bool>, MemoryProperties),
+ }

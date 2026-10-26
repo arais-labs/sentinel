@@ -1,0 +1,1519 @@
+virglrenderer: vrend on macOS over ANGLE (GLES on Metal).
+Cherry-picked from utmapp/virglrenderer (MIT, UTM's fork) 5d26f605f50f8e22002ec6db5fb775e1992d4e96:
+- ANGLE/GLES fixes (texture max level, GLSL ES version, integer vertex attributes, CLEAR_TEXTURE,
+  CLAMP_TO_BORDER fallback, draw_elements_base_vertex detection, missing glTexBuffer);
+- Metal textures exported/imported through shared memory and EGL_ANGLE_metal images,
+  virgl_renderer_create_handle_for_scanout (a Metal texture for a scanout resource),
+  direct BGRA uploads for externally-backed resources on GLES.
+Local: vrend's own EGL winsys without GBM (the default display: ANGLE's Metal display), so the
+embedder needs no GL callbacks (VIRGL_RENDERER_USE_EGL | VIRGL_RENDERER_USE_GLES).
+
+  e12d278d osy: vrend: do not set GL_TEXTURE_MAX_LEVEL to 0
+  e37431a7 Akihiko Odaki: vrend: Relax the GLSL ES version requirement
+  9c7e6a09 Akihiko Odaki: vrend: Use integer vertex attribute on ANGLE on Apple
+  ccd003cd Akihiko Odaki: vrend: Reject VIRGL_CCMD_CLEAR_TEXTURE if unsupported
+  69ef550e Akihiko Odaki: vrend: Implement fallback for GL_CLAMP_TO_BORDER
+  55cf1931 osy: vrend: detect missing feat_draw_elements_base_vertex
+  f71d0c1b osy: vrend: avoid crashing when glTexBuffer is not implemented
+  bdda5ac7 osy: vrend: export and import Metal textures via shared memory
+  0f5cb82d osy: virglrenderer: add virgl_renderer_create_handle_for_scanout
+  d8add9ac osy: vrend: upload bgra directly for externally-backed resources on GLES
+  36b458f3 x: vrend: own EGL winsys without GBM (the default display, e.g. ANGLE on macOS)
+
+diff --git a/config.h.meson b/config.h.meson
+index 3b6bfc52..3b25e129 100644
+--- a/config.h.meson
++++ b/config.h.meson
+@@ -39,6 +39,7 @@
+ #mesondefine ENABLE_VULKAN_DLOAD
+ #mesondefine ENABLE_VULKAN_PRELOAD
+ #mesondefine ENABLE_GBM
++#mesondefine ENABLE_METAL
+ #mesondefine ENABLE_DRM
+ #mesondefine ENABLE_DRM_MSM
+ #mesondefine ENABLE_DRM_AMDGPU
+diff --git a/meson.build b/meson.build
+index 79aa049b..333c0d78 100644
+--- a/meson.build
++++ b/meson.build
+@@ -224,6 +224,11 @@ if cc.has_header('linux/udmabuf.h')
+    conf_data.set('HAVE_LINUX_UDMABUF_H', 1)
+ endif
+ 
++metal_dep = dependency('appleframeworks', modules : ['Metal'], required: false)
++if metal_dep.found() and with_vrend
++   conf_data.set('ENABLE_METAL', 1)
++endif
++
+ foreach b : ['bswap32', 'bswap64', 'clz', 'clzll', 'expect', 'ffs', 'ffsll',
+              'popcount', 'popcountll', 'types_compatible_p', 'unreachable']
+   if cc.has_function(b)
+@@ -368,7 +373,7 @@ if with_render_server_worker == 'auto'
+    with_render_server_worker = with_render_server
+ endif
+ render_server_install_dir = get_option('prefix') / get_option('libexecdir')
+-if with_venus and with_host_darwin
++if metal_dep.found() and with_host_darwin
+    add_languages('objc', required: true)
+    objcc = meson.get_compiler('objc')
+    add_project_arguments(objcc.get_supported_arguments(warnings), language : 'objc')
+@@ -401,7 +406,7 @@ if with_venus
+       venus_dep += declare_dependency(
+          compile_args : ['-DVK_USE_PLATFORM_METAL_EXT', '-DVK_ENABLE_BETA_EXTENSIONS'],
+          dependencies : [
+-            dependency('appleframeworks', modules: ['Metal'], required: true),
++            metal_dep,
+             dependency('appleframeworks', modules: ['Foundation'], required: true),
+          ],
+       )
+@@ -473,7 +478,7 @@ configure_file(input : 'config.h.meson',
+ 
+ add_project_arguments('-imacros', meson.current_build_dir() / 'config.h', language : 'c')
+ add_project_arguments('-DHAVE_CONFIG_H=1', language : 'c')
+-if with_venus and with_host_darwin
++if metal_dep.found() and with_host_darwin
+    add_project_arguments('-imacros', meson.current_build_dir() / 'config.h', language : 'objc')
+    add_project_arguments('-DHAVE_CONFIG_H=1', language : 'objc')
+ endif
+@@ -510,6 +515,7 @@ summary({'c_args': (' ').join(get_option('c_args')),
+         'egl': have_egl,
+         'glx': have_glx,
+         'gbm': gbm_dep.found(),
++        'metal': metal_dep.found(),
+         'venus': with_venus,
+         'drm-amdgpu': with_drm_amdgpu,
+         'drm-asahi': with_drm_asahi,
+diff --git a/src/meson.build b/src/meson.build
+index 1603feff..fddb8b7a 100644
+--- a/src/meson.build
++++ b/src/meson.build
+@@ -69,6 +69,10 @@ vrend_venus_interop_sources = [
+    'vrend/vrend_venus_interop.c',
+ ]
+ 
++vrend_metal_sources = [
++   'vrend/vrend_metal.m',
++]
++
+ venus_sources = [
+    'venus/vkr_acceleration_structure.c',
+    'venus/vkr_allocator.c',
+@@ -226,6 +230,13 @@ if with_venus and gbm_dep.found() and with_vrend
+    virgl_sources += vrend_venus_interop_sources
+ endif
+ 
++if metal_dep.found() and with_vrend
++   virgl_sources += vrend_metal_sources
++   # Foundation pulls in the Objective-C runtime (libobjc) that vrend_metal.m
++   # needs; without it a Metal-only (e.g. venus-less) build fails to link.
++   virgl_depends += [metal_dep, dependency('appleframeworks', modules : ['Foundation'])]
++endif
++
+ if with_venus
+    virgl_sources += venus_sources
+    virgl_sources += venus_codegen
+diff --git a/src/virglrenderer.c b/src/virglrenderer.c
+index ce2b03d7..3ca25bee 100644
+--- a/src/virglrenderer.c
++++ b/src/virglrenderer.c
+@@ -50,6 +50,10 @@
+ #include "proxy/proxy_renderer.h"
+ #include "virgl_protocol.h"
+ 
++#ifdef ENABLE_METAL
++#include "vrend/vrend_metal.h"
++#endif
++
+ #ifndef WIN32
+ #include "util/libsync.h"
+ #endif
+@@ -526,7 +530,8 @@ void virgl_renderer_ctx_detach_resource(int ctx_id, int res_handle)
+ 
+ static int virgl_renderer_resource_get_info_common(int res_handle,
+                                                    struct virgl_renderer_resource_info *info,
+-                                                   UNUSED void **d3d_tex2d)
++                                                   enum virgl_renderer_native_handle_type *type,
++                                                   virgl_renderer_native_handle *handle)
+ {
+    int ret = 0;
+ 
+@@ -549,8 +554,19 @@ static int virgl_renderer_resource_get_info_common(int res_handle,
+                                     (struct vrend_renderer_resource_info *)info);
+ 
+ #ifdef WIN32
+-   if (d3d_tex2d)
+-      ret = vrend_renderer_resource_d3d11_texture2d(res->pipe_resource, d3d_tex2d);
++   if (type && handle) {
++      *handle = vrend_renderer_resource_d3d11_texture2d(res->pipe_resource);
++      if (*handle) {
++         *type = VIRGL_NATIVE_HANDLE_D3D_TEX2D;
++      }
++   }
++#elif defined(ENABLE_METAL)
++   if (type && handle) {
++      *handle = vrend_renderer_resource_metal_texture(res->pipe_resource);
++      if (*handle) {
++         *type = VIRGL_NATIVE_HANDLE_METAL_TEXTURE;
++      }
++   }
+ #endif
+ #endif
+ 
+@@ -563,7 +579,7 @@ int virgl_renderer_resource_get_info(int res_handle,
+    TRACE_FUNC();
+    int ret;
+ 
+-   if ((ret = virgl_renderer_resource_get_info_common(res_handle, info, NULL)) != 0)
++   if ((ret = virgl_renderer_resource_get_info_common(res_handle, info, NULL, NULL)) != 0)
+        return ret;
+ 
+ #ifdef ENABLE_VREND
+@@ -588,7 +604,8 @@ int virgl_renderer_resource_get_info_ext(int res_handle,
+ 
+    if ((ret = virgl_renderer_resource_get_info_common(res_handle,
+                                                       &info_ext->base,
+-                                                      &info_ext->d3d_tex2d)) != 0)
++                                                      &info_ext->native_type,
++                                                      &info_ext->native_handle)) != 0)
+       return ret;
+ 
+    info_ext->version = VIRGL_RENDERER_RESOURCE_INFO_EXT_VERSION;
+@@ -990,8 +1007,8 @@ int virgl_renderer_init(void *cookie, int flags, struct virgl_renderer_callbacks
+          renderer_flags |= VREND_USE_EXTERNAL_BLOB;
+       if (flags & VIRGL_RENDERER_USE_VIDEO)
+          renderer_flags |= VREND_USE_VIDEO;
+-      if (flags & VIRGL_RENDERER_D3D11_SHARE_TEXTURE)
+-         renderer_flags |= VREND_D3D11_SHARE_TEXTURE;
++      if (flags & VIRGL_RENDERER_NATIVE_SHARE_TEXTURE)
++         renderer_flags |= VREND_NATIVE_SHARE_TEXTURE;
+       if (flags & VIRGL_RENDERER_COMPAT_PROFILE)
+          renderer_flags |= VREND_USE_COMPAT_CONTEXT;
+       if (flags & VIRGL_RENDERER_USE_GLES)
+@@ -1596,6 +1613,83 @@ virgl_renderer_resource_import_blob(const struct virgl_renderer_resource_import_
+    return 0;
+ }
+ 
++enum virgl_renderer_native_handle_type
++virgl_renderer_create_handle_for_scanout(uint32_t res_id,
++                                         uint32_t width,
++                                         uint32_t height,
++                                         uint32_t virgl_format,
++                                         uint32_t padding,
++                                         uint32_t stride,
++                                         uint32_t offset,
++                                         virgl_renderer_native_handle *handle)
++{
++   TRACE_FUNC();
++#ifdef ENABLE_METAL
++   struct virgl_resource *res = virgl_resource_lookup(res_id);
++
++   if (!res)
++      return VIRGL_NATIVE_HANDLE_NONE;
++
++   /*
++    * An in-process (vrend) blob allocated as a native Metal texture
++    * (VIRGL_RES_BIND_SCANOUT, see vrend_resource_metal_init) already
++    * carries a channel-correct MTLTexture; hand out a retained reference.
++    */
++   if (res->pipe_resource) {
++      MTLTexture_id tex =
++         vrend_renderer_resource_metal_texture(res->pipe_resource);
++      if (tex) {
++         *handle = virgl_metal_retain_texture(tex);
++         return VIRGL_NATIVE_HANDLE_METAL_TEXTURE;
++      }
++   }
++
++#ifdef HAVE_EPOXY_EGL_H
++   /*
++    * A cross-process resource (created by a Neptune or Venus context in
++    * the render server) is backed by a mmap()-able shared-memory segment;
++    * wrap the FD as an MTLBuffer and create a linear texture over it with
++    * the caller-provided layout.  Only the in-process (EGL/ANGLE) build
++    * displays scanouts; render-server builds have no EGL device.
++    */
++   if (res->fd_type == VIRGL_RESOURCE_FD_SHM) {
++      struct vrend_metal_texture_description desc = {
++         .width = width,
++         .height = height,
++         .stride = stride,
++         .offset = offset,
++         .usage = PIPE_USAGE_IMMUTABLE,
++         .format = virgl_format,
++      };
++      MTLTexture_id tex;
++
++      if (virgl_egl_metal_create_texture_from_shm(egl, res->fd,
++                                                  res->map_size,
++                                                  &desc, &tex)) {
++         *handle = tex;
++         return VIRGL_NATIVE_HANDLE_METAL_TEXTURE;
++      }
++   }
++#endif /* HAVE_EPOXY_EGL_H */
++
++   return VIRGL_NATIVE_HANDLE_NONE;
++#else /* !ENABLE_METAL */
++   return VIRGL_NATIVE_HANDLE_NONE;
++#endif
++}
++
++void
++virgl_renderer_release_handle_for_scanout(enum virgl_renderer_native_handle_type type,
++                                          virgl_renderer_native_handle handle)
++{
++   TRACE_FUNC();
++#ifdef ENABLE_METAL
++   if (type == VIRGL_NATIVE_HANDLE_METAL_TEXTURE) {
++      virgl_metal_release_texture(handle);
++   }
++#endif
++}
++
+ int
+ virgl_renderer_export_fence(uint64_t client_fence_id, int *fd)
+ {
+diff --git a/src/virglrenderer.h b/src/virglrenderer.h
+index 0bcafef4..4817dc69 100644
+--- a/src/virglrenderer.h
++++ b/src/virglrenderer.h
+@@ -163,7 +163,9 @@ struct virgl_renderer_callbacks {
+ #endif /* VIRGL_RENDERER_UNSTABLE_APIS */
+ 
+ 
+-#define VIRGL_RENDERER_D3D11_SHARE_TEXTURE (1 << 12)
++#define VIRGL_RENDERER_NATIVE_SHARE_TEXTURE (1 << 12)
++/* Compatibility with older versions */
++#define VIRGL_RENDERER_D3D11_SHARE_TEXTURE (VIRGL_RENDERER_NATIVE_SHARE_TEXTURE)
+ #define VIRGL_RENDERER_COMPAT_PROFILE (1 << 13)
+ 
+ /* Blob allocations must be done by guest from dedicated heap (Host visible memory). */
+@@ -363,7 +365,23 @@ struct virgl_renderer_resource_info {
+    int fd;
+ };
+ 
+-#define VIRGL_RENDERER_RESOURCE_INFO_EXT_VERSION 0
++#define VIRGL_RENDERER_RESOURCE_INFO_EXT_VERSION 1
++
++/**
++ * Describes a handle type used in the native graphics API
++ */
++enum virgl_renderer_native_handle_type {
++   VIRGL_NATIVE_HANDLE_NONE,
++   /* handle is a valid pointer to a ID3D11Texture2D */
++   VIRGL_NATIVE_HANDLE_D3D_TEX2D,
++   /* handle is a valid pointer to a MTLTexture */
++   VIRGL_NATIVE_HANDLE_METAL_TEXTURE,
++};
++
++/**
++ * The actual type is determined by `virgl_renderer_native_handle_type`
++ */
++typedef void *virgl_renderer_native_handle;
+ 
+ struct virgl_renderer_resource_info_ext {
+    int version;
+@@ -371,7 +389,12 @@ struct virgl_renderer_resource_info_ext {
+    bool has_dmabuf_export;
+    int planes;
+    uint64_t modifiers;
+-   void *d3d_tex2d;
++   union {
++      /* this is for backwards compatibility */
++      void *d3d_tex2d;
++      virgl_renderer_native_handle native_handle;
++   };
++   enum virgl_renderer_native_handle_type native_type;
+ };
+ 
+ VIRGL_EXPORT int virgl_renderer_resource_get_info(int res_handle,
+@@ -510,6 +533,38 @@ virgl_renderer_submit_cmd2(void *buffer,
+                            uint64_t *in_fence_ids,
+                            uint32_t num_in_fences);
+ 
++/**
++ * Blob resources are untyped but we may wish to create a native texture handle
++ * for scanout. Not all blobs support exporting to a file-descriptor so this
++ * can be used even in cases where `virgl_renderer_resource_export_blob` is not
++ * supported.
++ * 
++ * The user should assume the returned handle is immutable.
++ * 
++ * If a handle cannot be created, `VIRGL_RESOURCE_NATIVE_TYPE_NONE` will be
++ * returned.
++ * 
++ * If the return value is not `VIRGL_RESOURCE_NATIVE_TYPE_NONE`, the user MUST
++ * call `virgl_renderer_release_handle_for_scanout` with the returned handle
++ * and type when they are done using it. Otherwise, memory will be leaked.
++ */
++VIRGL_EXPORT enum virgl_renderer_native_handle_type
++virgl_renderer_create_handle_for_scanout(uint32_t res_id,
++                                         uint32_t width,
++                                         uint32_t height,
++                                         uint32_t virgl_format,
++                                         uint32_t padding,
++                                         uint32_t stride,
++                                         uint32_t offset,
++                                         virgl_renderer_native_handle *handle);
++
++/**
++ * This frees a handle acquired from `virgl_renderer_create_handle_for_scanout`
++ */
++VIRGL_EXPORT void
++virgl_renderer_release_handle_for_scanout(enum virgl_renderer_native_handle_type type,
++                                          virgl_renderer_native_handle handle);
++
+ /* vtest semi-private APIs: */
+ VIRGL_EXPORT int virgl_renderer_attach_fence(int ctx_id, int fence_fd);
+ VIRGL_EXPORT int virgl_renderer_get_fence_fd(uint64_t fence_id);
+diff --git a/src/vrend/vrend_blitter.h b/src/vrend/vrend_blitter.h
+index 91e24352..7a035712 100644
+--- a/src/vrend/vrend_blitter.h
++++ b/src/vrend/vrend_blitter.h
+@@ -35,6 +35,12 @@
+    "%s"                                         \
+ 
+ #define FS_HEADER_GLES                             \
++   "#version 300 es\n"                          \
++   "// Blitter\n"                               \
++   "%s"                                         \
++   "precision mediump float;\n"                 \
++
++#define FS_HEADER_GLES_MS                       \
+    "#version 310 es\n"                          \
+    "// Blitter\n"                               \
+    "%s"                                         \
+@@ -52,6 +58,11 @@
+    "// Blitter\n"                               \
+ 
+ #define HEADER_GLES                             \
++   "#version 300 es\n"                          \
++   "// Blitter\n"                               \
++   "precision mediump float;\n"                 \
++
++#define HEADER_GLES_MS                          \
+    "#version 310 es\n"                          \
+    "// Blitter\n"                               \
+    "precision mediump float;\n"                 \
+@@ -145,7 +156,7 @@
+    "}\n"
+ 
+ #define FS_TEXFETCH_COL_MSAA_GL FS_HEADER_GL FS_TEXFETCH_COL_MSAA_BODY
+-#define FS_TEXFETCH_COL_MSAA_GLES FS_HEADER_GLES FS_TEXFETCH_COL_MSAA_BODY
++#define FS_TEXFETCH_COL_MSAA_GLES FS_HEADER_GLES_MS FS_TEXFETCH_COL_MSAA_BODY
+ #define FS_TEXFETCH_COL_MSAA_ARRAY_GLES FS_HEADER_GLES_MS_ARRAY FS_TEXFETCH_COL_MSAA_BODY
+ 
+ #define FS_TEXFETCH_DS_BODY                             \
+@@ -178,7 +189,7 @@ struct vrend_context;
+ struct vrend_resource;
+ struct vrend_blit_info;
+ #define FS_TEXFETCH_DS_MSAA_GL HEADER_GL FS_TEXFETCH_DS_MSAA_BODY
+-#define FS_TEXFETCH_DS_MSAA_GLES HEADER_GLES FS_TEXFETCH_DS_MSAA_BODY_GLES
++#define FS_TEXFETCH_DS_MSAA_GLES HEADER_GLES_MS FS_TEXFETCH_DS_MSAA_BODY_GLES
+ #define FS_TEXFETCH_DS_MSAA_ARRAY_GLES HEADER_GLES_MS_ARRAY FS_TEXFETCH_DS_MSAA_BODY_GLES
+ 
+ /* implement blitting using OpenGL. */
+diff --git a/src/vrend/vrend_metal.h b/src/vrend/vrend_metal.h
+new file mode 100644
+index 00000000..f56a05ea
+--- /dev/null
++++ b/src/vrend/vrend_metal.h
+@@ -0,0 +1,46 @@
++/*
++ * Copyright 2025 Turing Software, LLC
++ * SPDX-License-Identifier: MIT
++ */
++#ifndef VIRGL_METAL_H
++#define VIRGL_METAL_H
++
++#include <stddef.h>
++
++#include "virglrenderer.h"
++
++typedef void *MTLDevice_id;
++typedef void *MTLTexture_id;
++
++struct vrend_metal_texture_description {
++   unsigned width;
++   unsigned height;
++   unsigned stride;
++   unsigned offset;
++   unsigned bind;
++   unsigned usage;
++   uint32_t format;
++};
++
++bool virgl_metal_create_texture(MTLDevice_id device,
++                                const struct vrend_metal_texture_description *desc,
++                                MTLTexture_id *tex);
++
++/*
++ * Reconstruct a MTLTexture from a shared-memory FD. In this tree, cross-process
++ * Metal resources (created by either Neptune or Venus contexts) are backed by a
++ * mmap()-able shared-memory segment (VIRGL_RESOURCE_FD_SHM) rather than a raw
++ * MTLTexture/MTLHeap handle. The FD is wrapped as an MTLBuffer and a linear
++ * texture is created on top of it so it can be handed to ANGLE/Metal.
++ */
++bool virgl_metal_create_texture_from_shm(MTLDevice_id device,
++                                         int fd,
++                                         size_t size,
++                                         const struct vrend_metal_texture_description *desc,
++                                         MTLTexture_id *tex);
++
++MTLTexture_id virgl_metal_retain_texture(MTLTexture_id tex);
++
++void virgl_metal_release_texture(MTLTexture_id tex);
++
++#endif
+diff --git a/src/vrend/vrend_metal.m b/src/vrend/vrend_metal.m
+new file mode 100644
+index 00000000..e8ded745
+--- /dev/null
++++ b/src/vrend/vrend_metal.m
+@@ -0,0 +1,188 @@
++/*
++ * Copyright 2025 Turing Software, LLC
++ * SPDX-License-Identifier: MIT
++ */
++#ifdef HAVE_CONFIG_H
++#include "config.h"
++#endif
++#include "virglrenderer.h"
++#include "vrend_metal.h"
++#include "pipe/p_state.h"
++#include "util/u_math.h"
++#include <sys/mman.h>
++#include <unistd.h>
++#include <Metal/Metal.h>
++
++struct metal_format_conversion {
++   uint32_t virgl_format;
++   MTLPixelFormat metal_format;
++};
++
++static bool virgl_format_to_metal_format(uint32_t format, MTLPixelFormat *metal_format)
++{
++   static const struct metal_format_conversion conversions[] = {
++      { VIRGL_FORMAT_R8G8B8A8_UNORM, MTLPixelFormatRGBA8Unorm },
++      { VIRGL_FORMAT_R8G8B8X8_UNORM, MTLPixelFormatRGBA8Unorm },
++      { VIRGL_FORMAT_R8G8B8A8_SRGB, MTLPixelFormatRGBA8Unorm_sRGB },
++      { VIRGL_FORMAT_R8G8B8X8_SRGB, MTLPixelFormatRGBA8Unorm_sRGB },
++      { VIRGL_FORMAT_B8G8R8A8_UNORM, MTLPixelFormatBGRA8Unorm },
++      { VIRGL_FORMAT_B8G8R8X8_UNORM, MTLPixelFormatBGRA8Unorm },
++      { VIRGL_FORMAT_B8G8R8A8_SRGB, MTLPixelFormatBGRA8Unorm_sRGB },
++      { VIRGL_FORMAT_B8G8R8X8_SRGB, MTLPixelFormatBGRA8Unorm_sRGB },
++      { VIRGL_FORMAT_R16G16B16A16_FLOAT, MTLPixelFormatRGBA16Float },
++      { VIRGL_FORMAT_R16G16B16X16_FLOAT, MTLPixelFormatRGBA16Float },
++      { VIRGL_FORMAT_R16G16B16A16_UNORM, MTLPixelFormatRGBA16Unorm },
++      { VIRGL_FORMAT_R16G16B16X16_UNORM, MTLPixelFormatRGBA16Unorm },
++      { VIRGL_FORMAT_R32G32B32A32_FLOAT, MTLPixelFormatRGBA32Float },
++      { VIRGL_FORMAT_R10G10B10A2_UNORM, MTLPixelFormatRGB10A2Unorm },
++      { VIRGL_FORMAT_R10G10B10X2_UNORM, MTLPixelFormatRGB10A2Unorm },
++      { VIRGL_FORMAT_B10G10R10A2_UNORM, MTLPixelFormatBGR10A2Unorm },
++      { VIRGL_FORMAT_B10G10R10X2_UNORM, MTLPixelFormatBGR10A2Unorm },
++      { VIRGL_FORMAT_R8_UNORM, MTLPixelFormatR8Unorm },
++      { VIRGL_FORMAT_R16_UNORM, MTLPixelFormatR16Unorm },
++      { VIRGL_FORMAT_R8G8_UNORM, MTLPixelFormatRG8Unorm },
++      { VIRGL_FORMAT_R16G16_UNORM, MTLPixelFormatRG16Unorm },
++      { VIRGL_FORMAT_B5G6R5_UNORM, MTLPixelFormatB5G6R5Unorm },
++      // { VIRGL_FORMAT_NV12, }, /* Conversion not possible */
++      // { VIRGL_FORMAT_YV12, }, /* Conversion not possible */
++   };
++
++   for (uint32_t i = 0; i < ARRAY_SIZE(conversions); i++) {
++      if (conversions[i].virgl_format == format) {
++         *metal_format = conversions[i].metal_format;
++         return true;
++      }
++   }
++
++   return false;
++}
++
++static MTLTextureUsage virgl_bind_to_metal_usage_flags(uint32_t flags)
++{
++   MTLTextureUsage ret = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
++
++   if (flags & PIPE_BIND_RENDER_TARGET)
++      ret |= MTLTextureUsageRenderTarget;
++   if (flags & PIPE_BIND_DEPTH_STENCIL)
++      ret |= MTLTextureUsageRenderTarget;
++
++   return ret;
++}
++
++static MTLResourceOptions virgl_usage_to_metal_resource_options(uint32_t usage)
++{
++   switch (usage) {
++   case PIPE_USAGE_DEFAULT:
++   case PIPE_USAGE_STAGING:
++   default:
++      return MTLResourceStorageModeShared | MTLResourceCPUCacheModeDefaultCache;
++   case PIPE_USAGE_IMMUTABLE:
++      return MTLResourceStorageModeShared | MTLResourceCPUCacheModeWriteCombined | MTLHazardTrackingModeUntracked;
++   case PIPE_USAGE_DYNAMIC:
++   case PIPE_USAGE_STREAM:
++      return MTLResourceStorageModeShared | MTLResourceCPUCacheModeWriteCombined;
++   }
++}
++
++static MTLTextureDescriptor *new_descriptor(const struct vrend_metal_texture_description *desc)
++{
++   MTLPixelFormat pixel_format;
++
++   if (!virgl_format_to_metal_format(desc->format, &pixel_format)) {
++      return NULL;
++   }
++
++   MTLTextureDescriptor *descriptor = [MTLTextureDescriptor new];
++   descriptor.textureType = MTLTextureType2D;
++   descriptor.pixelFormat = pixel_format;
++   descriptor.width = desc->width;
++   descriptor.height = desc->height;
++   descriptor.resourceOptions = virgl_usage_to_metal_resource_options(desc->usage);
++   descriptor.usage = virgl_bind_to_metal_usage_flags(desc->bind);
++   if (desc->usage == PIPE_USAGE_IMMUTABLE) {
++      descriptor.usage &= ~MTLTextureUsageShaderWrite;
++   }
++
++   return descriptor;
++}
++
++bool virgl_metal_create_texture(MTLDevice_id device,
++                                const struct vrend_metal_texture_description *desc,
++                                MTLTexture_id *tex)
++{
++   id<MTLDevice> mtl_device = (id<MTLDevice>)device;
++   MTLTextureDescriptor *descriptor = new_descriptor(desc);
++   if (descriptor) {
++      *tex = [mtl_device newTextureWithDescriptor:descriptor];
++      [descriptor release];
++      return true;
++   }
++
++   return false;
++}
++
++bool virgl_metal_create_texture_from_shm(MTLDevice_id device,
++                                         int fd,
++                                         size_t size,
++                                         const struct vrend_metal_texture_description *desc,
++                                         MTLTexture_id *tex)
++{
++   id<MTLDevice> mtl_device = (id<MTLDevice>)device;
++   MTLTextureDescriptor *descriptor = new_descriptor(desc);
++   *tex = nil;
++   if (!mtl_device || !descriptor) {
++      [descriptor release];
++      return false;
++   }
++
++   NSUInteger deviceAlignment, bytesPerRow;
++   /* the backing MTLBuffer is shared system memory, so the texture must be too */
++   descriptor.resourceOptions = MTLResourceStorageModeShared;
++   deviceAlignment = [mtl_device minimumLinearTextureAlignmentForPixelFormat:descriptor.pixelFormat];
++   bytesPerRow = align(desc->stride, deviceAlignment);
++
++   /* newBufferWithBytesNoCopy requires a page-aligned pointer and length */
++   const size_t page_size = getpagesize();
++   const size_t map_size = (size + page_size - 1) & ~(page_size - 1);
++
++   void *shm_ptr = mmap(NULL, map_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
++   if (shm_ptr == MAP_FAILED) {
++      [descriptor release];
++      return false;
++   }
++
++   /* wrap the shared memory as an MTLBuffer; the deallocator unmaps it once the
++    * buffer (retained by the texture and, in turn, by ANGLE) is released.
++    */
++   id<MTLBuffer> mtl_buffer =
++      [mtl_device newBufferWithBytesNoCopy:shm_ptr
++                                    length:map_size
++                                   options:MTLResourceStorageModeShared
++                               deallocator:^(void *ptr, NSUInteger length) {
++                                  munmap(ptr, length);
++                               }];
++   if (mtl_buffer) {
++      *tex = [mtl_buffer newTextureWithDescriptor:descriptor
++                                           offset:desc->offset
++                                      bytesPerRow:bytesPerRow];
++      [mtl_buffer release];
++   } else {
++      munmap(shm_ptr, map_size);
++   }
++   [descriptor release];
++   return !!*tex;
++}
++
++MTLTexture_id virgl_metal_retain_texture(MTLTexture_id tex)
++{
++   id<MTLTexture> mtl_texture = (id<MTLTexture>)tex;
++
++   return [mtl_texture retain];
++}
++
++void virgl_metal_release_texture(MTLTexture_id tex)
++{
++   id<MTLTexture> mtl_texture = (id<MTLTexture>)tex;
++
++   [mtl_texture release];
++}
+diff --git a/src/vrend/vrend_renderer.c b/src/vrend/vrend_renderer.c
+index 682db396..1a5d0592 100644
+--- a/src/vrend/vrend_renderer.c
++++ b/src/vrend/vrend_renderer.c
+@@ -230,6 +230,7 @@ enum features_id
+    feat_seamless_cubemap_per_texture,
+    feat_vs_layer_viewport,
+    feat_vs_viewport_index,
++   feat_draw_elements_base_vertex,
+    feat_last,
+ };
+ 
+@@ -343,6 +344,7 @@ static const  struct {
+    FEAT(seamless_cubemap_per_texture, UNAVAIL, UNAVAIL,  "GL_AMD_seamless_cubemap_per_texture" ),
+    FEAT(vs_layer_viewport, UNAVAIL, UNAVAIL, "GL_AMD_vertex_shader_layer"),
+    FEAT(vs_viewport_index, UNAVAIL, UNAVAIL, "GL_AMD_vertex_shader_viewport_index"),
++   FEAT(draw_elements_base_vertex, 32, 32,  "GL_ARB_draw_elements_base_vertex", "GL_EXT_draw_elements_base_vertex", "GL_OES_draw_elements_base_vertex"),
+ };
+ 
+ struct global_renderer_state {
+@@ -402,7 +404,7 @@ struct global_renderer_state {
+ #ifdef HAVE_EPOXY_EGL_H
+    bool use_egl_fence : 1;
+ #endif
+-   bool d3d_share_texture : 1;
++   bool native_share_texture : 1;
+    bool gbm_layout_feat : 1;
+ };
+ 
+@@ -1008,6 +1010,20 @@ static GLuint vrend_resource_get_internal_format_override(const struct vrend_res
+    return GL_NONE;
+ }
+ 
++/* Externally-backed bgra resources (EGL image / IOSurface / Metal texture) have
++ * a true BGRA8 internal format, unlike internally-allocated ones which use
++ * RGBA8 and are fed CPU-swizzled data. GLES forbids format conversion in
++ * TexSubImage, so these must be uploaded as GL_BGRA and left unswizzled.
++ * Resources with an internal format override are excluded: those are stored as
++ * 24bpp and go through the swizzle-and-collapse path instead. */
++static bool vrend_resource_uploads_bgra_directly(const struct vrend_resource *res)
++{
++   return vrend_state.use_gles &&
++         vrend_format_is_bgra(res->base.format) &&
++         has_bit(res->storage_bits, VREND_STORAGE_EGL_IMAGE) &&
++         vrend_resource_get_internal_format_override(res) == GL_NONE;
++}
++
+ static bool vrend_resource_supports_view(const struct vrend_resource *res,
+                                          UNUSED enum virgl_formats view_format)
+ {
+@@ -1024,10 +1040,26 @@ static bool vrend_resource_supports_view(const struct vrend_resource *res,
+          (vrend_resource_get_internal_format_override(res) == GL_NONE);
+ }
+ 
++/* Imported BGRA EGL images are sampled with the red/blue channels swapped and
++ * need a compensating swizzle. Metal-backed resources use the correct
++ * MTLPixelFormat and are already channel-correct, so they must be excluded. */
++static inline bool
++vrend_resource_is_metal_native(const struct vrend_resource *res)
++{
++#ifdef ENABLE_METAL
++   return res->metal_native;
++#else
++   (void)res;
++   return false;
++#endif
++}
++
+ static inline bool
+ vrend_resource_needs_redblue_swizzle(struct vrend_resource *res,
+                                      enum virgl_formats view_format)
+ {
++   if (vrend_resource_is_metal_native(res))
++      return false;
+    return !vrend_resource_supports_view(res, view_format) &&
+          vrend_format_is_bgra(res->base.format) ^ vrend_format_is_bgra(view_format);
+ }
+@@ -1036,6 +1068,12 @@ static inline bool
+ vrend_resource_needs_srgb_decode(struct vrend_resource *res,
+                                  enum virgl_formats view_format)
+ {
++#ifdef ENABLE_METAL
++   /* Metal-backed resources use the correct sRGB MTLPixelFormat and decode
++    * natively, so the manual compensation must be skipped for them. */
++   if (res->metal_native)
++      return false;
++#endif
+    return !vrend_resource_supports_view(res, view_format) &&
+       util_format_is_srgb(res->base.format) &&
+       !util_format_is_srgb(view_format);
+@@ -1045,11 +1083,31 @@ static inline bool
+ vrend_resource_needs_srgb_encode(struct vrend_resource *res,
+                                  enum virgl_formats view_format)
+ {
++#ifdef ENABLE_METAL
++   if (res->metal_native)
++      return false;
++#endif
+    return !vrend_resource_supports_view(res, view_format) &&
+       !util_format_is_srgb(res->base.format) &&
+       util_format_is_srgb(view_format);
+ }
+ 
++/* An sRGB EGL-backed surface has no GL sRGB internalformat, so linear->sRGB
++ * encoding is injected manually (in the fragment shader and glClearColor).
++ * Metal-backed resources use a real sRGB MTLPixelFormat and encode natively, so
++ * the manual conversion must be skipped to avoid double-encoding. */
++static inline bool
++vrend_resource_needs_manual_srgb_encode(const struct vrend_resource *res,
++                                        enum virgl_formats view_format)
++{
++#ifdef ENABLE_METAL
++   if (res->metal_native)
++      return false;
++#endif
++   return util_format_is_srgb(view_format) &&
++          !vrend_resource_supports_view(res, view_format);
++}
++
+ static bool vrend_blit_needs_swizzle(enum virgl_formats src,
+                                      enum virgl_formats dst)
+ {
+@@ -2520,7 +2578,13 @@ static GLuint convert_wrap(struct vrend_context *ctx, int wrap)
+    case PIPE_TEX_WRAP_CLAMP: if (vrend_state.use_core_profile == false) return GL_CLAMP; else return GL_CLAMP_TO_EDGE;
+ 
+    case PIPE_TEX_WRAP_CLAMP_TO_EDGE: return GL_CLAMP_TO_EDGE;
+-   case PIPE_TEX_WRAP_CLAMP_TO_BORDER: return GL_CLAMP_TO_BORDER;
++   case PIPE_TEX_WRAP_CLAMP_TO_BORDER:
++      if (has_feature(feat_sampler_border_colors))
++         return GL_CLAMP_TO_BORDER;
++      else {
++         virgl_warn("Sampler border color setting requested but not supported\n");
++         return GL_CLAMP_TO_EDGE;
++      }
+ 
+    case PIPE_TEX_WRAP_MIRROR_REPEAT: return GL_MIRRORED_REPEAT;
+    case PIPE_TEX_WRAP_MIRROR_CLAMP:
+@@ -2753,7 +2817,8 @@ int vrend_create_sampler_view(struct vrend_context *ctx,
+    for (enum pipe_swizzle i = 0; i < 4; ++i)
+       view->gl_swizzle[i] = to_gl_swizzle(swizzle[i]);
+ 
+-   if (res->is_imported && vrend_format_is_bgra(view->texture->base.format)) {
++   if (res->is_imported && !vrend_resource_is_metal_native(res) &&
++       vrend_format_is_bgra(view->texture->base.format)) {
+       /* Swap R/B channel for vulkan imported texture. */
+       GLenum tmp = view->gl_swizzle[0];
+       view->gl_swizzle[0] = view->gl_swizzle[2];
+@@ -2819,8 +2884,7 @@ int vrend_create_sampler_view(struct vrend_context *ctx,
+          * back, and still benefit from automatic srgb decoding.
+          * If the red/blue swap is intended, we just let it happen and don't
+          * need to explicit change to the sampler's swizzle parameters. */
+-        if (!vrend_resource_supports_view(view->texture, view->format) &&
+-            vrend_format_is_bgra(view->format)) {
++        if (vrend_resource_needs_redblue_swizzle(view->texture, view->format)) {
+               VREND_DEBUG(dbg_tex, ctx, "texture view with red/blue swizzle created for EGL-backed texture sampler"
+                           " (format: %s; view: %s)\n",
+                           util_format_name(view->texture->base.format),
+@@ -3138,8 +3202,7 @@ static void vrend_hw_emit_framebuffer_state(struct vrend_sub_context *sub_ctx)
+        * To work around this for colorspace conversion, views are avoided
+        * manual colorspace conversion is instead injected in the fragment
+        * shader writing to such surfaces and during glClearColor(). */
+-      if (util_format_is_srgb(surf->format) &&
+-          !vrend_resource_supports_view(surf->texture, surf->format)) {
++      if (vrend_resource_needs_manual_srgb_encode(surf->texture, surf->format)) {
+          VREND_DEBUG(dbg_tex, sub_ctx->parent,
+                      "manually converting linear->srgb for EGL-backed framebuffer color attachment 0x%x"
+                      " (surface format is %s; resource format is %s)\n",
+@@ -3456,7 +3519,8 @@ void vrend_bind_vertex_elements_state(struct vrend_context *ctx,
+       return;
+    }
+ 
+-   if (has_feature(feat_gles31_vertex_attrib_binding) && v->id == 0) {
++   if (has_feature(feat_gles31_vertex_attrib_binding)) {
++      if (v->id == 0) {
+       glGenVertexArrays(1, &v->id);
+       glBindVertexArray(v->id);
+       for (uint32_t i = 0; i < v->count; i++) {
+@@ -3474,6 +3538,17 @@ void vrend_bind_vertex_elements_state(struct vrend_context *ctx,
+          glVertexAttribBinding(i, ve->base.vertex_buffer_index);
+          glVertexBindingDivisor(i, ve->base.instance_divisor);
+          glEnableVertexAttribArray(i);
++         }
++      }
++   } else {
++      for (uint32_t i = 0; i < v->count; i++) {
++         struct vrend_vertex_element *ve = &v->elements[i];
++
++         if (util_format_is_pure_integer(ve->base.src_format)) {
++            UPDATE_INT_SIGN_MASK(ve->base.src_format, i,
++                                 v->signed_int_bitmask,
++                                 v->unsigned_int_bitmask);
++         }
+       }
+    }
+ }
+@@ -3717,7 +3792,7 @@ void vrend_set_single_sampler_view(struct vrend_context *ctx,
+                glTexParameteri(view->texture->target, GL_TEXTURE_BASE_LEVEL, view->u.tex.first_level);
+                tex->cur_base = view->u.tex.first_level;
+             }
+-            if (tex->cur_max != view->u.tex.last_level) {
++            if (view->u.tex.last_level && tex->cur_max != view->u.tex.last_level) {
+                glTexParameteri(view->texture->target, GL_TEXTURE_MAX_LEVEL, view->u.tex.last_level);
+                tex->cur_max = view->u.tex.last_level;
+             }
+@@ -3766,8 +3841,12 @@ void vrend_set_single_sampler_view(struct vrend_context *ctx,
+             offset *= blsize;
+             size *= blsize;
+             glTexBufferRange(GL_TEXTURE_BUFFER, internalformat, view->texture->gl_id, offset, size);
+-         } else
++         } else if (has_feature(feat_arb_or_gles_ext_texture_buffer)) {
+             glTexBuffer(GL_TEXTURE_BUFFER, internalformat, view->texture->gl_id);
++         } else {
++            virgl_warn("glTexBuffer is not implemented\n");
++            return;
++         }
+       }
+    }
+ 
+@@ -4692,8 +4771,7 @@ vrend_color_encode_as_srgb(float color) {
+ static void vrend_clear_prepare(struct vrend_sub_context *sub_ctx,
+                                 struct vrend_surface *surf, unsigned buffers,
+                                 float *colorf, double depth, unsigned stencil) {
+-   if (surf && util_format_is_srgb(surf->format) &&
+-       !vrend_resource_supports_view(surf->texture, surf->format)) {
++   if (surf && vrend_resource_needs_manual_srgb_encode(surf->texture, surf->format)) {
+       VREND_DEBUG(dbg_tex, sub_ctx->parent,
+                   "manually converting glClearColor from linear->srgb colorspace for EGL-backed framebuffer color attachment"
+                   " (surface format is %s; resource format is %s)\n",
+@@ -4706,7 +4784,7 @@ static void vrend_clear_prepare(struct vrend_sub_context *sub_ctx,
+    if (buffers & PIPE_CLEAR_COLOR) {
+       if (surf && vrend_format_is_emulated_alpha(surf->format)) {
+          glClearColor(colorf[3], 0.0, 0.0, 0.0);
+-      } else if (surf && 
++      } else if (surf &&
+                  vrend_resource_needs_redblue_swizzle(surf->texture, surf->format)) {
+          VREND_DEBUG(dbg_bgra, sub_ctx->parent, "swizzling glClearColor() since rendering surface is an externally-stored BGR* resource\n");
+          glClearColor(colorf[2], colorf[1], colorf[0], colorf[3]);
+@@ -4872,6 +4950,10 @@ int vrend_clear_texture(struct vrend_context* ctx,
+    format = tex_conv_table[fmt].glformat;
+    type = tex_conv_table[fmt].gltype;
+ 
++   if (!has_feature(feat_clear_texture)) {
++      return EINVAL;
++   }
++
+    /* 32-bit BGRA resources are always reordered to RGBA ordering before
+     * submission to the host driver. Reorder red/blue color bytes in
+     * the clear color to match. */
+@@ -6136,17 +6218,23 @@ int vrend_draw_vbo(struct vrend_context *ctx,
+             glDrawElementsIndirect(mode, elsz, (GLvoid const *)(uintptr_t)info->indirect.offset);
+       } else if (info->index_bias) {
+          if (info->instance_count > 0) {
+-            if (info->start_instance > 0)
++            if (info->start_instance > 0) {
+                glDrawElementsInstancedBaseVertexBaseInstance(mode, info->count, elsz, (void *)(uintptr_t)sub_ctx->ib.offset,
+                                                              info->instance_count, info->index_bias, info->start_instance);
+-            else
++            } else if (has_feature(feat_draw_elements_base_vertex)) {
+                glDrawElementsInstancedBaseVertex(mode, info->count, elsz, (void *)(uintptr_t)sub_ctx->ib.offset, info->instance_count, info->index_bias);
+-
+-
+-         } else if (info->min_index != 0 || info->max_index != (unsigned)-1)
+-            glDrawRangeElementsBaseVertex(mode, info->min_index, info->max_index, info->count, elsz, (void *)(uintptr_t)sub_ctx->ib.offset, info->index_bias);
+-         else
+-            glDrawElementsBaseVertex(mode, info->count, elsz, (void *)(uintptr_t)sub_ctx->ib.offset, info->index_bias);
++            } else {
++               return EINVAL;
++            }
++         } else if (has_feature(feat_draw_elements_base_vertex)) {
++            if (info->min_index != 0 || info->max_index != (unsigned)-1) {
++               glDrawRangeElementsBaseVertex(mode, info->min_index, info->max_index, info->count, elsz, (void *)(uintptr_t)sub_ctx->ib.offset, info->index_bias);
++            } else {
++               glDrawElementsBaseVertex(mode, info->count, elsz, (void *)(uintptr_t)sub_ctx->ib.offset, info->index_bias);
++            }
++         } else {
++            return EINVAL;
++         }
+       } else if (info->instance_count > 0) {
+          if (info->start_instance > 0) {
+             glDrawElementsInstancedBaseInstance(mode, info->count, elsz, (void *)(uintptr_t)sub_ctx->ib.offset, info->instance_count, info->start_instance);
+@@ -7558,11 +7646,7 @@ static bool use_integer(void) {
+       return true;
+ 
+    const char * a = (const char *) glGetString(GL_VENDOR);
+-   if (!a)
+-       return false;
+-   if (strcmp(a, "ARM") == 0)
+-      return true;
+-   return false;
++   return a && !(strcmp(a, "ARM") && strcmp(a, "Google Inc. (Apple)"));
+ }
+ 
+ static bool vrend_use_gbm_layout_feature(UNUSED uint32_t flags)
+@@ -7766,7 +7850,7 @@ int vrend_renderer_init(const struct vrend_if_cbs *cbs, uint32_t flags)
+    }
+ #endif
+ 
+-   vrend_state.d3d_share_texture = flags & VREND_D3D11_SHARE_TEXTURE;
++   vrend_state.native_share_texture = flags & VREND_NATIVE_SHARE_TEXTURE;
+ 
+    vrend_state.gbm_layout_feat = vrend_use_gbm_layout_feature(flags);
+ 
+@@ -8553,7 +8637,7 @@ static void vrend_resource_d3d_init(UNUSED struct vrend_resource *gr, UNUSED uin
+    };
+    ID3D11Texture2D* d3d_tex2d = NULL;
+ 
+-   if (!vrend_state.d3d_share_texture)
++   if (!vrend_state.native_share_texture)
+       return;
+ 
+    if ((gr->base.bind & VIRGL_RES_BIND_SCANOUT) == 0)
+@@ -8582,7 +8666,7 @@ static void vrend_resource_d3d_init(UNUSED struct vrend_resource *gr, UNUSED uin
+ 
+    gr->d3d_tex2d = d3d_tex2d;
+ 
+-   gr->storage_bits |= VREND_STORAGE_D3D_TEXTURE;
++   gr->storage_bits |= VREND_STORAGE_NATIVE_TEXTURE;
+    gr->storage_bits |= VREND_STORAGE_EGL_IMAGE;
+    return;
+ 
+@@ -8593,6 +8677,45 @@ fail:
+ #endif
+ }
+ 
++/*
++ * When using ANGLE/Metal, this function creates a Metal Texture and
++ * EGL image given certain flags.
++ */
++static void vrend_resource_metal_init(UNUSED struct vrend_resource *gr, UNUSED uint32_t format)
++{
++#if defined(ENABLE_METAL) && defined(HAVE_EPOXY_EGL_H)
++   MTLTexture_id tex = NULL;
++
++   if (!vrend_state.native_share_texture)
++      return;
++
++   if ((gr->base.bind & VIRGL_RES_BIND_SCANOUT) == 0)
++      return;
++
++   if (gr->base.depth0 != 1 || gr->base.last_level != 0 || gr->base.nr_samples > 1)
++      return;
++
++   if (!virgl_egl_metal_create_texture(egl, &gr->base, format, &tex))
++      goto fail;
++
++   gr->egl_image = virgl_egl_metal_image_from_texture(egl, tex);
++   if (!gr->egl_image)
++      goto fail;
++
++   gr->metal_texture = tex;
++   gr->metal_native = true;
++
++   gr->storage_bits |= VREND_STORAGE_NATIVE_TEXTURE;
++   gr->storage_bits |= VREND_STORAGE_EGL_IMAGE;
++   return;
++
++fail:
++   if (tex)
++      virgl_metal_release_texture(tex);
++   gr->metal_texture = NULL;
++#endif
++}
++
+ /*
+  * When GBM allocation is enabled, this function creates a GBM buffer and
+  * EGL image given certain flags.
+@@ -8692,6 +8815,7 @@ static int vrend_resource_alloc_texture(struct vrend_resource *gr,
+ 
+    if (!image_oes) {
+       vrend_resource_d3d_init(gr, format);
++      vrend_resource_metal_init(gr, format);
+       vrend_resource_gbm_init(gr, format);
+       if (gr->gbm_bo && !has_bit(gr->storage_bits, VREND_STORAGE_EGL_IMAGE))
+          return 0;
+@@ -8843,7 +8967,9 @@ static int vrend_resource_alloc_texture(struct vrend_resource *gr,
+ 
+    if (!format_can_texture_storage) {
+       glTexParameteri(gr->target, GL_TEXTURE_BASE_LEVEL, 0);
+-      glTexParameteri(gr->target, GL_TEXTURE_MAX_LEVEL, pr->last_level);
++      if (pr->last_level) {
++         glTexParameteri(gr->target, GL_TEXTURE_MAX_LEVEL, pr->last_level);
++      }
+    }
+ 
+    glBindTexture(gr->target, 0);
+@@ -8941,7 +9067,7 @@ void vrend_renderer_resource_destroy(struct vrend_resource *res)
+       glDeleteMemoryObjectsEXT(1, &res->memobj);
+    }
+ 
+-#ifdef ENABLE_GBM
++#if (defined(ENABLE_GBM) || defined(ENABLE_METAL)) && defined(HAVE_EPOXY_EGL_H)
+    if (res->egl_image) {
+       virgl_egl_image_destroy(egl, res->egl_image);
+       for (unsigned i = 0; i < ARRAY_SIZE(res->aux_plane_egl_image); i++) {
+@@ -8958,6 +9084,10 @@ void vrend_renderer_resource_destroy(struct vrend_resource *res)
+ #ifdef WIN32
+    if (res->d3d_tex2d)
+       res->d3d_tex2d->lpVtbl->Release(res->d3d_tex2d);
++#endif
++#ifdef ENABLE_METAL
++   if (res->metal_texture)
++      virgl_metal_release_texture(res->metal_texture);
+ #endif
+    free(res);
+ }
+@@ -9368,7 +9498,10 @@ static int vrend_renderer_transfer_write_iov(struct vrend_context *ctx,
+          need_temp = true;
+       }
+ 
+-      if (vrend_state.use_gles && vrend_format_is_bgra(res->base.format))
++      /* The bgra->rgba swizzle is done in place, so it needs a scratch copy of
++       * the guest data; a direct bgra upload sends the guest data untouched. */
++      if (vrend_state.use_gles && vrend_format_is_bgra(res->base.format) &&
++          !vrend_resource_uploads_bgra_directly(res))
+          need_temp = true;
+ 
+       if (vrend_state.use_core_profile == true &&
+@@ -9513,6 +9646,9 @@ static int vrend_renderer_transfer_write_iov(struct vrend_context *ctx,
+                   }
+                }
+ 
++            } else if (vrend_resource_uploads_bgra_directly(res)) {
++               VREND_DEBUG(dbg_bgra, ctx, "uploading bgra directly since storage is externally backed\n");
++               glformat = GL_BGRA;
+             } else if (vrend_format_is_bgra(res->base.format)) {
+                VREND_DEBUG(dbg_bgra, ctx, "manually swizzling bgra->rgba on upload since gles+bgra\n");
+                vrend_swizzle_data_bgra(send_size, data);
+@@ -10531,9 +10667,11 @@ static void vrend_resource_copy_fallback(struct vrend_resource *src_res,
+        * storing in a texture. Iovec data is assumed to have the original byte-order, namely BGR*,
+        * and needs to be reordered when storing in the host's texture memory as RGB*.
+        * On the contrary, externally-stored BGR* resources are assumed to remain in BGR* format at
+-       * all times.
++       * all times, so they keep the iovec byte-order and are uploaded as BGR* below.
+        */
+-      if (vrend_state.use_gles && vrend_format_is_bgra(dst_res->base.format))
++      if (vrend_resource_uploads_bgra_directly(dst_res))
++         glformat = GL_BGRA;
++      else if (vrend_state.use_gles && vrend_format_is_bgra(dst_res->base.format))
+          vrend_swizzle_data_bgra(total_size, tptr);
+    } else {
+       uint32_t read_chunk_size;
+@@ -13165,27 +13303,35 @@ void vrend_renderer_resource_get_info(struct pipe_resource *pres,
+    info->stride = util_format_get_nblocksx(res->base.format, u_minify(res->base.width0, 0)) * elsize;
+ }
+ 
+-int
+-vrend_renderer_resource_d3d11_texture2d(struct pipe_resource *pres, void **d3d_tex2d)
++void *
++vrend_renderer_resource_d3d11_texture2d(struct pipe_resource *pres)
+ {
+ #ifdef WIN32
+    struct vrend_resource *res = (struct vrend_resource *)pres;
+ 
+-   if (!vrend_state.d3d_share_texture)
+-      return 0;
+-
+-   if (!res->d3d_tex2d)
+-      return EINVAL;
+-
+-   *d3d_tex2d = res->d3d_tex2d;
+-   return 0;
++   if (!vrend_state.native_share_texture)
++      return NULL;
++   else
++      return res->d3d_tex2d;
+ #else
+    (void)pres;
+-   (void)d3d_tex2d;
+-   return ENOTSUP;
++   return NULL;
+ #endif
+ }
+ 
++#ifdef ENABLE_METAL
++MTLTexture_id
++vrend_renderer_resource_metal_texture(struct pipe_resource *pres)
++{
++   struct vrend_resource *res = (struct vrend_resource *)pres;
++
++   if (!vrend_state.native_share_texture)
++      return NULL;
++   else
++      return res->metal_texture;
++}
++#endif
++
+ void vrend_renderer_get_cap_set(uint32_t cap_set, uint32_t *max_ver,
+                                 uint32_t *max_size)
+ {
+@@ -13445,9 +13591,6 @@ vrend_renderer_pipe_resource_set_type(struct vrend_context *ctx,
+       };
+       struct vrend_resource *gr;
+ 
+-      if (res->fd_type != VIRGL_RESOURCE_FD_DMABUF)
+-         return EINVAL;
+-
+       gr = vrend_resource_create(&create_args);
+       if (!gr)
+          return ENOMEM;
+@@ -13455,6 +13598,10 @@ vrend_renderer_pipe_resource_set_type(struct vrend_context *ctx,
+ #ifdef HAVE_EPOXY_EGL_H
+       if (egl) {
+ #ifdef ENABLE_GBM
++         if (res->fd_type != VIRGL_RESOURCE_FD_DMABUF) {
++            FREE(gr);
++            return EINVAL;
++         }
+          int plane_fds[VIRGL_GBM_MAX_PLANES];
+          uint32_t virgl_format;
+          uint32_t drm_format;
+@@ -13495,7 +13642,56 @@ vrend_renderer_pipe_resource_set_type(struct vrend_context *ctx,
+             return ret;
+          }
+ 
+-#else /* ENABLE_GBM */
++#elif defined(ENABLE_METAL)
++         int ret;
++
++         /* A Neptune or Venus context exports a blob resource as shared memory
++          * backing a MTLBuffer (see vkr_mtl_shm / npt_swapchain_d3dmetal). Wrap
++          * the shared-memory FD back into a MTLTexture and hand it to ANGLE.
++          */
++         if (res->fd_type != VIRGL_RESOURCE_FD_SHM) {
++            FREE(gr);
++            return EINVAL;
++         }
++         if (args->plane_count > 1) {
++            virgl_warn("%s: ignoring plane_count = %d and using the first one\n",
++                       __func__, args->plane_count);
++         }
++         const struct vrend_metal_texture_description desc = {
++            .width = args->width,
++            .height = args->height,
++            .stride = args->plane_strides[0],
++            .offset = args->plane_offsets[0],
++            .bind = args->bind,
++            .usage = args->usage,
++            .format = args->format,
++         };
++         MTLTexture_id texture;
++
++         if (!virgl_egl_metal_create_texture_from_shm(egl, res->fd, res->map_size,
++                                                      &desc, &texture)) {
++            FREE(gr);
++            virgl_error("%s: failed to create texture from shared memory\n", __func__);
++            return EINVAL;
++         }
++         gr->egl_image = virgl_egl_metal_image_from_texture(egl, texture);
++         virgl_metal_release_texture(texture);
++         if (!gr->egl_image) {
++            virgl_error("%s: failed to create egl image\n", __func__);
++            FREE(gr);
++            return EINVAL;
++         }
++
++         gr->metal_native = true;
++         gr->storage_bits |= VREND_STORAGE_EGL_IMAGE;
++
++         ret = vrend_resource_alloc_texture(gr, args->format, gr->egl_image);
++         if (ret) {
++            virgl_egl_image_destroy(egl, gr->egl_image);
++            FREE(gr);
++            return ret;
++         }
++#else /* !ENABLE_METAL && !ENABLE_GBM */
+          FREE(gr);
+          virgl_error("%s: no EGL/GBM support \n", __func__);
+          return EINVAL;
+diff --git a/src/vrend/vrend_renderer.h b/src/vrend/vrend_renderer.h
+index 8b59c2f7..4e87ebde 100644
+--- a/src/vrend/vrend_renderer.h
++++ b/src/vrend/vrend_renderer.h
+@@ -42,6 +42,9 @@
+ #ifdef WIN32
+ #include <d3d11.h>
+ #endif
++#ifdef ENABLE_METAL
++#include "vrend_metal.h"
++#endif
+ 
+ #ifdef ENABLE_TESTS
+ /* With this flag set, the transfer will not try to use GBM mappings.
+@@ -77,7 +80,7 @@ struct vrend_context;
+ #define VREND_STORAGE_HOST_SYSTEM_MEMORY BIT(5)
+ #define VREND_STORAGE_GL_IMMUTABLE       BIT(6)
+ #define VREND_STORAGE_GL_MEMOBJ          BIT(7)
+-#define VREND_STORAGE_D3D_TEXTURE        BIT(8)
++#define VREND_STORAGE_NATIVE_TEXTURE     BIT(8)
+ 
+ struct vrend_resource {
+    struct pipe_resource base;
+@@ -108,6 +111,14 @@ struct vrend_resource {
+ #ifdef WIN32
+    ID3D11Texture2D *d3d_tex2d;
+ #endif
++#ifdef ENABLE_METAL
++   MTLTexture_id metal_texture;
++   /* Backed by a Metal texture whose MTLPixelFormat already matches the virgl
++    * format (e.g. BGRA -> MTLPixelFormatBGRA8Unorm). Such resources are sampled
++    * in the correct channel order, so the red/blue compensation swizzle that
++    * other imported (vulkan/dmabuf) EGL images need must be skipped for them. */
++   bool metal_native;
++#endif
+ 
+    uint64_t size;
+    GLbitfield buffer_storage_flags;
+@@ -195,7 +206,7 @@ struct vrend_if_cbs {
+ #define VREND_USE_EXTERNAL_BLOB (1 << 1)
+ #define VREND_USE_ASYNC_FENCE_CB (1 << 2)
+ #define VREND_USE_VIDEO          (1 << 3)
+-#define VREND_D3D11_SHARE_TEXTURE (1 << 4)
++#define VREND_NATIVE_SHARE_TEXTURE (1 << 4)
+ #define VREND_USE_COMPAT_CONTEXT (1 << 5)
+ #define VREND_USE_GLES (1 << 6)
+ #define VREND_USE_GBM_LAYOUT (1 << 7)
+@@ -640,8 +651,8 @@ void vrend_context_emit_string_marker(struct vrend_context *ctx, GLsizei length,
+ 
+ struct vrend_video_context *vrend_context_get_video_ctx(struct vrend_context *ctx);
+ 
+-int
+-vrend_renderer_resource_d3d11_texture2d(struct pipe_resource *res, void **handle);
++void *
++vrend_renderer_resource_d3d11_texture2d(struct pipe_resource *res);
+ 
+ int
+ vrend_renderer_pipe_resource_get_layout(struct vrend_context *ctx,
+@@ -650,4 +661,9 @@ vrend_renderer_pipe_resource_get_layout(struct vrend_context *ctx,
+ int
+ vrend_renderer_pipe_query_format_modifier(struct vrend_context *ctx, uint32_t res_id);
+ 
++#ifdef ENABLE_METAL
++MTLTexture_id
++vrend_renderer_resource_metal_texture(struct pipe_resource *pres);
++#endif
++
+ #endif
+diff --git a/src/vrend/vrend_winsys.c b/src/vrend/vrend_winsys.c
+index d4c9b9e0..cff714ca 100644
+--- a/src/vrend/vrend_winsys.c
++++ b/src/vrend/vrend_winsys.c
+@@ -75,6 +75,15 @@ int vrend_winsys_init(uint32_t flags, int preferred_fd)
+          return -1;
+       }
+ 
++      use_context = CONTEXT_EGL;
++#elif defined(HAVE_EPOXY_EGL_H)
++      /* No GBM (e.g. ANGLE on macOS): the platform's default EGL display. */
++      (void)preferred_fd;
++      egl = virgl_egl_init(EGL_DEFAULT_DISPLAY, flags & VIRGL_RENDERER_USE_SURFACELESS,
++                           flags & VIRGL_RENDERER_USE_GLES);
++      if (!egl)
++         return -1;
++
+       use_context = CONTEXT_EGL;
+ #else
+       (void)preferred_fd;
+@@ -98,15 +107,17 @@ int vrend_winsys_init(uint32_t flags, int preferred_fd)
+ 
+ void vrend_winsys_cleanup(void)
+ {
+-#ifdef ENABLE_GBM
++#ifdef HAVE_EPOXY_EGL_H
+    if (use_context == CONTEXT_EGL) {
+       virgl_egl_destroy(egl);
+       egl = NULL;
+       use_context = CONTEXT_NONE;
++#ifdef ENABLE_GBM
+       if (gbm) {
+          virgl_gbm_fini(gbm);
+          gbm = NULL;
+       }
++#endif
+    } else if (use_context == CONTEXT_EGL_EXTERNAL) {
+       free(egl);
+       egl = NULL;
+diff --git a/src/vrend/vrend_winsys_egl.c b/src/vrend/vrend_winsys_egl.c
+index c15f6b61..c96de737 100644
+--- a/src/vrend/vrend_winsys_egl.c
++++ b/src/vrend/vrend_winsys_egl.c
+@@ -110,6 +110,9 @@ struct virgl_egl {
+ #ifdef WIN32
+    ID3D11Device *d3d11_device;
+ #endif
++#ifdef ENABLE_METAL
++   MTLDevice_id metal_device;
++#endif
+ };
+ 
+ static bool virgl_egl_has_extension_in_string(const char *haystack, const char *needle)
+@@ -298,6 +301,9 @@ static bool virgl_egl_get_display(struct virgl_egl *egl)
+ }
+ #endif /* ENABLE_GBM_ALLOCATION */
+ 
++static void virgl_egl_win32_init(struct virgl_egl *egl);
++static void virgl_egl_metal_init(struct virgl_egl *egl);
++
+ #ifdef ENABLE_GBM
+ struct virgl_egl *virgl_egl_init(struct virgl_gbm *gbm, bool surfaceless, bool gles)
+ #else
+@@ -439,6 +445,9 @@ struct virgl_egl *virgl_egl_init(EGLNativeDisplayType display_id, bool surfacele
+       glFlush();
+    }
+ 
++   /* The native device behind the display (ANGLE's D3D11 or Metal device), for shared textures. */
++   virgl_egl_win32_init(egl);
++   virgl_egl_metal_init(egl);
+    return egl;
+ 
+  fail:
+@@ -575,6 +584,85 @@ virgl_egl_win32_init(UNUSED struct virgl_egl *egl)
+ #endif
+ }
+ 
++#ifdef ENABLE_METAL
++#ifndef EGL_METAL_DEVICE_ANGLE
++#define EGL_METAL_DEVICE_ANGLE 0x34A6
++#endif
++#ifndef EGL_METAL_TEXTURE_ANGLE
++#define EGL_METAL_TEXTURE_ANGLE 0x34A7
++#endif
++#endif
++
++static void
++virgl_egl_metal_init(UNUSED struct virgl_egl *egl)
++{
++#ifdef ENABLE_METAL
++   EGLDeviceEXT device;
++   const char* device_ext = NULL;
++   MTLDevice_id metal_device;
++
++   if (!has_bits(egl->extension_bits, EGL_EXT_DEVICE_QUERY))
++      return;
++
++   if (!egl->funcs.eglQueryDisplayAttrib(egl->egl_display, EGL_DEVICE_EXT, (EGLAttrib*)&device))
++      return;
++
++   device_ext = egl->funcs.eglQueryDeviceString(device, EGL_EXTENSIONS);
++   if (!device_ext)
++      return;
++
++   if (!virgl_egl_has_extension_in_string(device_ext, "EGL_ANGLE_device_metal"))
++      return;
++
++   if (!egl->funcs.eglQueryDeviceAttrib(device, EGL_METAL_DEVICE_ANGLE, (EGLAttrib*)&metal_device))
++      return;
++
++   egl->metal_device = metal_device;
++#endif
++}
++
++#ifdef ENABLE_METAL
++bool virgl_egl_metal_create_texture(struct virgl_egl *egl, struct pipe_resource *res,
++                                    uint32_t format, MTLTexture_id *tex)
++{
++   MTLDevice_id device = egl->metal_device;
++   struct vrend_metal_texture_description desc = {
++      .width = res->width0,
++      .height = res->height0,
++      .bind = res->bind,
++      .usage = res->usage,
++      .format = format,
++   };
++
++   return virgl_metal_create_texture(device, &desc, tex);
++}
++
++bool virgl_egl_metal_create_texture_from_shm(struct virgl_egl *egl, int fd, size_t size,
++                                             const struct vrend_metal_texture_description *desc,
++                                             MTLTexture_id *tex)
++{
++   if (!egl || !egl->metal_device)
++      return false;
++
++   return virgl_metal_create_texture_from_shm(egl->metal_device, fd, size, desc, tex);
++}
++
++EGLImageKHR
++virgl_egl_metal_image_from_texture(struct virgl_egl *egl, MTLTexture_id tex)
++{
++   const EGLint attribs[] = {
++      EGL_NONE
++   };
++
++   if (!egl)
++      return NULL;
++
++   return eglCreateImageKHR(egl->egl_display, EGL_NO_CONTEXT,
++                            EGL_METAL_TEXTURE_ANGLE, (EGLClientBuffer)tex,
++                            attribs);
++}
++#endif
++
+ struct virgl_egl *virgl_egl_init_external(EGLDisplay egl_display)
+ {
+    const char *extensions;
+@@ -610,6 +698,7 @@ struct virgl_egl *virgl_egl_init_external(EGLDisplay egl_display)
+ #endif
+ 
+    virgl_egl_win32_init(egl);
++   virgl_egl_metal_init(egl);
+    return egl;
+ fail:
+    free(egl);
+@@ -838,7 +927,9 @@ void *virgl_egl_image_from_dmabuf(struct virgl_egl *egl,
+                                     (EGLClientBuffer)NULL,
+                                     attrs);
+ }
++#endif
+ 
++#if defined(ENABLE_GBM) || defined(ENABLE_METAL)
+ void virgl_egl_image_destroy(struct virgl_egl *egl, void *image)
+ {
+    eglDestroyImageKHR(egl->egl_display, image);
+diff --git a/src/vrend/vrend_winsys_egl.h b/src/vrend/vrend_winsys_egl.h
+index 129d16d5..c96d409a 100644
+--- a/src/vrend/vrend_winsys_egl.h
++++ b/src/vrend/vrend_winsys_egl.h
+@@ -32,6 +32,9 @@
+ #ifdef WIN32
+ #include <d3d11.h>
+ #endif
++#ifdef ENABLE_METAL
++#include "vrend_metal.h"
++#endif
+ 
+ struct virgl_egl;
+ 
+@@ -80,12 +83,15 @@ void *virgl_egl_image_from_dmabuf(struct virgl_egl *egl,
+                                   const int *plane_fds,
+                                   const uint32_t *plane_strides,
+                                   const uint32_t *plane_offsets);
+-void virgl_egl_image_destroy(struct virgl_egl *egl, void *image);
+ 
+ void *virgl_egl_image_from_gbm_bo(struct virgl_egl *egl, struct gbm_bo *bo);
+ void *virgl_egl_aux_plane_image_from_gbm_bo(struct virgl_egl *egl, struct gbm_bo *bo, int plane);
+ #endif
+ 
++#if defined(ENABLE_GBM) || defined(ENABLE_METAL)
++void virgl_egl_image_destroy(struct virgl_egl *egl, void *image);
++#endif
++
+ bool virgl_egl_supports_fences(struct virgl_egl *egl);
+ EGLSyncKHR virgl_egl_fence_create(struct virgl_egl *egl);
+ void virgl_egl_fence_destroy(struct virgl_egl *egl, EGLSyncKHR fence);
+@@ -103,4 +109,13 @@ EGLImageKHR virgl_egl_win32_image_from_d3d11_texture2d(struct virgl_egl *egl, ID
+ 
+ int virgl_egl_open_drm_fd(struct virgl_egl *egl);
+ 
++#ifdef ENABLE_METAL
++bool virgl_egl_metal_create_texture(struct virgl_egl *egl, struct pipe_resource *res,
++                                    uint32_t format, MTLTexture_id *tex);
++bool virgl_egl_metal_create_texture_from_shm(struct virgl_egl *egl, int fd, size_t size,
++                                             const struct vrend_metal_texture_description *desc,
++                                             MTLTexture_id *tex);
++EGLImageKHR virgl_egl_metal_image_from_texture(struct virgl_egl *egl, MTLTexture_id tex);
++#endif
++
+ #endif
