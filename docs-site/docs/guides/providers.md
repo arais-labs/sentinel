@@ -59,3 +59,16 @@ Regular tests should not use a developer's personal provider login. Live provide
 tests contact external services and require explicit opt-in and test credentials.
 Consult the test configuration before running them. Model availability depends
 on the provider and the account used.
+
+Before changing default models or subscription transport compatibility versions,
+verify all three tiers against the live subscription services with explicit
+permission. Check catalog availability, streaming, tool calls, and tool-result
+continuation; a catalog entry alone does not prove that inference accepts the
+client version. Use minimal synthetic prompts and temporary probes outside the
+repository. Never save credentials, account metadata, or captured personal
+sessions as test fixtures. Offline tests cover the wire contract and failure
+routing but cannot detect new upstream client-version requirements.
+
+Sentinel's subscription adapters declare their own compatibility versions and
+do not depend on the installed CLI version. A client-version rejection requires
+a Sentinel update or a different available model, not reconnecting credentials.
