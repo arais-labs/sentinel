@@ -1,3 +1,9 @@
 # Unified diffs preserve upstream whitespace, including blank context lines.
-apps/desktop/sentinel/native/graphics/patches/*.patch -whitespace
-apps/desktop/sentinel/native/graphics/patches/**/*.patch -whitespace
+packages/sentinel-workspace/**/*.patch -whitespace
+packages/sentineld/patches/*.patch -whitespace
+packages/sentineld/guest/vulkan/patches/*.patch -whitespace
+# Byte-exact: Windows reads these as written (CRLF batch files, a UTF-16 task), and the edk2
+# patch carries upstream's CRLF lines.
+packages/sentineld/guest/distributions/*/install/** -text -whitespace
+packages/sentineld/guest/distributions/*/*.cmd -text -whitespace
+packages/sentinel-workspace/macos/patches/edk2-*.patch -text -whitespace
