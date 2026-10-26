@@ -75,7 +75,7 @@
 
 .workspace-stack-kind { --stack-color: #75a7fa; }
 .workspace-stack-k3s { --stack-color: #efbd67; }
-.workspace-stack-docker-builder { --stack-color: #54b6f6; }
+.workspace-stack-docker { --stack-color: #54b6f6; }
 .workspace-resources { border: 1px solid var(--border-subtle); border-radius: 12px; padding: 18px; margin: 20px 0; }
 .workspace-resources legend { color: var(--text-primary); font-size: 14px; font-weight: 600; padding: 0 6px; }
 .workspace-resource-inputs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
@@ -118,3 +118,4 @@
 .workspace-distro-alpine { --stack-color: #428bb0; }
 .workspace-distro-ubuntu { --stack-color: #e87845; }
 .workspace-distro-debian { --stack-color: #d65b80; }
+.workspace-distro-windows-11 { --stack-color: #0078d4; }

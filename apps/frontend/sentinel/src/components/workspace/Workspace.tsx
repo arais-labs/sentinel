@@ -23,6 +23,7 @@ import {
   executeSessionLayout,
 } from '../../store/workspace-store';
 import { WORKSPACE_TABS, isWorkspaceTabId } from '../../lib/workspace-tabs';
+import { useUnsupportedViews } from '../../hooks/useUnsupportedViews';
 import { WorkspacePane } from './WorkspacePane';
 import { WorkspaceInstanceContext, RetainedSessionContext } from '../../lib/workspace-context-values';
 import { PaneHeaderTab } from './PaneHeaderTab';
@@ -330,9 +331,10 @@ function SessionWorkspace({ instanceName, className = '', layoutKey, visible }: 
 
   const hasPanels = paneCount > 0;
 
+  const unsupportedViews = useUnsupportedViews();
   const availableTabs = useMemo(
-    () => WORKSPACE_TABS.filter((tab) => !openTabIds.includes(tab.id)),
-    [openTabIds],
+    () => WORKSPACE_TABS.filter((tab) => !openTabIds.includes(tab.id) && !unsupportedViews.includes(tab.id)),
+    [openTabIds, unsupportedViews],
   );
 
   useEffect(() => {

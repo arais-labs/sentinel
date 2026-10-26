@@ -21,7 +21,6 @@ export function attachDesktopInput(canvas: HTMLCanvasElement, video: DesktopVide
   const abort = new AbortController();
   const pressed = new Set<number>(), buttons = new Set<number>();
   const options = { signal: abort.signal };
-  let motion: PointerEvent | undefined, animation = 0;
   let pointer: PointerEvent | undefined;
   const sendKey = (device: number, code: number, value: number) => video.input(device, [{ type: 1, code, value }, sync]);
   const release = () => {
@@ -38,7 +37,38 @@ export function attachDesktopInput(canvas: HTMLCanvasElement, video: DesktopVide
     const y = (event.clientY - rect.top - (rect.height - height) / 2) / height;
     return { x, y };
   };
+  // The guest's cursor shown as the native pointer (CSS cursor), at the size the desktop is drawn:
+  // it moves with no round trip. Before the guest sends one, or with a software cursor in the
+  // pixels, the pointer is hidden over the desktop as before.
+  let cursorShape: typeof video.cursor, cursorKey = '';
+  const renderCursor = () => {
+    const shape = video.cursor;
+    const rect = canvas.getBoundingClientRect();
+    const scale = canvas.width && canvas.height ? Math.min(rect.width / canvas.width, rect.height / canvas.height) : 0;
+    const ratio = window.devicePixelRatio || 1;
+    const key = `${scale}:${ratio}`;
+    if (shape === cursorShape && key === cursorKey) return;
+    cursorShape = shape; cursorKey = key;
+    if (!shape || !scale) {
+      if (shape === null) canvas.style.setProperty('--guest-cursor', 'none'); else canvas.style.removeProperty('--guest-cursor');
+      return;
+    }
+    const source = document.createElement('canvas');
+    source.width = shape.width; source.height = shape.height;
+    source.getContext('2d')?.putImageData(new ImageData(shape.pixels, shape.width, shape.height), 0, 0);
+    const image = document.createElement('canvas');
+    image.width = Math.max(1, Math.round(shape.width * scale * ratio));
+    image.height = Math.max(1, Math.round(shape.height * scale * ratio));
+    const context = image.getContext('2d');
+    if (!context) return;
+    context.imageSmoothingQuality = 'high';
+    context.drawImage(source, 0, 0, image.width, image.height);
+    const hotX = Math.floor(shape.hotX * scale), hotY = Math.floor(shape.hotY * scale);
+    canvas.style.setProperty('--guest-cursor', `image-set(url("${image.toDataURL('image/png')}") ${ratio}x) ${hotX} ${hotY}, default`);
+  };
+  video.onCursor = renderCursor;
   const updateCursor = () => {
+    renderCursor();
     const point = pointer && coordinates(pointer);
     // object-contain leaves margins inside the canvas element. Only the
     // streamed desktop pixels contain a guest cursor; keep the host elsewhere.
@@ -63,18 +93,12 @@ export function attachDesktopInput(canvas: HTMLCanvasElement, video: DesktopVide
     const events = positionEvents(event);
     if (events) video.input(1, [...events, sync]);
   };
-  const flush = () => { animation = 0; if (motion) position(motion); motion = undefined; };
-  canvas.addEventListener('pointermove', event => {
-    motion = event;
-    if (!animation) animation = requestAnimationFrame(flush);
-  }, options);
+  // Each move goes out at once: the browser already delivers one per display frame.
+  canvas.addEventListener('pointermove', position, options);
   for (const type of ['pointerdown', 'pointerup'] as const) canvas.addEventListener(type, event => {
     const code = [272, 274, 273, 275, 276][event.button];
     if (!code) return;
     event.preventDefault(); canvas.focus({ preventScroll: true });
-    if (animation) cancelAnimationFrame(animation);
-    animation = 0;
-    motion = undefined;
     const down = type === 'pointerdown';
     if (down && event.isTrusted) video.enableAudio();
     if (down) { canvas.setPointerCapture(event.pointerId); buttons.add(code); } else buttons.delete(code);
@@ -102,7 +126,7 @@ export function attachDesktopInput(canvas: HTMLCanvasElement, video: DesktopVide
   canvas.addEventListener('blur', release, options);
   window.addEventListener('blur', release, options);
   document.addEventListener('visibilitychange', release, options);
-  return Object.assign(() => { release(); abort.abort(); resize.disconnect(); forgetPointer(); if (animation) cancelAnimationFrame(animation); }, {
+  return Object.assign(() => { release(); abort.abort(); resize.disconnect(); forgetPointer(); video.onCursor = undefined; }, {
     release,
     shortcut(key: 'c' | 'x' | 'v', shift = false) {
       release();

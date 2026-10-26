@@ -28,6 +28,7 @@ import { instancePrefixFromPath, instanceRouteFromPath } from '../lib/routes';
 import { usePaneId, useWorkspaceMode } from '../lib/workspace-context';
 import { isWorkspaceTabId } from '../lib/workspace-tabs';
 import { openWorkspaceTab } from '../lib/workspace-navigation';
+import { useUnsupportedViews, useWatchUnsupportedViews } from '../hooks/useUnsupportedViews';
 import { useOpenTabIds, useWorkspaceStore, WORKSPACE_DND_MIME } from '../store/workspace-store';
 import { useThemeStore } from '../store/theme-store';
 import { clearPaneActions, setPaneActions } from '../store/pane-actions-store';
@@ -117,6 +118,9 @@ export function AppShell({
   const paneId = usePaneId();
   const instanceMatch = location.pathname.match(/^\/instances\/([^/]+)/);
   const hasInstanceScope = Boolean(instanceMatch?.[1]);
+  useWatchUnsupportedViews(!workspaceMode && hasInstanceScope);
+  const unsupportedViews = useUnsupportedViews();
+  const groupItems = (routes: string[]) => navItems.filter(item => routes.includes(item.route) && !unsupportedViews.includes(item.route));
 
   // In a tiling-workspace pane the page's header actions render inside the
   // pane's own tab ({@link PaneHeaderTab}), not in a second header bar here.
@@ -254,9 +258,9 @@ export function AppShell({
         {hasInstanceScope && <SidebarInstanceSwitcher expanded={isSidebarExpanded} />}
 
         <div className="desktop-navigation-scroll">
-          {hasInstanceScope && navigationGroups.map(group => <section className="navigation-menu-section" key={group.label} aria-label={group.label} style={{ flexGrow: navItems.filter(item => group.routes.includes(item.route)).length }}>
+          {hasInstanceScope && navigationGroups.map(group => <section className="navigation-menu-section" key={group.label} aria-label={group.label} style={{ flexGrow: groupItems(group.routes).length }}>
             <h2>{group.label}</h2>
-            {renderNav(navItems.filter(item => group.routes.includes(item.route)), undefined, isSidebarExpanded, focusedPaneIndicator)}
+            {renderNav(groupItems(group.routes), undefined, isSidebarExpanded, focusedPaneIndicator)}
           </section>)}
         </div>
 
@@ -322,9 +326,9 @@ export function AppShell({
             </header>
             {hasInstanceScope && <SidebarInstanceSwitcher expanded />}
             <div className="navigation-menu-scroll">
-              {hasInstanceScope && navigationGroups.map(group => <section className="navigation-menu-section" key={group.label} aria-label={group.label} style={{ flexGrow: navItems.filter(item => group.routes.includes(item.route)).length }}>
+              {hasInstanceScope && navigationGroups.map(group => <section className="navigation-menu-section" key={group.label} aria-label={group.label} style={{ flexGrow: groupItems(group.routes).length }}>
                 <h2>{group.label}</h2>
-                {renderNav(navItems.filter(item => group.routes.includes(item.route)), () => setIsMobileMenuOpen(false), true, focusedPaneIndicator)}
+                {renderNav(groupItems(group.routes), () => setIsMobileMenuOpen(false), true, focusedPaneIndicator)}
               </section>)}
             </div>
             <footer className="navigation-menu-footer">

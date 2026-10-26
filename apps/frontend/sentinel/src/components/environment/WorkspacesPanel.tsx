@@ -4,10 +4,10 @@ import { WorkspaceRecoveryDialog } from './WorkspaceRecoveryDialog';
 import { RuntimeUpdateNotice } from './RuntimeUpdateNotice';
 import { WorkspaceRemovalDialog } from './WorkspaceRemovalDialog';
 import { WorkspaceReinstallDialog } from './WorkspaceReinstallDialog';
-import { toolNames, toolLogos } from './workspaceTools';
-import { distributionLogos, distributionNames } from './workspaceDistributions';
-import { workspaceDesktops } from './workspaceDesktops';
-import { useEffect, useState } from 'react';
+import { toolLogos } from './workspaceTools';
+import { distributionLogos } from './workspaceDistributions';
+import { desktopDescription } from './workspaceDesktops';
+import { useEffect, useRef, useState } from 'react';
 import { useWorkspaceLibrary } from './useWorkspaceLibrary';
 import { Code2, FolderOpen, Server, Plus, Pencil, Trash2, Loader2, Play, Square, RefreshCw, Wrench, Search, ChevronDown, Monitor, Terminal } from 'lucide-react';
 import { notificationPublisher } from '../../lib/notifications';
@@ -17,10 +17,11 @@ import { WorkspaceEditor, type WorkspaceDraft } from './WorkspaceEditor';
 import { api } from '../../lib/api';
 import { workspaceSaveError } from './workspaceValidation';
 import { useInstanceName } from '../../lib/workspace-context';
-import type { Workspace } from '../../types/api';
+import type { Workspace, WorkspaceCatalog } from '../../types/api';
 import './workspaces-panel.css';
 
 const notify = notificationPublisher('Workspaces');
+const nameOf = (items: { id: string; name: string }[] | undefined, id: string) => items?.find(item => item.id === id)?.name ?? id;
 
 export function WorkspacesPanel({ onboarding = false, onAddMachine, page = false }: { onboarding?: boolean; onAddMachine?: () => void; page?: boolean }) {
   const instanceName = useInstanceName();
@@ -36,6 +37,19 @@ export function WorkspacesPanel({ onboarding = false, onAddMachine, page = false
   const [removing, setRemoving] = useState<Workspace | null>(null);
   const [reinstalling, setReinstalling] = useState<Workspace | null>(null);
   const [reinstallDraft, setReinstallDraft] = useState<WorkspaceDraft | null>(null);
+  // Each machine's catalog names its workspaces' distribution, desktop and tools; ids show until it loads.
+  const [catalogs, setCatalogs] = useState<Partial<Record<string, WorkspaceCatalog>>>({});
+  const requestedCatalogs = useRef(new Set<string>());
+  const catalogMachines = [...new Set(workspaces.map(space => space.machine_id))].sort().join('\n');
+  useEffect(() => {
+    for (const id of catalogMachines.split('\n').filter(Boolean)) {
+      if (requestedCatalogs.current.has(id)) continue;
+      requestedCatalogs.current.add(id);
+      api.get<WorkspaceCatalog>(`/machines/${id}/development-tools`)
+        .then(value => setCatalogs(current => ({ ...current, [id]: value })))
+        .catch(() => requestedCatalogs.current.delete(id));
+    }
+  }, [catalogMachines]);
   const query = search.trim().toLocaleLowerCase();
   const visibleWorkspaces = workspaces.filter(space =>
     (!machineFilter || space.machine_id === machineFilter)
@@ -52,7 +66,7 @@ export function WorkspacesPanel({ onboarding = false, onAddMachine, page = false
   }
   async function save(draft: WorkspaceDraft) {
     if (!editor) return;
-    if (editor !== 'new' && draft.distribution !== (editor.distribution ?? 'alpine')) {
+    if (editor !== 'new' && draft.distribution !== editor.distribution) {
       setReinstallDraft(draft);
       setReinstalling(editor);
       setEditor(null);
@@ -109,25 +123,25 @@ export function WorkspacesPanel({ onboarding = false, onAddMachine, page = false
           <div className="workspace-library-card-heading">
             <div className="workspace-library-icon"><FolderOpen size={22} strokeWidth={1.6} /></div>
             <div className="workspace-library-identity"><h2 title={space.name}>{space.name}</h2><span className="workspace-library-machine"><Server size={12} />{machines.find(m => m.id === space.machine_id)?.name ?? (machinesLoading ? 'Loading machine…' : 'Machine unavailable')}</span></div>
-            <div className="workspace-container-status" data-state={space.container_state || 'stopped'} role="status">{['checking', 'preparing', 'recovering'].includes(space.container_state || '') ? <Loader2 size={13} className="animate-spin shrink-0" /> : <span className="workspace-container-dot" />}<span>{space.container_state === 'preparing' ? 'Preparing' : ({ checking: 'Checking connection…', running: 'Running', stopped: 'Stopped', stopping: 'Stopping', recovering: 'Recovering', failed: 'Needs attention', unavailable: 'Runtime unavailable' })[space.container_state || 'stopped']}</span></div>
+            <div className="workspace-container-status" data-state={space.state || 'stopped'} role="status">{['checking', 'preparing', 'recovering'].includes(space.state || '') ? <Loader2 size={13} className="animate-spin shrink-0" /> : <span className="workspace-container-dot" />}<span>{space.state === 'preparing' ? 'Preparing' : ({ checking: 'Checking connection…', running: 'Running', stopped: 'Stopped', stopping: 'Stopping', recovering: 'Recovering', failed: 'Needs attention', unavailable: 'Runtime unavailable' })[space.state || 'stopped']}</span></div>
           </div>
           <div className="workspace-library-environment" aria-label="Workspace environment">
-            <span><img src={distributionLogos[space.distribution ?? 'alpine']} alt="" />{distributionNames[space.distribution ?? 'alpine']}</span>
-            <span>{workspaceDesktops[space.desktop ?? 'none'].logo
-              ? <img src={workspaceDesktops[space.desktop ?? 'none'].logo} alt="" />
-              : space.desktop && space.desktop !== 'none' ? <Monitor size={16} aria-hidden="true" /> : <Terminal size={16} aria-hidden="true" />}
-              {space.desktop && space.desktop !== 'none' ? workspaceDesktops[space.desktop].name.split(' · ')[0] : 'No desktop'}</span>
+            <span>{distributionLogos[space.distribution] ? <img src={distributionLogos[space.distribution]} alt="" /> : <Server size={16} aria-hidden="true" />}{nameOf(catalogs[space.machine_id]?.distributions, space.distribution)}</span>
+            <span>{desktopDescription(space.desktop).logo
+              ? <img src={desktopDescription(space.desktop).logo} alt="" />
+              : space.desktop !== 'none' ? <Monitor size={16} aria-hidden="true" /> : <Terminal size={16} aria-hidden="true" />}
+              {space.desktop !== 'none' ? nameOf(catalogs[space.machine_id]?.desktops, space.desktop) : 'No desktop'}</span>
           </div>
-          {space.container_message && <p className="workspace-container-message">{space.container_message}</p>}
+          {space.message && <p className="workspace-container-message">{space.message}</p>}
           {space.runtime_update ? <div className="workspace-container-error"><RuntimeUpdateNotice requirement={space.runtime_update} machineId={space.machine_id} onUpdated={reload} /></div>
-            : space.container_error && <p className="workspace-container-error">{space.recovery_available ? 'This workspace needs recovery. Try repair, reinstall Linux, or remove the workspace.' : space.container_error}</p>}
+            : space.error && <p className="workspace-container-error">{space.recovery_available ? 'This workspace needs recovery. Try repair, reinstall, or remove the workspace.' : space.error}</p>}
           <div className="workspace-library-location"><span>Project folder</span><p title={space.directory}>{space.directory}</p></div>
           {space.resources && <div className="workspace-library-specs"><span>{space.resources.cpus} CPUs</span><span>{space.resources.memory_gib} GiB RAM</span><span title="Private workspace disk capacity; your project folder is separate">{space.resources.disk_gib} GiB disk</span></div>}
-          {!!space.development_tools?.length && <div className="workspace-library-tools"><span className="workspace-library-tools-label">Tools</span><div className="workspace-library-tool-icons">{space.development_tools.map(tool => <span key={tool} className="workspace-library-tool" tabIndex={0} aria-label={toolNames[tool] ?? tool}>
+          {!!space.development_tools?.length && <div className="workspace-library-tools"><span className="workspace-library-tools-label">Tools</span><div className="workspace-library-tool-icons">{space.development_tools.map(tool => <span key={tool} className="workspace-library-tool" tabIndex={0} aria-label={nameOf(catalogs[space.machine_id]?.tools, tool)}>
             {toolLogos[tool] ? <img src={toolLogos[tool]} alt="" className={`workspace-tool-logo workspace-tool-logo--${tool}`} /> : <Code2 size={20} aria-hidden="true" />}
-            <span className="workspace-library-tool-tooltip" role="tooltip">{toolNames[tool] ?? tool}</span>
+            <span className="workspace-library-tool-tooltip" role="tooltip">{nameOf(catalogs[space.machine_id]?.tools, tool)}</span>
           </span>)}</div></div>}
-          <div className="workspace-library-card-actions"><button disabled={space.recovery_available || changing === space.id || space.container_state === 'stopping' || ['checking', 'recovering', 'unavailable'].includes(space.container_state || '')} onClick={() => void changeState(space, ['running', 'preparing'].includes(space.container_state || '') ? 'stop' : 'start')}>{changing === space.id ? <Loader2 size={13} className="animate-spin" /> : ['running', 'preparing'].includes(space.container_state || '') ? <Square size={13} /> : <Play size={13} />}{space.container_state === 'preparing' ? 'Cancel setup' : space.container_state === 'stopping' ? 'Stopping…' : space.container_state === 'running' ? 'Stop' : space.container_state === 'failed' ? 'Retry' : 'Start'}</button><button disabled={space.container_state === 'recovering'} onClick={() => edit(space)}><Pencil size={13} />Edit</button><button disabled={changing === space.id || ['checking', 'preparing', 'stopping', 'recovering', 'unavailable'].includes(space.container_state || '')} title="Erase and rebuild the private Linux disk. Your mounted project folder is kept." onClick={() => setReinstalling(space)}><RefreshCw size={13} />Reinstall</button>{space.recovery_available && <button title="Back up and repair this workspace" disabled={changing === space.id || space.container_state === 'recovering'} onClick={() => setRecovering(space)}><Wrench size={13} />Recover</button>}<button className="workspace-library-remove" disabled={space.container_state === 'recovering'} onClick={() => setRemoving(space)}><Trash2 size={13} />Remove</button></div>
+          <div className="workspace-library-card-actions"><button disabled={space.recovery_available || changing === space.id || space.state === 'stopping' || ['checking', 'recovering', 'unavailable'].includes(space.state || '')} onClick={() => void changeState(space, ['running', 'preparing'].includes(space.state || '') ? 'stop' : 'start')}>{changing === space.id ? <Loader2 size={13} className="animate-spin" /> : ['running', 'preparing'].includes(space.state || '') ? <Square size={13} /> : <Play size={13} />}{space.state === 'preparing' ? 'Cancel setup' : space.state === 'stopping' ? 'Stopping…' : space.state === 'running' ? 'Stop' : space.state === 'failed' ? 'Retry' : 'Start'}</button><button disabled={space.state === 'recovering'} onClick={() => edit(space)}><Pencil size={13} />Edit</button><button disabled={changing === space.id || ['checking', 'preparing', 'stopping', 'recovering', 'unavailable'].includes(space.state || '')} title="Erase and rebuild the private workspace disk. Your mounted project folder is kept." onClick={() => setReinstalling(space)}><RefreshCw size={13} />Reinstall</button>{space.recovery_available && <button title="Back up and repair this workspace" disabled={changing === space.id || space.state === 'recovering'} onClick={() => setRecovering(space)}><Wrench size={13} />Recover</button>}<button className="workspace-library-remove" disabled={space.state === 'recovering'} onClick={() => setRemoving(space)}><Trash2 size={13} />Remove</button></div>
         </article>)}
       </div>}
     </div>

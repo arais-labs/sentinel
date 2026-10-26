@@ -1,7 +1,7 @@
 import { X, RefreshCw, Loader2, Plus, Check } from 'lucide-react';
 
 export interface LocalMachineFormProps {
-  /** 'create' registers a new runtime; 'edit' updates an existing one. */
+  /** 'create' registers this Mac as a machine; 'edit' updates it. */
   mode?: 'create' | 'edit';
   /** Create-mode gating: when false, show the guide + Recheck instead of the fields. */
   available?: boolean;
@@ -20,9 +20,9 @@ export interface LocalMachineFormProps {
 }
 
 /**
- * The "Local (this Mac)" runtime form, shared by Workspaces and Onboarding. Create
+ * The "Local (this Mac)" machine form, shared by Workspaces and Onboarding. Create
  * mode shows the availability guide when unavailable, else a Name + Workspace
- * form; edit mode updates an existing runtime. Behaviour is passed in via props.
+ * form; edit mode updates the existing machine. Behaviour is passed in via props.
  */
 export function LocalMachineForm({
   mode = 'create',
@@ -110,7 +110,7 @@ export function LocalMachineForm({
               className="btn-primary h-10 px-4 gap-2 text-[10px] font-bold uppercase tracking-widest disabled:opacity-40 disabled:cursor-not-allowed"
             >
               {isBusy ? <Loader2 size={14} className="animate-spin" /> : isEdit ? <Check size={14} /> : <Plus size={14} />}
-              {isEdit ? 'Save changes' : 'Create runtime'}
+              {isEdit ? 'Save changes' : 'Create machine'}
             </button>
           </div>
         </>

@@ -3,21 +3,18 @@ import { createPortal } from 'react-dom';
 import Tooltip from '@mui/material/Tooltip';
 import { ArrowRight, Check, ChevronDown, Code2, FolderOpen, GitBranch, Loader2, Plus, Search, Server, X } from 'lucide-react';
 import { api } from '../../lib/api';
-import type { Machine, Workspace, WorkspaceDesktop, WorkspaceBrowser } from '../../types/api';
+import type { Machine, Workspace, WorkspaceCatalog } from '../../types/api';
 import { MachineFolderPicker } from './MachineFolderPicker';
 import { DesktopPreview } from './DesktopPreview';
-import { workspaceDesktopChoices, workspaceDesktops } from './workspaceDesktops';
+import { desktopDescription } from './workspaceDesktops';
 import { toolLogos } from './workspaceTools';
 import { distributionLogos } from './workspaceDistributions';
+import { availableSelection, defaultBrowser, withMinimum, workspaceChoices } from './workspaceCatalog';
 import './workspace-editor.css';
 import { projectDirectoryError } from './workspaceValidation';
 
-
-type Tool = { id: string; name: string; detail: string; category: string };
-type Stack = { id: string; name: string; description: string; tools: string[] };
-type Distribution = { id: "alpine" | "ubuntu" | "debian"; name: string; detail: string; tools: string[] | null };
-type Catalog = { distributions?: Distribution[]; os: string; container_available: boolean; stacks: Stack[]; tools: Tool[] };
-export type WorkspaceDraft = { distribution: "alpine" | "ubuntu" | "debian"; desktop: WorkspaceDesktop; browser: WorkspaceBrowser; name: string; machine_id: string; directory: string; development_tools: string[]; resources?: { cpus: number; memory_gib: number; disk_gib: number } };
+type Stack = WorkspaceCatalog['stacks'][number];
+export type WorkspaceDraft = { distribution: string; desktop: string; browser: string; name: string; machine_id: string; directory: string; development_tools: string[]; resources?: { cpus: number; memory_gib: number; disk_gib: number } };
 
 export function WorkspaceEditor({ workspace, machines, saving, onClose, onSave }: {
   workspace: Workspace | 'new'; machines: Machine[]; saving: boolean;
@@ -32,23 +29,26 @@ export function WorkspaceEditor({ workspace, machines, saving, onClose, onSave }
   const tabId = useId();
   const body = useRef<HTMLElement>(null);
   const [query, setQuery] = useState('');
-  const [catalog, setCatalog] = useState<Catalog | null>(null);
+  const [catalog, setCatalog] = useState<WorkspaceCatalog | null>(null);
   const [detecting, setDetecting] = useState(false);
   const [error, setError] = useState('');
   const [retry, setRetry] = useState(0);
   const [tools, setTools] = useState<string[]>(creating ? ['git'] : [...new Set(['git', ...(workspace.development_tools || [])])]);
   const [picking, setPicking] = useState(false);
   const [resourceOverride, setResourceOverride] = useState<WorkspaceDraft['resources']>(creating ? undefined : workspace.resources ?? { cpus: 2, memory_gib: 2, disk_gib: 32 });
-  const [distribution, setDistribution] = useState<'alpine' | 'ubuntu' | 'debian'>(creating ? 'alpine' : workspace.distribution ?? 'alpine');
-  const [desktop, setDesktop] = useState<WorkspaceDesktop>(creating ? 'none' : workspace.desktop ?? 'none');
-  const [browser, setBrowser] = useState<WorkspaceBrowser>(creating ? 'chromium' : workspace.browser ?? 'chromium');
+  const [distribution, setDistribution] = useState(creating ? '' : workspace.distribution);
+  const [desktop, setDesktop] = useState(creating ? 'none' : workspace.desktop);
+  const [browser, setBrowser] = useState(creating ? defaultBrowser : workspace.browser);
   const clusters = Number(tools.includes('kind')) + Number(tools.includes('k3s'));
-  const recommended = clusters > 1 ? { cpus: 4, memory_gib: 8, disk_gib: 64 }
+  const selectedDistribution = catalog?.distributions.find(item => item.id === distribution);
+  const recommended = withMinimum(clusters > 1 ? { cpus: 4, memory_gib: 8, disk_gib: 64 }
     : clusters ? { cpus: 4, memory_gib: 6, disk_gib: 48 }
-    : tools.includes('docker-builder') ? { cpus: 4, memory_gib: 4, disk_gib: 32 }
-    : { cpus: 2, memory_gib: 2, disk_gib: 32 };
-  const distributionChanged = !creating && distribution !== (workspace.distribution ?? 'alpine');
-  const minimumDisk = creating || distributionChanged ? 8 : workspace.resources?.disk_gib ?? 8;
+    : tools.includes('docker') ? { cpus: 4, memory_gib: 4, disk_gib: 32 }
+    : { cpus: 2, memory_gib: 2, disk_gib: 32 }, selectedDistribution);
+  const distributionChanged = !creating && distribution !== workspace.distribution;
+  // The distribution's catalog minimum; existing disks can also only grow.
+  const floor = withMinimum({ cpus: 1, memory_gib: 1, disk_gib: creating || distributionChanged ? 8 : workspace.resources?.disk_gib ?? 8 }, selectedDistribution);
+  const minimumDisk = floor.disk_gib;
   // New workspaces follow stack suggestions until the user edits their allocation.
   const resources = resourceOverride ?? recommended;
   const belowSuggested = [
@@ -59,10 +59,10 @@ export function WorkspaceEditor({ workspace, machines, saving, onClose, onSave }
   const sizeChanged = !creating && !!workspace.resources && (Object.keys(resources) as Array<keyof typeof resources>).some(key => resources[key] !== workspace.resources![key]);
   const toolsAdded = !creating && tools.some(tool => !(workspace.development_tools ?? []).includes(tool));
   const directoryChanged = !creating && directory.trim() !== workspace.directory;
-  const desktopChanged = !creating && desktop !== (workspace.desktop ?? 'none');
-  const restartNeeded = (sizeChanged || directoryChanged || desktopChanged) && !creating && workspace.container_state === 'running';
-  const validResources = Number.isInteger(resources.cpus) && resources.cpus >= 1 && resources.cpus <= 32
-    && Number.isInteger(resources.memory_gib) && resources.memory_gib >= 1 && resources.memory_gib <= 64
+  const desktopChanged = !creating && desktop !== workspace.desktop;
+  const restartNeeded = (sizeChanged || directoryChanged || desktopChanged) && !creating && workspace.state === 'running';
+  const validResources = Number.isInteger(resources.cpus) && resources.cpus >= floor.cpus && resources.cpus <= 32
+    && Number.isInteger(resources.memory_gib) && resources.memory_gib >= floor.memory_gib && resources.memory_gib <= 64
     && Number.isInteger(resources.disk_gib) && resources.disk_gib >= minimumDisk && resources.disk_gib <= 1024;
   const dialog = useRef<HTMLDialogElement>(null);
   const machine = machines.find(item => item.id === machineId);
@@ -71,21 +71,37 @@ export function WorkspaceEditor({ workspace, machines, saving, onClose, onSave }
     if (!machineId) return;
     let active = true;
     setDetecting(true); setCatalog(null); setError(''); if (creating) setTools(['git']);
-    api.get<Catalog>(`/machines/${machineId}/development-tools`).then(value => {
-      if (active) { setCatalog(value); if (!value.container_available) setError('Install Sentinel Runtime for this machine in Machines, or start your local desktop services.'); }
+    api.get<WorkspaceCatalog>(`/machines/${machineId}/development-tools`).then(value => {
+      if (!active) return;
+      setCatalog(value);
+      if (creating) setDistribution(current => value.distributions.some(item => item.id === current) ? current : value.distributions[0]?.id ?? '');
+      if (!value.workspaces_available) setError('Install Sentinel Runtime for this machine in Machines, or start your local desktop services.');
     }).catch(reason => { if (active) setError(reason instanceof Error ? reason.message : 'Could not check this machine'); })
       .finally(() => { if (active) setDetecting(false); });
     return () => { active = false; };
   }, [machineId, creating, retry]);
   const mac = catalog?.os === 'darwin';
-  const distributions = catalog?.distributions ?? [{ id: 'alpine' as const, name: 'Alpine Linux', detail: 'Default · all tools and accelerated desktop', tools: null }];
-  const distro = distributions.find(item => item.id === distribution);
-  const supported = (id: string) => !distro?.tools || distro.tools.includes(id);
-  const compatibleCatalog = catalog ? { ...catalog, tools: catalog.tools.filter(tool => tool.id !== 'chromium' && supported(tool.id)), stacks: catalog.stacks.filter(stack => stack.tools.every(supported)) } : null;
-  const installed = creating ? ['git'] : [...new Set(['git', ...(workspace.development_tools || [])])];
+  const distributions = catalog?.distributions ?? [];
+  const choices = catalog ? workspaceChoices(catalog, distribution) : null;
+  // Drop the desktop, browser and tools the selected distribution cannot run.
+  useEffect(() => {
+    if (!catalog) return;
+    const next = availableSelection(catalog, distribution, { desktop, browser, tools });
+    setDesktop(next.desktop); setBrowser(next.browser);
+    if (next.tools.length !== tools.length) setTools(next.tools);
+    // Raise an allocation below the distribution's minimum to it.
+    setResourceOverride(current => current && withMinimum(current, catalog.distributions.find(item => item.id === distribution)));
+  }, [catalog, distribution]); // eslint-disable-line react-hooks/exhaustive-deps
+  const kept = creating ? ['git'] : [...new Set(['git', ...(workspace.development_tools || [])])];
+  const installed = choices ? kept.filter(id => choices.tools.some(tool => tool.id === id)) : kept;
+  const desktopChoices = [{ id: 'none', name: 'None' }, ...choices?.desktops ?? []];
+  const browserChoices = [
+    ...choices?.browsers.some(item => item.id === defaultBrowser) ? [] : [{ id: defaultBrowser, name: 'Default browser', detail: 'The operating system’s default browser.' }],
+    ...choices?.browsers ?? [],
+  ];
   const selected = catalog?.tools.filter(tool => tools.includes(tool.id)) ?? [];
   const directoryError = projectDirectoryError(directory);
-  const canContinue = !directoryError && name.trim() && machineId && directory.trim() && !detecting && !error && catalog;
+  const canContinue = !directoryError && name.trim() && machineId && directory.trim() && !detecting && !error && catalog && distribution;
   function toggleStack(stack: Stack) {
     const chosen = stack.tools.every(id => tools.includes(id));
     setTools(current => {
@@ -120,8 +136,8 @@ export function WorkspaceEditor({ workspace, machines, saving, onClose, onSave }
   }
   const terms = query.toLowerCase().trim().split(/\s+/).filter(Boolean);
   const matches = (text: string) => terms.every(term => text.toLowerCase().includes(term));
-  const visibleTools = compatibleCatalog?.tools.filter(tool => matches(`${tool.name} ${tool.id} ${tool.detail} ${tool.category}`)) ?? [];
-  const visibleStacks = compatibleCatalog?.stacks.filter(stack => matches(`${stack.name} ${stack.description} ${stack.tools.map(id => catalog?.tools.find(tool => tool.id === id)?.name ?? id).join(' ')}`)) ?? [];
+  const visibleTools = choices?.tools.filter(tool => matches(`${tool.name} ${tool.id} ${tool.detail} ${tool.category}`)) ?? [];
+  const visibleStacks = choices?.stacks.filter(stack => matches(`${stack.name} ${stack.description} ${stack.tools.map(id => catalog?.tools.find(tool => tool.id === id)?.name ?? id).join(' ')}`)) ?? [];
   useEffect(() => { body.current?.scrollTo({ top: 0 }); }, [tab, query]);
   return createPortal(<>
     <dialog ref={dialog} className="workspace-editor" aria-labelledby="workspace-editor-title"
@@ -145,60 +161,55 @@ export function WorkspaceEditor({ workspace, machines, saving, onClose, onSave }
           {tab === 'location' && <div className="workspace-editor-fields">
             {!creating && <p className="workspace-editor-note">Changing folders resets terminals and file views. If running, the workspace restarts. Installed tools and private disk data are kept; neither project folder is deleted. Active agents must finish first.</p>}
             {<><label>Machine<div className="workspace-editor-select"><Server size={16} /><select value={machineId} onChange={e => { setMachineId(e.target.value); setDirectory(''); setFurthestStep(0); }} disabled={saving || !creating}>{machines.map(host => <option key={host.id} value={host.id}>{host.name}</option>)}</select><ChevronDown size={15} /></div></label>
-              <label>Project folder<div className="workspace-editor-folder"><input required aria-invalid={!!directoryError} aria-describedby={`${tabId}-directory-help`} value={directory} onChange={e => setDirectory(e.target.value)} placeholder="Choose a folder or enter a path" disabled={saving} /><button type="button" onClick={() => setPicking(true)} disabled={!machineId || saving}><FolderOpen size={16} />Browse</button></div><small id={`${tabId}-directory-help`} role={directoryError ? 'alert' : undefined}>{directoryError ?? 'Shared with your isolated Linux environment. Your original files stay in this folder.'}</small></label>
+              <label>Project folder<div className="workspace-editor-folder"><input required aria-invalid={!!directoryError} aria-describedby={`${tabId}-directory-help`} value={directory} onChange={e => setDirectory(e.target.value)} placeholder="Choose a folder or enter a path" disabled={saving} /><button type="button" onClick={() => setPicking(true)} disabled={!machineId || saving}><FolderOpen size={16} />Browse</button></div><small id={`${tabId}-directory-help`} role={directoryError ? 'alert' : undefined}>{directoryError ?? 'Shared with your isolated workspace. Your original files stay in this folder.'}</small></label>
               </>}
           </div>}
           {tab === 'os' && <div className="workspace-editor-fields">
-            <div className="workspace-editor-intro"><p>Operating system</p><span>Choose the Linux distribution for this workspace.</span></div>
+            <div className="workspace-editor-intro"><p>Operating system</p><span>Choose the operating system for this workspace.</span></div>
             <fieldset className="workspace-distributions" disabled={saving}>
-              <legend className="sr-only">Linux distribution</legend>
+              <legend className="sr-only">Operating system</legend>
               <div className="workspace-stack-grid">{distributions.map(item => (
                 <label key={item.id} className={`workspace-stack-card workspace-distro-${item.id}${distribution === item.id ? ' is-selected' : ''}`}>
-                  <input className="sr-only" type="radio" name={`${tabId}-distribution`} value={item.id} checked={distribution === item.id} onChange={() => {
-                    setDistribution(item.id);
-                    if (item.id === 'alpine' && browser === 'chrome') setBrowser('chromium');
-                    setTools(current => item.tools ? current.filter(id => item.tools!.includes(id)) : current);
-                  }} />
+                  <input className="sr-only" type="radio" name={`${tabId}-distribution`} value={item.id} checked={distribution === item.id} onChange={() => setDistribution(item.id)} />
                   <span className="workspace-stack-top">
-                    <span className="workspace-stack-symbol"><img src={distributionLogos[item.id]} alt="" className="workspace-tool-logo" /></span>
+                    <span className="workspace-stack-symbol">{distributionLogos[item.id] ? <img src={distributionLogos[item.id]} alt="" className="workspace-tool-logo" /> : <Server size={22} aria-hidden="true" />}</span>
                     <span className="workspace-stack-check">{distribution === item.id && <Check size={13} />}</span>
                   </span>
-                  <strong>{!creating && item.id === 'ubuntu' ? 'Ubuntu' : item.name}</strong>
+                  <strong>{item.name}</strong>
                   <span className="workspace-stack-description">{item.detail}</span>
                 </label>
               ))}</div>
             </fieldset>
-            {distributionChanged && <p className="workspace-resource-warning" role="alert">Changing the OS requires reinstalling this workspace. Its private Linux disk, installed apps, VM-only files, browser profiles, and recovery backups will be erased. Your mounted project folder stays intact. You’ll confirm before anything is erased.</p>}
+            {distributionChanged && <p className="workspace-resource-warning" role="alert">Changing the OS requires reinstalling this workspace. Its private disk, installed apps, VM-only files, browser profiles, and recovery backups will be erased. Your mounted project folder stays intact. You’ll confirm before anything is erased.</p>}
           </div>}
           {tab === 'desktop' && <div className="workspace-editor-fields">
             <div className="workspace-editor-intro"><p>Desktop environment</p><span>Optional graphical apps, separate from your development tools.</span></div>
             <fieldset disabled={saving}>
               <legend className="sr-only">Desktop environment</legend>
-              <div className="workspace-stack-grid workspace-desktop-options">{workspaceDesktopChoices.map(id => <Tooltip key={id} title={<DesktopPreview desktop={id} />} describeChild disableInteractive placement="top" enterDelay={150}
+              <div className="workspace-stack-grid workspace-desktop-options">{desktopChoices.map(({ id, name: label }) => <Tooltip key={id} title={<DesktopPreview desktop={id} name={id === 'none' ? 'No desktop' : label} />} describeChild disableInteractive placement="top" enterDelay={150}
                 slotProps={{ tooltip: { sx: { p: 0, maxWidth: 'none', bgcolor: 'transparent' } }, popper: {
                   container: () => dialog.current,
                   modifiers: [{ name: 'preventOverflow', options: { boundary: dialog.current, padding: 16, altAxis: true, tether: false } }],
                 } }}>
                 <label className={`workspace-stack-card${desktop === id ? ' is-selected' : ''}`}>
                 <input type="radio" className="sr-only" name={`${tabId}-desktop`} checked={desktop === id} onChange={() => setDesktop(id)} />
-                <span className="workspace-stack-top"><strong>{workspaceDesktops[id].name}</strong><span className="workspace-stack-check">{desktop === id && <Check size={13} />}</span></span>
-                <span className="workspace-stack-description">{workspaceDesktops[id].summary}</span>
+                <span className="workspace-stack-top"><strong>{label}</strong><span className="workspace-stack-check">{desktop === id && <Check size={13} />}</span></span>
+                <span className="workspace-stack-description">{desktopDescription(id).summary}</span>
               </label></Tooltip>)}</div>
             </fieldset>
-            <small>All desktops use the same GPU, sound, and computer controls. You can customize the session inside Linux.</small>
+            <small>All desktops use the same GPU, sound, and computer controls. You can customize the session inside the workspace.</small>
             {desktopChanged && <small>Changing the desktop closes graphical apps when the workspace restarts. Files and installed tools are kept.</small>}
           </div>}
           {tab === 'browser' && <div className="workspace-editor-fields">
             <div className="workspace-editor-intro"><p>Workspace browser</p><span>Available with any desktop, or without a desktop for agent browsing.</span></div>
             <fieldset disabled={saving}>
               <legend className="sr-only">Workspace browser</legend>
-              <div className="workspace-stack-grid">{(['chromium', 'firefox', 'chrome'] as const).filter(id => id !== 'chrome' || distribution !== 'alpine').map(id => <label key={id} className={`workspace-stack-card${browser === id ? ' is-selected' : ''}`}>
+              <div className="workspace-stack-grid">{browserChoices.map(({ id, name: label, detail }) => <label key={id} className={`workspace-stack-card${browser === id ? ' is-selected' : ''}`}>
                 <input className="sr-only" type="radio" name={`${tabId}-browser`} checked={browser === id} onChange={() => setBrowser(id)} />
-                <span className="workspace-stack-top"><strong>{{ chromium: 'Chromium', firefox: 'Firefox', chrome: 'Google Chrome' }[id]}</strong><span className="workspace-stack-check">{browser === id && <Check size={13} />}</span></span>
-                <span className="workspace-stack-description">{id === 'firefox' ? 'Firefox for you; Chromium for the agent’s browser tool.' : 'One browser installation, separate profiles for you and the agent.'}</span>
+                <span className="workspace-stack-top"><strong>{label}</strong><span className="workspace-stack-check">{browser === id && <Check size={13} />}</span></span>
+                <span className="workspace-stack-description">{detail}</span>
               </label>)}</div>
             </fieldset>
-            {distribution === 'alpine' && <small>Google Chrome requires Ubuntu or Debian.</small>}
             <small>Changing browsers keeps existing installations, bookmarks, and profiles.</small>
           </div>}
           {tab === 'resources' && <>
@@ -206,13 +217,13 @@ export function WorkspaceEditor({ workspace, machines, saving, onClose, onSave }
             <fieldset className="workspace-resources" disabled={saving}>
               <legend>Workspace size</legend>
               <div className="workspace-resource-inputs">
-                <label>CPUs<input type="number" min={1} max={32} step={1} required value={resources.cpus} onChange={e => setResourceOverride({ ...resources, cpus: Number(e.target.value) })} /></label>
-                <label>Memory <small>GiB</small><input type="number" min={1} max={64} step={1} required value={resources.memory_gib} onChange={e => setResourceOverride({ ...resources, memory_gib: Number(e.target.value) })} /></label>
+                <label>CPUs<input type="number" min={floor.cpus} max={32} step={1} required value={resources.cpus} onChange={e => setResourceOverride({ ...resources, cpus: Number(e.target.value) })} /></label>
+                <label>Memory <small>GiB</small><input type="number" min={floor.memory_gib} max={64} step={1} required value={resources.memory_gib} onChange={e => setResourceOverride({ ...resources, memory_gib: Number(e.target.value) })} /></label>
                 <label>Disk <small>GiB</small><input type="number" min={minimumDisk} max={1024} step={1} required value={resources.disk_gib} onChange={e => setResourceOverride({ ...resources, disk_gib: Number(e.target.value) })} /></label>
               </div>
               {belowSuggested.length > 0 && <div className="workspace-resource-recommendation" role="status"><span className="workspace-resource-warning">Below suggested allocation: {belowSuggested.join(' · ')}</span><button type="button" onClick={() => setResourceOverride({ cpus: Math.max(resources.cpus, recommended.cpus), memory_gib: Math.max(resources.memory_gib, recommended.memory_gib), disk_gib: Math.max(resources.disk_gib, minimumDisk, recommended.disk_gib) })}>Use suggested</button></div>}
               <p>Private disk capacity, separate from your project folder. Space is used as data is written.</p>
-              {!creating && <p>{distributionChanged ? 'Changing the OS rebuilds the private Linux disk after confirmation.' : restartNeeded ? 'Saving restarts this workspace. Running terminal commands will stop; files and installed tools are kept.' : sizeChanged ? (toolsAdded ? 'Saving installs the selected tools and starts this workspace with the new size.' : 'The new size applies the next time this workspace starts.') : 'CPU and memory can be changed. Disk capacity can only be increased.'}</p>}
+              {!creating && <p>{distributionChanged ? 'Changing the OS rebuilds the private disk after confirmation.' : restartNeeded ? 'Saving restarts this workspace. Running terminal commands will stop; files and installed tools are kept.' : sizeChanged ? (toolsAdded ? 'Saving installs the selected tools and starts this workspace with the new size.' : 'The new size applies the next time this workspace starts.') : 'CPU and memory can be changed. Disk capacity can only be increased.'}</p>}
             </fieldset>
           </>}
           {(tab === 'stacks' || tab === 'tools') && <>
@@ -221,7 +232,7 @@ export function WorkspaceEditor({ workspace, machines, saving, onClose, onSave }
             <div className="workspace-stack-grid">{visibleStacks.map(stack => {
               const checked = stack.tools.every(id => tools.includes(id));
               return <button type="button" key={stack.id} aria-pressed={checked} onClick={() => toggleStack(stack)} className={`workspace-stack-card workspace-stack-${stack.id}${checked ? ' is-selected' : ''}`} disabled={saving || (!creating && stack.tools.every(id => installed.includes(id)))}>
-                <span className="workspace-stack-top"><span className="workspace-stack-symbol"><img src={toolLogos[stack.id]} alt="" className={`workspace-tool-logo workspace-tool-logo--${stack.id}`} /></span><span className="workspace-stack-check">{checked ? <Check size={13} /> : <Plus size={13} />}</span></span>
+                <span className="workspace-stack-top"><span className="workspace-stack-symbol">{toolLogos[stack.id] ? <img src={toolLogos[stack.id]} alt="" className={`workspace-tool-logo workspace-tool-logo--${stack.id}`} /> : <Code2 size={22} aria-hidden="true" />}</span><span className="workspace-stack-check">{checked ? <Check size={13} /> : <Plus size={13} />}</span></span>
                 <strong>{stack.name}</strong><span className="workspace-stack-description">{stack.description}</span><span className="workspace-stack-includes">{stack.tools.map(id => catalog?.tools.find(tool => tool.id === id)?.name).join(' + ')}</span>
               </button>;
             })}</div>

@@ -1,12 +1,12 @@
-import type { SessionRuntimeGitChangedFile, SessionRuntimeGitChangedFilesResponse } from '../types/api';
+import type { SessionWorkspaceGitChangedFile, SessionWorkspaceGitChangedFilesResponse } from '../types/api';
 
-export type RuntimeGitChangedTreeNode =
+export type WorkspaceGitChangedTreeNode =
   | {
       kind: 'directory';
       key: string;
       name: string;
       fullPath: string;
-      children: RuntimeGitChangedTreeNode[];
+      children: WorkspaceGitChangedTreeNode[];
       fileCount: number;
     }
   | {
@@ -14,18 +14,18 @@ export type RuntimeGitChangedTreeNode =
       key: string;
       name: string;
       fullPath: string;
-      entry: SessionRuntimeGitChangedFile;
+      entry: SessionWorkspaceGitChangedFile;
     };
 
-type RuntimeGitChangedFileNode = Extract<RuntimeGitChangedTreeNode, { kind: 'file' }>;
-type RuntimeGitChangedDirectoryNode = Extract<RuntimeGitChangedTreeNode, { kind: 'directory' }>;
+type WorkspaceGitChangedFileNode = Extract<WorkspaceGitChangedTreeNode, { kind: 'file' }>;
+type WorkspaceGitChangedDirectoryNode = Extract<WorkspaceGitChangedTreeNode, { kind: 'directory' }>;
 
 interface MutableDirectoryNode {
   kind: 'directory';
   key: string;
   name: string;
   fullPath: string;
-  children: Map<string, MutableDirectoryNode | RuntimeGitChangedFileNode>;
+  children: Map<string, MutableDirectoryNode | WorkspaceGitChangedFileNode>;
   fileCount: number;
 }
 
@@ -40,9 +40,9 @@ function makeDirectory(name: string, fullPath: string): MutableDirectoryNode {
   };
 }
 
-function freezeDirectory(node: MutableDirectoryNode): RuntimeGitChangedDirectoryNode {
+function freezeDirectory(node: MutableDirectoryNode): WorkspaceGitChangedDirectoryNode {
   const children = Array.from(node.children.values())
-    .map((child): RuntimeGitChangedTreeNode => (child.kind === 'directory' ? freezeDirectory(child) : child))
+    .map((child): WorkspaceGitChangedTreeNode => (child.kind === 'directory' ? freezeDirectory(child) : child))
     .sort((a, b) => {
       if (a.kind !== b.kind) return a.kind === 'directory' ? -1 : 1;
       return a.name.localeCompare(b.name);
@@ -57,9 +57,9 @@ function freezeDirectory(node: MutableDirectoryNode): RuntimeGitChangedDirectory
   };
 }
 
-export function buildRuntimeGitChangedTree(
-  payload: SessionRuntimeGitChangedFilesResponse | null | undefined,
-): RuntimeGitChangedTreeNode[] {
+export function buildWorkspaceGitChangedTree(
+  payload: SessionWorkspaceGitChangedFilesResponse | null | undefined,
+): WorkspaceGitChangedTreeNode[] {
   const root = makeDirectory('', '');
   const entries = Array.isArray(payload?.entries) ? payload.entries : [];
 

@@ -4,7 +4,7 @@ import { ArrowDown, ArrowUp, Cpu, HardDrive, MemoryStick, Network, Monitor, Chev
 import { ReasoningFluid } from './ReasoningFluid';
 import { HISTORY_MS, metricsSnapshot, subscribeMetrics, type MetricSample, type MetricsSnapshot, type WorkspaceMetrics } from '../../lib/workspace-metrics';
 import type { Workspace } from '../../types/api';
-import './workspace-runtime-stats.css';
+import './workspace-stats.css';
 import './run-settings.css';
 
 const MetricsContext = createContext<{ workspace: Workspace | null; sample: MetricsSnapshot } | null>(null);
@@ -66,7 +66,7 @@ export function WorkspacePerformanceChip({ workspace, instanceName, onChangeWork
         </button>
         {workspaceMenu}
       </section>}
-      <WorkspaceRuntimeStats />
+      <WorkspaceStats />
     </div>, document.body)}
   </MetricsContext.Provider>;
 }
@@ -125,7 +125,7 @@ function HistoryChart({ history, series, maximum = 100, label, ceiling = '100%' 
   </div>;
 }
 
-export function WorkspaceRuntimeStats() {
+export function WorkspaceStats() {
   const context = useContext(MetricsContext);
   if (!context?.workspace) return null;
   const { workspace, sample } = context;
@@ -135,7 +135,7 @@ export function WorkspaceRuntimeStats() {
   const networkMax = Math.max(1024, ...history.flatMap(p => [p.data.network_receive_bytes_per_second ?? 0, p.data.network_send_bytes_per_second ?? 0]));
   const state = !data ? (sample.unavailable ? 'Stats temporarily unavailable' : 'Collecting first sample…')
     : data.state === 'running' ? 'Waiting for a sample…' : `Workspace ${data.state}`;
-  return <section className="workspace-runtime-stats" aria-label="Workspace runtime stats">
+  return <section className="workspace-stats" aria-label="Workspace stats">
     <header><strong>{workspace.name}</strong><span>{sample.unavailable ? 'Last known usage' : 'Usage history'}</span></header>
     {measured ? <>
       <div className="workspace-stat-list">

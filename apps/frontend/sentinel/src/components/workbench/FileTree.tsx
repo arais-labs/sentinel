@@ -1,14 +1,14 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown, ChevronRight, Download, FileCode2, Folder, GitBranch, Loader2 } from 'lucide-react';
-import type { SessionRuntimeFileEntry } from '../../types/api';
+import type { SessionWorkspaceFileEntry } from '../../types/api';
 
 interface FileTreeProps {
   rootPath: string;
-  entries: SessionRuntimeFileEntry[];
-  onFileClick: (entry: SessionRuntimeFileEntry) => void;
-  onEntryDownload?: (entry: SessionRuntimeFileEntry) => void;
-  loadFolderEntries: (path: string) => Promise<SessionRuntimeFileEntry[]>;
-  onDirectoryToggle?: (entry: SessionRuntimeFileEntry, expanded: boolean) => void;
+  entries: SessionWorkspaceFileEntry[];
+  onFileClick: (entry: SessionWorkspaceFileEntry) => void;
+  onEntryDownload?: (entry: SessionWorkspaceFileEntry) => void;
+  loadFolderEntries: (path: string) => Promise<SessionWorkspaceFileEntry[]>;
+  onDirectoryToggle?: (entry: SessionWorkspaceFileEntry, expanded: boolean) => void;
   loading?: boolean;
   refreshKey?: number;
 }
@@ -25,7 +25,7 @@ export const FileTree: React.FC<FileTreeProps> = ({
 }) => {
   const [expandedPaths, setExpandedPaths] = useState<Record<string, boolean>>({});
   const [loadingPaths, setLoadingPaths] = useState<Record<string, boolean>>({});
-  const [entriesByPath, setEntriesByPath] = useState<Record<string, SessionRuntimeFileEntry[]>>({});
+  const [entriesByPath, setEntriesByPath] = useState<Record<string, SessionWorkspaceFileEntry[]>>({});
   const expandedPathsRef = useRef(expandedPaths);
   const loadFolderEntriesRef = useRef(loadFolderEntries);
 
@@ -80,7 +80,7 @@ export const FileTree: React.FC<FileTreeProps> = ({
     };
   }, [refreshKey]);
 
-  async function toggleDirectory(entry: SessionRuntimeFileEntry) {
+  async function toggleDirectory(entry: SessionWorkspaceFileEntry) {
     const nextExpanded = !expandedPaths[entry.path];
     setExpandedPaths((current) => ({ ...current, [entry.path]: nextExpanded }));
     onDirectoryToggle?.(entry, nextExpanded);
@@ -94,7 +94,7 @@ export const FileTree: React.FC<FileTreeProps> = ({
     }
   }
 
-  function renderEntries(items: SessionRuntimeFileEntry[], depth = 0): React.JSX.Element[] {
+  function renderEntries(items: SessionWorkspaceFileEntry[], depth = 0): React.JSX.Element[] {
     return items.map((entry) => {
       const isDirectory = entry.kind === 'directory';
       const isExpanded = Boolean(expandedPaths[entry.path]);

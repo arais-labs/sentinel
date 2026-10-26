@@ -1,5 +1,5 @@
-import { MachinesPanel } from '../runtime/MachinesPanel';
-import { WorkspacesPanel } from '../runtime/WorkspacesPanel';
+import { MachinesPanel } from '../environment/MachinesPanel';
+import { WorkspacesPanel } from '../environment/WorkspacesPanel';
 
 export function MachinesStep() {
   return <div className="space-y-6">

@@ -1,26 +1,26 @@
 import { X } from 'lucide-react';
 
-import type { RuntimeLiveView, RuntimeStatusResponse, Session } from '../types/api';
+import type { WorkspaceDesktopStatus, WorkspaceStatusResponse, Session } from '../types/api';
 
-interface RuntimeExplorerModalProps {
+interface WorkspaceExplorerModalProps {
   open: boolean;
   session: Session | null;
-  runtime: RuntimeLiveView | RuntimeStatusResponse | null;
+  info: WorkspaceDesktopStatus | WorkspaceStatusResponse | null;
   onClose: () => void;
 }
 
-export function RuntimeExplorerModal({ open, session, runtime, onClose }: RuntimeExplorerModalProps) {
+export function WorkspaceExplorerModal({ open, session, info, onClose }: WorkspaceExplorerModalProps) {
   if (!open) return null;
-  const provider = runtime && 'provider' in runtime ? runtime.provider : null;
-  const runtimeStatus = runtime && 'status' in runtime ? runtime : null;
-  const status = runtimeStatus?.status ?? provider?.status ?? null;
-  const targetItems = runtimeStatus
+  const provider = info && 'provider' in info ? info.provider : null;
+  const workspaceStatus = info && 'status' in info ? info : null;
+  const status = workspaceStatus?.status ?? provider?.status ?? null;
+  const targetItems = workspaceStatus
     ? [
-        { key: 'runtime', label: 'Machine', value: runtimeStatus.runtime.name || runtimeStatus.runtime.host || '-' },
-        { key: 'host', label: 'Host', value: runtimeStatus.runtime.host || '-' },
-        { key: 'user', label: 'User', value: runtimeStatus.runtime.username || '-' },
-        { key: 'os', label: 'OS', value: runtimeStatus.os },
-        { key: 'sandbox', label: 'Sandbox', value: runtimeStatus.sandbox },
+        { key: 'machine', label: 'Machine', value: workspaceStatus.machine.name || workspaceStatus.machine.host || '-' },
+        { key: 'host', label: 'Host', value: workspaceStatus.machine.host || '-' },
+        { key: 'user', label: 'User', value: workspaceStatus.machine.username || '-' },
+        { key: 'os', label: 'OS', value: workspaceStatus.os },
+        { key: 'sandbox', label: 'Sandbox', value: workspaceStatus.sandbox },
       ]
     : [];
   const items = provider?.items ?? targetItems;
@@ -34,7 +34,7 @@ export function RuntimeExplorerModal({ open, session, runtime, onClose }: Runtim
               Machine
             </div>
             <div className="mt-1 text-sm font-semibold text-(--text-primary)">
-              {session?.title || session?.id || 'Session runtime'}
+              {session?.title || session?.id || 'Session workspace'}
             </div>
           </div>
           <button
@@ -52,10 +52,10 @@ export function RuntimeExplorerModal({ open, session, runtime, onClose }: Runtim
               Provider
             </div>
             <div className="mt-2 text-sm font-semibold text-(--text-primary)">
-              {provider?.label || runtimeStatus?.runtime.name || 'Machine'}
+              {provider?.label || workspaceStatus?.machine.name || 'Machine'}
             </div>
             <div className="mt-1 text-xs leading-relaxed text-(--text-secondary)">
-              {provider?.summary || runtimeStatus?.summary || `Machine is ${status || 'available'}.`}
+              {provider?.summary || workspaceStatus?.summary || `Machine is ${status || 'available'}.`}
             </div>
           </div>
           {items.length ? (

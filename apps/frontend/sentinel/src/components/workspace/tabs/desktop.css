@@ -121,20 +121,6 @@
   color: var(--text-primary);
   font-weight: 500;
 }
-.workspace-desktop-resolution {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  font-size: 12px;
-}
-.workspace-desktop-resolution select {
-  background: var(--desktop-face);
-  color: var(--text-primary);
-  border: 1px solid var(--desktop-edge);
-  box-shadow: inset 0 1px 3px #0000000c;
-  padding: 6px 10px;
-  border-radius: 999px;
-}
 .workspace-desktop-notice {
   display: flex;
   flex-wrap: wrap;
@@ -170,10 +156,6 @@ html.dark .workspace-desktop { background: #0c0c0e; }
 .workspace-desktop-notice[role='alert'] {
   border-color: color-mix(in srgb, var(--text-danger, #e58b79) 12%, transparent);
 }
-.workspace-desktop-resolution select:focus-visible {
-  outline: 2px solid var(--accent-solid);
-  outline-offset: 2px;
-}
 @media (prefers-reduced-motion: reduce) {
   .workspace-desktop button { transition: none; }
 }
@@ -204,7 +186,6 @@ html.dark .workspace-desktop { background: #0c0c0e; }
 }
 .workspace-desktop-status-dot[data-running='true'] { background: #51bc83; }
 .workspace-desktop-status-dot[data-error='true'] { background: #cda0ab; }
-.workspace-desktop-stop-icon { color: #cda0ab; }
 
 html.dark .workspace-desktop-toolbar { background: #0c0c0e; }
 

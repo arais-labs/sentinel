@@ -48,26 +48,26 @@ function parsePane(raw: unknown): ActivePane | null {
   };
 }
 
-export interface UseSessionRuntimeStreamOptions {
+export interface UseSessionWorkspaceStreamOptions {
   onReconnectFailed?: () => void;
   onEvent?: (event: WsEvent) => void;
 }
 
 // Session streams own terminal state. Desktop services belong to the workspace
 // and are controlled explicitly by the Desktop tab.
-export function useSessionRuntimeStream(
+export function useSessionWorkspaceStream(
   instanceName: string | null,
   sessionId: string | null,
-  options: UseSessionRuntimeStreamOptions = {},
+  options: UseSessionWorkspaceStreamOptions = {},
 ) {
   const [activePanes, setActivePanes] = useState<ActivePane[]>([]);
-  const [runtimeBooting, setRuntimeBooting] = useState(false);
+  const [workspaceBooting, setWorkspaceBooting] = useState(false);
   const focusedPaneId = useFocusedPane(sessionId);
   const onEventRef = useRef(options.onEvent);
   onEventRef.current = options.onEvent;
   useEffect(() => {
     setActivePanes([]);
-    setRuntimeBooting(false);
+    setWorkspaceBooting(false);
   }, [instanceName, sessionId]);
   const setFocusedPaneId = useCallback(
     (pane: string | null) => {
@@ -105,7 +105,7 @@ export function useSessionRuntimeStream(
     (event: WsEvent) => {
       if (event.type === 'workspace_changed') {
         setActivePanes([]);
-        setRuntimeBooting(false);
+        setWorkspaceBooting(false);
         if (sessionId) setFocusedPane(sessionId, null);
         window.dispatchEvent(
           new CustomEvent('sentinel:workspace-changed', {
@@ -113,8 +113,8 @@ export function useSessionRuntimeStream(
           }),
         );
       }
-      if (event.type === 'runtime_ready' || event.type === 'connected')
-        setRuntimeBooting(false);
+      if (event.type === 'workspace_ready' || event.type === 'connected')
+        setWorkspaceBooting(false);
       if (
         (event.type === 'panes_changed' || event.type === 'connected') &&
         Array.isArray(event.panes)
@@ -148,7 +148,7 @@ export function useSessionRuntimeStream(
     focusedPaneId,
     setFocusedPaneId,
     dropPane,
-    runtimeBooting,
-    setRuntimeBooting,
+    workspaceBooting,
+    setWorkspaceBooting,
   };
 }

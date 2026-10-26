@@ -1,4 +1,4 @@
-import { WorkspacesPanel } from '../components/runtime/WorkspacesPanel';
+import { WorkspacesPanel } from '../components/environment/WorkspacesPanel';
 
 export function WorkspacesPage() {
   return <WorkspacesPanel page />;

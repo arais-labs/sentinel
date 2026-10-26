@@ -28,6 +28,7 @@ import { useFocusModeStore } from '../../store/focus-mode-store';
 import { RetainedSessionContext, WorkspaceInstanceContext } from '../../lib/workspace-context-values';
 import { PaneActions } from './PaneActions';
 import { usePaneActions } from '../../store/pane-actions-store';
+import { useUnsupportedViews } from '../../hooks/useUnsupportedViews';
 import { useAnchorRect, useDismissOnOutside } from '../../lib/portal-menu';
 
 /** Read the current `tabId` off the panel params, validated against the registry. */
@@ -79,6 +80,7 @@ export function TabPicker({ paneId, activeTabId, variant }: TabPickerProps) {
   const menuRef = useRef<HTMLDivElement>(null);
   const setPaneTab = useWorkspaceStore((state) => state.setPaneTab);
   const openTabIds = useOpenTabIds();
+  const unsupportedViews = useUnsupportedViews();
 
   const rect = useAnchorRect(triggerRef, open);
   useDismissOnOutside(open, setOpen, triggerRef, menuRef);
@@ -130,7 +132,7 @@ export function TabPicker({ paneId, activeTabId, variant }: TabPickerProps) {
             style={{ position: 'fixed', top: rect.top + 4, left: rect.left, zIndex: 10000 }}
             className="max-h-80 w-56 overflow-y-auto rounded-md border border-(--border-subtle) bg-(--surface-0) py-1 shadow-lg shadow-black/20"
           >
-            {WORKSPACE_TABS.filter(tab => !tab.hidden).map((tab) => {
+            {WORKSPACE_TABS.filter(tab => !tab.hidden && (tab.id === activeTabId || !unsupportedViews.includes(tab.id))).map((tab) => {
               const isCurrent = tab.id === activeTabId;
               // Disabled when open in a *different* pane (at-most-once).
               const disabled = !isCurrent && openTabIds.includes(tab.id);
@@ -225,7 +227,8 @@ function SplitMenu({ paneId }: SplitMenuProps) {
   const openTabIds = useOpenTabIds();
 
   // Tabs not yet open anywhere are eligible to seed a new pane.
-  const availableTabs = WORKSPACE_TABS.filter((tab) => !tab.hidden && !openTabIds.includes(tab.id));
+  const unsupportedViews = useUnsupportedViews();
+  const availableTabs = WORKSPACE_TABS.filter((tab) => !tab.hidden && !openTabIds.includes(tab.id) && !unsupportedViews.includes(tab.id));
   const canSplit = availableTabs.length > 0;
 
   const rect = useAnchorRect(triggerRef, open);

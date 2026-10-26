@@ -2,10 +2,10 @@
 // Header: type:u8, flags:u8, reserved:u16, length:u32be, timestamp:u64be (us).
 export const VIDEO_HEADER_SIZE = 16;
 export const MAX_VIDEO_PACKET = 4 * 1024 * 1024;
-export const VideoMessage = { config: 1, frame: 2, input: 3, keyframe: 4, audio: 5 } as const;
+export const VideoMessage = { config: 1, frame: 2, input: 3, keyframe: 4, audio: 5, cursor: 6 } as const;
 export interface VideoPacket { type: number; flags: number; timestamp: number; data: Uint8Array }
 
-export function videoPacket(type: number, data = new Uint8Array(), flags = 0, timestamp = 0): Uint8Array<ArrayBuffer> {
+export function videoPacket(type: number, data: Uint8Array = new Uint8Array(), flags = 0, timestamp = 0): Uint8Array<ArrayBuffer> {
   if (data.length > MAX_VIDEO_PACKET || !Number.isSafeInteger(timestamp) || timestamp < 0) throw new Error('Invalid desktop packet');
   const bytes = new Uint8Array(VIDEO_HEADER_SIZE + data.length);
   const view = new DataView(bytes.buffer);
@@ -31,7 +31,7 @@ export class VideoPacketReader {
         if (this.headerUsed !== VIDEO_HEADER_SIZE) continue;
         const header = new DataView(this.header.buffer);
         const size = header.getUint32(4);
-        if (size > MAX_VIDEO_PACKET || header.getUint16(2) !== 0 || this.header[0] < 1 || this.header[0] > 5
+        if (size > MAX_VIDEO_PACKET || header.getUint16(2) !== 0 || this.header[0] < 1 || this.header[0] > 6
           || (this.header[0] === VideoMessage.audio && (size < 1 || size > 1275 || this.header[1] !== 0))) {
           throw new Error('Invalid desktop video header');
         }
@@ -49,6 +49,17 @@ export class VideoPacketReader {
       this.receive(packet);
     }
   }
+}
+
+// The guest cursor: hotspot and size (u16be each) and straight-alpha RGBA rows; empty when hidden.
+export interface DesktopCursor { hotX: number; hotY: number; width: number; height: number; pixels: Uint8ClampedArray<ArrayBuffer> }
+export function desktopCursor(data: Uint8Array): DesktopCursor | null {
+  if (!data.length) return null;
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  const hotX = view.getUint16(0), hotY = view.getUint16(2), width = view.getUint16(4), height = view.getUint16(6);
+  if (data.length < 8 || !width || !height || width > 128 || height > 128 || hotX >= width || hotY >= height
+    || data.length !== 8 + width * height * 4) throw new Error('Invalid desktop cursor');
+  return { hotX, hotY, width, height, pixels: new Uint8ClampedArray(data.slice(8).buffer) };
 }
 
 export function videoConfiguration(data: Uint8Array): VideoDecoderConfig {

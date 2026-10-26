@@ -4,7 +4,7 @@ import { runtimeUpdateRequirement, type RuntimeUpdateRequirement } from '../../l
 import type { Machine, Workspace } from '../../types/api';
 
 type LibraryWorkspace = Workspace & { runtime_update?: RuntimeUpdateRequirement };
-type RuntimeStatus = Pick<LibraryWorkspace, 'container_state' | 'container_error' | 'container_message' | 'resources' | 'recovery_available' | 'recovery_backup' | 'runtime_update'>;
+type WorkspaceStatus = Pick<LibraryWorkspace, 'state' | 'error' | 'message' | 'resources' | 'recovery_available' | 'recovery_backup' | 'runtime_update'>;
 
 /** Catalog data and each workspace's live connection load independently. */
 export function useWorkspaceLibrary(instanceName: string | undefined, active: boolean) {
@@ -21,9 +21,9 @@ export function useWorkspaceLibrary(instanceName: string | undefined, active: bo
   useEffect(() => {
     let disposed = false, catalogPending = false, machinesPending = false;
     const pending = new Set<string>();
-    const statuses = new Map<string, RuntimeStatus>();
+    const statuses = new Map<string, WorkspaceStatus>();
     const workerRows = new Map<string, Workspace[]>();
-    const workerErrors = new Map<string, RuntimeStatus>();
+    const workerErrors = new Map<string, WorkspaceStatus>();
     const workersPending = new Set<string>();
     let remoteMachines = new Set<string>();
     const prefix = instanceName ? `/instances/${encodeURIComponent(instanceName)}` : '';
@@ -49,8 +49,8 @@ export function useWorkspaceLibrary(instanceName: string | undefined, active: bo
       } catch (reason) {
         if (!disposed) {
           workerErrors.set(machine.id, {
-            container_state: 'unavailable' as const,
-            container_error: reason instanceof Error ? reason.message : 'Worker disconnected',
+            state: 'unavailable' as const,
+            error: reason instanceof Error ? reason.message : 'Worker disconnected',
             runtime_update: runtimeUpdateRequirement(reason),
           });
           setWorkspaces(discovered);
@@ -61,15 +61,17 @@ export function useWorkspaceLibrary(instanceName: string | undefined, active: bo
     const refreshStatus = async (id: string) => {
       if (pending.has(id)) return;
       pending.add(id);
-      let status: RuntimeStatus;
+      let status: WorkspaceStatus;
       try {
         const result = await api.get<Workspace>(`${prefix}/workspaces/${id}/status`, { timeoutMs: 12_000 });
-        const { container_state, container_error, container_message, resources, recovery_available, recovery_backup } = result;
-        status = { container_state, container_error, container_message, resources, recovery_available, recovery_backup, runtime_update: undefined };
+        status = {
+          state: result.state, error: result.error, message: result.message, resources: result.resources,
+          recovery_available: result.recovery_available, recovery_backup: result.recovery_backup, runtime_update: undefined,
+        };
       } catch (error) {
-        status = { container_state: 'unavailable', container_message: null, recovery_available: false,
+        status = { state: 'unavailable', message: null, recovery_available: false,
           runtime_update: runtimeUpdateRequirement(error),
-          container_error: error instanceof Error ? error.message : 'Could not check connection. Retrying…' };
+          error: error instanceof Error ? error.message : 'Could not check connection. Retrying…' };
       } finally { pending.delete(id); }
       if (disposed) return;
       statuses.set(id, status);
@@ -94,7 +96,7 @@ export function useWorkspaceLibrary(instanceName: string | undefined, active: bo
       if (catalogPending) return;
       catalogPending = true;
       try {
-        const rows = await api.get<Workspace[]>(`${prefix}/workspaces?include_runtime=false`);
+        const rows = await api.get<Workspace[]>(`${prefix}/workspaces?include_status=false`);
         if (disposed) return;
         setWorkspaces(discovered(rows.map(row => ({ ...row, ...statuses.get(row.id) }))));
         setError('');

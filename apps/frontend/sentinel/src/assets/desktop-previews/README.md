@@ -1,7 +1,7 @@
 # Desktop previews
 
 These are actual 1280 × 800 screenshots of disposable Sentinel workspaces,
-not illustrations or upstream promotional images. XFCE/LXQt/Weston show Alpine;
+not illustrations or upstream promotional images. XFCE/LXQt show Alpine;
 GNOME shows GNOME 50 on Ubuntu 26.04 with Nautilus; Plasma shows Ubuntu 26.04
 with Dolphin. Each capture uses Sentinel's
 first-run defaults, running as the regular desktop user.
@@ -28,13 +28,13 @@ Wayland/Xwayland pixel, keyboard, pointer, clipboard and audio checks. Source:
 `/tmp/sentinel-desktop-ubuntu-gnome-final.png`; the full run, including restart
 and shutdown, passed in `apps/desktop/sentinel/build/gnome-ubuntu-final-qualification.log`.
 No image content was modified. Capture distribution labels live alongside their assets in
-`workspaceDesktops.ts`; new choices need live qualification and a reviewed capture.
+`workspaceDesktops.ts`; desktops without a capture show a text-only preview.
 
 Plasma's unmodified capture is from
 `apps/desktop/sentinel/build/plasma-ubuntu-native-qualified.png`, produced by the
 fresh Ubuntu qualification run after first-login rendering, input, clipboard
 and audio checks. A capture alone does not qualify session restart behavior;
-the selectable desktop list is maintained separately.
+the selectable desktops come from each machine's workspace catalog.
 
 LXQt's current capture is `/tmp/sentinel-desktop-lxqt-patched.png`, from the full
 packaged Alpine qualification in

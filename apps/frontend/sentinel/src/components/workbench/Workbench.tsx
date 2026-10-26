@@ -9,8 +9,8 @@ import {
   X,
 } from 'lucide-react';
 import type {
-  SessionRuntimeFileEntry,
-  SessionRuntimeGitDiffResponse
+  SessionWorkspaceFileEntry,
+  SessionWorkspaceGitDiffResponse
 } from '../../types/api';
 import { DiffViewer, type DiffViewMode } from './DiffViewer';
 import { WorkbenchExplorerPane, type WorkbenchRepoChangesSection } from './WorkbenchExplorerPane';
@@ -35,13 +35,13 @@ interface WorkbenchProps {
   showExplorer?: boolean;
 
   // Explorer
-  explorerEntries: SessionRuntimeFileEntry[];
+  explorerEntries: SessionWorkspaceFileEntry[];
   currentExplorerPath: string;
   explorerLoading: boolean;
-  onExplorerFileClick: (entry: SessionRuntimeFileEntry) => void;
-  onExplorerDownload?: (entry: SessionRuntimeFileEntry) => void;
-  loadExplorerDirectory: (path: string) => Promise<SessionRuntimeFileEntry[]>;
-  onExplorerDirectoryToggle?: (entry: SessionRuntimeFileEntry, expanded: boolean) => void;
+  onExplorerFileClick: (entry: SessionWorkspaceFileEntry) => void;
+  onExplorerDownload?: (entry: SessionWorkspaceFileEntry) => void;
+  loadExplorerDirectory: (path: string) => Promise<SessionWorkspaceFileEntry[]>;
+  onExplorerDirectoryToggle?: (entry: SessionWorkspaceFileEntry, expanded: boolean) => void;
   explorerRefreshKey?: number;
 
   // Git / Diff
@@ -51,7 +51,7 @@ interface WorkbenchProps {
   onGitFileClick: (path: string) => void;
   diffMode: boolean;
   setDiffMode: (enabled: boolean) => void;
-  diffContent: SessionRuntimeGitDiffResponse | null;
+  diffContent: SessionWorkspaceGitDiffResponse | null;
   diffLoading: boolean;
   diffError: string | null;
   diffBaseRef: string;

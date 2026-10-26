@@ -1,8 +1,8 @@
 .session-telemetry-panel { width: 320px; max-width: calc(100vw - 16px); max-height: calc(100dvh - 90px); overflow-y: auto; padding: 14px; border: 1px solid var(--border-strong); border-radius: 14px; background: var(--surface-0); color: var(--text-primary); box-shadow: 0 12px 40px #0004; pointer-events: none; font-size: 10px; }
-.workspace-runtime-stats { margin-top: 12px; padding-top: 12px; }
-.workspace-runtime-stats > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 3px; }
-.workspace-runtime-stats > header strong { font-size: 12px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.workspace-runtime-stats > header span { color: var(--text-muted); font-size: 10px; }
+.workspace-stats { margin-top: 12px; padding-top: 12px; }
+.workspace-stats > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 3px; }
+.workspace-stats > header strong { font-size: 12px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workspace-stats > header span { color: var(--text-muted); font-size: 10px; }
 .workspace-stat-row { padding: 11px 0; }
 .workspace-stat-row[data-metric="cpu"] { --stat-color: #63b8ef; }
 .workspace-stat-row[data-metric="memory"] { --stat-color: #ad91ed; }
@@ -26,7 +26,7 @@
 .workspace-stat-network span { display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
 .workspace-stat-network span:first-child svg { color: var(--stat-color); }
 .workspace-stat-network span:last-child svg { color: #ad91ed; }
-.workspace-runtime-stats > p { margin: 10px 0 0; color: var(--text-muted); font-size: 10px; line-height: 1.5; }
+.workspace-stats > p { margin: 10px 0 0; color: var(--text-muted); font-size: 10px; line-height: 1.5; }
 @media (prefers-reduced-motion: reduce) { .workspace-stat-meter i { transition: none; } }
 .workspace-performance-chip { position: relative; isolation: isolate; display: inline-flex; align-items: center; gap: 8px; height: 28px; padding: 0 12px; border: 1px solid var(--border-subtle); border-radius: 999px; overflow: hidden; background: var(--surface-1); color: var(--text-primary); font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .1em; flex-shrink: 0; }
 .workspace-performance-chip:hover { border-color: var(--border-strong); }
@@ -36,7 +36,7 @@
 .workspace-performance-fill .session-liquid-gauge { display: block; width: 104.167%; height: 100%; overflow: visible; }
 .workspace-performance-fill stop { transition: stop-color .7s ease; }
 .workspace-performance-panel { pointer-events: auto; }
-.workspace-performance-panel .workspace-runtime-stats { margin-top: 0; }
+.workspace-performance-panel .workspace-stats { margin-top: 0; }
 .workspace-performance-selector { position: sticky; top: -14px; z-index: 1; margin: -14px -14px 12px; background: var(--surface-0); border-bottom: 1px solid var(--border-subtle); }
 .workspace-performance-selector .run-settings-section-value { max-width: 120px; overflow: hidden; text-overflow: ellipsis; font-size: 12px; font-weight: 500; color: var(--text-primary); }
 .workspace-performance-options { padding: 10px 0; }

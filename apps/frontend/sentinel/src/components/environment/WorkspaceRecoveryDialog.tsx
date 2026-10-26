@@ -34,7 +34,7 @@ export function WorkspaceRecoveryDialog({ workspace, onClose, onStarted, onReins
     <div className="space-y-4 px-5 pb-5">
       <p>Stop the VM, save a disk backup, repair its filesystem, and restart this workspace.</p>
       <p className="text-(--text-secondary)">Running commands and unsaved work will be lost. Your project folder is kept. If repair fails, the workspace stays stopped and keeps its backup.</p>
-      {workspace.container_error && <details className="text-xs text-(--text-secondary)"><summary className="cursor-pointer">Recovery details</summary><p className="mt-2 break-words [overflow-wrap:anywhere]">{workspace.container_error}</p></details>}
+      {workspace.error && <details className="text-xs text-(--text-secondary)"><summary className="cursor-pointer">Recovery details</summary><p className="mt-2 break-words [overflow-wrap:anywhere]">{workspace.error}</p></details>}
       <div className="space-y-3 rounded-xl border border-(--border-subtle) p-4">
         <p className="font-medium">Can’t recover, or don’t need the Linux files?</p>
         <p className="text-(--text-secondary)">Reinstall for a fresh Linux environment, or delete the workspace. Both erase VM-only data and recovery backups, but keep your project folder and conversations. You’ll confirm before anything is erased.</p>
