@@ -6,9 +6,9 @@ import pytest
 from fastapi import HTTPException
 
 from app.routers.machines import RuntimeInstallRequest, install_remote_runtime
-from app.services.runtime.machines import ResolvedMachine
-from app.services.runtime.remote_mac import RemoteMacError, RemoteMacRuntime, install
-from app.services.runtime.ssh_client import SSHClient
+from app.services.workspaces.machines.registry import ResolvedMachine
+from app.services.workspaces.machines.remote.worker import RemoteMacError, RemoteMacRuntime, install
+from app.services.workspaces.machines.remote.ssh import SSHClient
 
 
 def machine(**updates):
@@ -46,7 +46,7 @@ def test_remote_runtime_rejects_unenrolled_machine():
 
 @pytest.mark.asyncio
 async def test_install_pins_approved_key_and_rejects_unsupported_host(monkeypatch):
-    import app.services.runtime.remote_mac as remote
+    import app.services.workspaces.machines.remote.worker as remote
 
     seen = []
     connection = AsyncMock()
@@ -86,7 +86,7 @@ async def test_pinned_identity_is_used_for_ssh_connection(monkeypatch):
 @pytest.mark.asyncio
 async def test_closing_remote_connection_does_not_issue_vm_shutdown():
     runtime = RemoteMacRuntime(
-        machine(host_key="key", runtime_root="/Users/user/.sentinel/runtime")
+        machine(host_key="key", runtime_root="/Users/user/.sentinel/sentineld")
     )
     runtime.ssh = AsyncMock()
     runtime.listener = None
@@ -100,7 +100,7 @@ async def test_remote_mutation_is_not_replayed(monkeypatch):
     import httpx
 
     runtime = RemoteMacRuntime(
-        machine(host_key="key", runtime_root="/Users/user/.sentinel/runtime")
+        machine(host_key="key", runtime_root="/Users/user/.sentinel/sentineld")
     )
     runtime.connect = AsyncMock()
     runtime.bridge_socket = "/tmp/fake.sock"
@@ -123,15 +123,15 @@ async def test_remote_mutation_is_not_replayed(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_workspace_operations_route_without_touching_local_runtime(monkeypatch):
-    from app.services.runtime import workspace_containers as containers
+    from app.services.workspaces import lifecycle
 
     remote = AsyncMock()
     remote.operation.return_value = {"exitCode": 0}
-    monkeypatch.setattr(containers, "remote_for", AsyncMock(return_value=remote))
+    monkeypatch.setattr(lifecycle, "remote_for", AsyncMock(return_value=remote))
     local = AsyncMock()
-    monkeypatch.setattr(containers, "local_request", local)
+    monkeypatch.setattr(lifecycle, "local_request", local)
     workspace = str(uuid4())
-    assert await containers.request("exec", workspace=workspace, arguments=["true"]) == {
+    assert await lifecycle.request("exec", workspace=workspace, arguments=["true"]) == {
         "exitCode": 0
     }
     remote.operation.assert_awaited_once_with("exec", workspace=workspace, arguments=["true"])
@@ -143,7 +143,7 @@ async def test_status_wait_cancellation_does_not_cancel_reconnection(monkeypatch
     import asyncio
 
     runtime = RemoteMacRuntime(
-        machine(host_key="key", runtime_root="/Users/user/.sentinel/runtime")
+        machine(host_key="key", runtime_root="/Users/user/.sentinel/sentineld")
     )
     finished = asyncio.Event()
 
@@ -163,7 +163,7 @@ async def test_changing_address_preserves_pinned_worker_identity(monkeypatch):
     from types import SimpleNamespace
 
     from app.schemas.machines import MachineUpdateRequest
-    from app.services.runtime import machines
+    from app.services.workspaces.machines import registry
 
     row = SimpleNamespace(
         host="old",
@@ -171,24 +171,24 @@ async def test_changing_address_preserves_pinned_worker_identity(monkeypatch):
         username="user",
         provider_config={"host_key": "old-key", "runtime_root": "/old"},
     )
-    monkeypatch.setattr(machines, "get_machine", AsyncMock(return_value=row))
-    await machines.update_machine(AsyncMock(), uuid4(), MachineUpdateRequest(host="new"))
+    monkeypatch.setattr(registry, "get_machine", AsyncMock(return_value=row))
+    await registry.update_machine(AsyncMock(), uuid4(), MachineUpdateRequest(host="new"))
     assert row.provider_config == {"host_key": "old-key", "runtime_root": "/old"}
-    await machines.update_machine(AsyncMock(), uuid4(), MachineUpdateRequest(username="different"))
+    await registry.update_machine(AsyncMock(), uuid4(), MachineUpdateRequest(username="different"))
     assert row.provider_config == {}
 
 
 @pytest.mark.asyncio
 async def test_local_workspace_status_does_not_wait_for_remote_hosts(monkeypatch):
-    from app.services.runtime import workspace_containers as containers
+    from app.services.workspaces import lifecycle
 
     workspace = uuid4()
-    monkeypatch.setattr(containers, "remote_for", AsyncMock(return_value=None))
+    monkeypatch.setattr(lifecycle, "remote_for", AsyncMock(return_value=None))
     local = AsyncMock(return_value={"states": {str(workspace): {"state": "running"}}})
     overview = AsyncMock(side_effect=AssertionError("Must not poll every machine"))
-    monkeypatch.setattr(containers, "local_request", local)
-    monkeypatch.setattr(containers, "overview", overview)
-    assert (await containers.statuses(workspace))[str(workspace)]["state"] == "running"
+    monkeypatch.setattr(lifecycle, "local_request", local)
+    monkeypatch.setattr(lifecycle, "overview", overview)
+    assert (await lifecycle.statuses(workspace))[str(workspace)]["state"] == "running"
     overview.assert_not_called()
 
 
@@ -213,22 +213,20 @@ async def test_runtime_upgrade_lifecycle(
     from contextlib import asynccontextmanager
     from types import SimpleNamespace
 
-    import app.services.runtime.remote_mac as remote
+    import app.services.workspaces.machines.remote.worker as remote
 
     workspace = str(uuid4())
     old = {
         "version": "old",
-        "runtimeMigrations": ["001_worker_ownership"],
-        "executable": "/old/helper",
-        "kernel": "/old/kernel",
+        "runtimeMigrations": [],
+        "executable": "/old/sentineld/bin/sentineld",
+        "workspace": "/old/sentinel-workspace",
         "updateProtocol": 1,
         "storeVersion": 1,
     }
-    manifest_path = "/Users/user/.sentinel/runtime/manifest.json"
+    manifest_path = "/Users/user/.sentinel/sentineld/manifest.json"
     files = {manifest_path: json.dumps(old)}
     events = []
-    for name in ("helper", "kernel"):
-        (tmp_path / name).write_text(name)
 
     class SFTP:
         @asynccontextmanager
@@ -325,7 +323,7 @@ async def test_runtime_upgrade_lifecycle(
 
         async def request(self, action, **values):
             if action == "migration_status":
-                return {"target": ["001_worker_ownership"], "inputs": []}
+                return {"target": [], "inputs": []}
             if action == "migration_plan":
                 events.append("migration_plan")
             if action == "migrate":
@@ -333,7 +331,7 @@ async def test_runtime_upgrade_lifecycle(
                 events.append("migrate")
             if action == "inspect":
                 return {
-                    "migrations": ["001_worker_ownership"],
+                    "migrations": [],
                     "manifest": json.loads(files[manifest_path]),
                     "owner_free": self.free,
                     "journal": None,
@@ -341,22 +339,23 @@ async def test_runtime_upgrade_lifecycle(
             if action == "activate":
                 assert self.free
                 if values["manifest"]["version"] != "old":
-                    from pathlib import PurePosixPath
-                    from tests.workspace_image_assets import image_names
+                    from tests.runtime_release_assets import release_names
 
                     target = values["manifest"]
-                    assert target["workspaceImageFiles"] == image_names()
-                    release = PurePosixPath(target["executable"]).parent
-                    for name in image_names():
-                        assert str(release / name) in files
+                    assert target["files"] == release_names() and "links" not in target
+                    release = target["executable"].removesuffix("/sentineld/bin/sentineld")
+                    assert release.startswith("/Users/user/.sentinel/sentineld/releases/")
+                    assert target["workspace"] == release + "/sentinel-workspace"
+                    for name in release_names():
+                        assert f"{release}/{name}" in files
                 files[manifest_path] = json.dumps(values["manifest"])
                 self.free = False
                 events.append("activate:" + values["manifest"]["version"])
 
     session = Session()
-    from app.services.runtime import remote_update
+    from app.services.workspaces.machines.remote import update
 
-    monkeypatch.setattr(remote_update, "UpdateSession", lambda *args: session)
+    monkeypatch.setattr(update, "UpdateSession", lambda *args: session)
     monkeypatch.setattr(
         remote,
         "wait_for_runtime_ready",
@@ -367,18 +366,9 @@ async def test_runtime_upgrade_lifecycle(
     monkeypatch.setattr(remote, "SSHClient", Client)
     monkeypatch.setattr(remote, "RemoteMacRuntime", Runtime)
     monkeypatch.setattr(remote, "service_request", rpc)
-    assets = {
-        "executable": str(tmp_path / "helper"),
-        "kernel": str(tmp_path / "kernel"),
-        "initImage": "init@digest",
-    }
-    from tests.workspace_image_assets import write_images
+    from tests.runtime_release_assets import write_release
 
-    write_images(tmp_path)
-    (tmp_path / "graphics").mkdir()
-    for path, name in remote.runtime_assets(assets)[2:]:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(name)
+    assets = write_release(tmp_path)
     args = (machine(), "key", assets, [workspace] if approved else [])
     if stage_error:
         with pytest.raises(RemoteMacError):
@@ -412,19 +402,19 @@ async def test_runtime_upgrade_lifecycle(
 @pytest.mark.asyncio
 async def test_restart_approval_precedes_deployment_preparation(monkeypatch):
     import app.routers.machines as routes
-    import app.services.runtime.machines as machines
-    import app.services.runtime.remote_mac as remote
-    import app.services.runtime.workspace_containers as containers
+    import app.services.workspaces.machines.registry as registry
+    import app.services.workspaces.machines.remote.worker as remote
+    from app.services.workspaces import lifecycle
 
-    enrolled = machine(host_key="key", runtime_root="/Users/user/.sentinel/runtime")
+    enrolled = machine(host_key="key", runtime_root="/Users/user/.sentinel/sentineld")
     workspace = str(uuid4())
     details = [{"id": workspace, "name": "Sample Ubuntu", "instance": "test"}]
     monkeypatch.setattr(routes.machines_module, "get_machine", AsyncMock(return_value=object()))
-    monkeypatch.setattr(machines, "resolve_machine_secret", lambda row: enrolled)
+    monkeypatch.setattr(registry, "resolve_machine_secret", lambda row: enrolled)
     monkeypatch.setattr(remote, "plan_installation", AsyncMock(return_value=[workspace]))
-    monkeypatch.setattr(machines, "runtime_workspace_labels", AsyncMock(return_value=details))
+    monkeypatch.setattr(registry, "runtime_workspace_labels", AsyncMock(return_value=details))
     prepare, install_mock = AsyncMock(), AsyncMock()
-    monkeypatch.setattr(containers, "local_request", prepare)
+    monkeypatch.setattr(lifecycle, "local_request", prepare)
     monkeypatch.setattr(remote, "install", install_mock)
     result = await routes.install_remote_runtime(
         enrolled.id, RuntimeInstallRequest(approved=True, host_key="key"), AsyncMock()
@@ -440,7 +430,7 @@ async def test_restart_approval_precedes_deployment_preparation(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_install_rechecks_workspaces_before_reading_assets(monkeypatch):
-    import app.services.runtime.remote_mac as remote
+    import app.services.workspaces.machines.remote.worker as remote
 
     connection = AsyncMock()
     connection.run.return_value.stdout = "Darwin arm64\n26.0\n/Users/user\n"
@@ -457,7 +447,7 @@ async def test_install_rechecks_workspaces_before_reading_assets(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_plan_never_starts_unenrolled_runtime(monkeypatch):
-    import app.services.runtime.remote_mac as remote
+    import app.services.workspaces.machines.remote.worker as remote
 
     client = AsyncMock()
     monkeypatch.setattr(remote, "SSHClient", client)
@@ -470,10 +460,10 @@ async def test_healthy_connection_does_not_probe_before_every_operation(monkeypa
     from types import SimpleNamespace
     from unittest.mock import Mock
 
-    import app.services.runtime.remote_mac as remote
+    import app.services.workspaces.machines.remote.worker as remote
 
     runtime = RemoteMacRuntime(
-        machine(host_key="key", runtime_root="/Users/user/.sentinel/runtime")
+        machine(host_key="key", runtime_root="/Users/user/.sentinel/sentineld")
     )
     runtime.ssh = SimpleNamespace(_conn=SimpleNamespace(is_closed=lambda: False), close=AsyncMock())
     runtime.listener = Mock()
@@ -492,7 +482,7 @@ async def test_transport_failure_invalidates_connection_without_replaying(monkey
     import httpx
 
     runtime = RemoteMacRuntime(
-        machine(host_key="key", runtime_root="/Users/user/.sentinel/runtime")
+        machine(host_key="key", runtime_root="/Users/user/.sentinel/sentineld")
     )
     runtime.connect = AsyncMock()
     runtime.bridge_socket = "/tmp/fake.sock"

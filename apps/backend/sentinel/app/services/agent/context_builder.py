@@ -15,7 +15,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-import app.services.runtime.ssh_runtime as ssh_runtime_module
+import app.services.workspaces.managers as ssh_runtime_module
 from app.config import settings
 from app.models import Memory, Message, SessionSummary
 from app.services.agent.agent_modes import AgentMode, get_agent_mode_definition
@@ -32,7 +32,7 @@ from sentral.llm.generic.types import (
 )
 from app.services.memory import MemoryRepository, MemoryService
 from app.services.memory.search import MemorySearchService
-from app.services.runtime.workspace import workspace_paths
+from app.services.workspaces.paths import workspace_paths
 from app.services.sessions.history import context_history
 from app.services.sessions.handoff import render_summary
 
@@ -160,42 +160,44 @@ class ContextBuilder:
 
         try:
             async with asyncio.timeout(3):
-                manager = await ssh_runtime_module.get_runtime_terminal_manager(
+                manager = await ssh_runtime_module.get_terminal_manager(
                     session_id=self._runtime_session_id or session_id,
                     instance_name=self._instance_name,
                 )
-                await manager.runtime_environment()
-            paths = workspace_paths(
-                str(self._runtime_session_id or session_id),
-                root=manager.workspace_location,
-            )
+                location = manager.workspace_location
+                if "shell" in location.features:
+                    await manager.runtime_environment()
+            paths = workspace_paths(str(self._runtime_session_id or session_id), root=location)
             workspace = paths.workspace
-            distribution = manager.workspace_location.distribution
-            os_name = {
-                "alpine": "Alpine",
-                "ubuntu": "Ubuntu",
-                "debian": "Debian 13",
-            }.get(distribution, distribution)
-            package_manager = "apk" if distribution == "alpine" else "apt-get"
-            content = (
-                f"Workspace OS: Linux ({os_name}). Shell: Bash. Isolation: private container.\n"
-                f"Attached workspace directory: {workspace}\n"
-                "This directory is reusable and may be shared with other chats. Your tmux session is separate; other chats may change the same files.\n"
-                "The shared project retains its absolute host path inside the container. HOME is /root; /tmp and installed packages stay inside this workspace. "
-                f"Use {package_manager} to install missing packages. Docker and Compose use the workspace's private engine. "
-                "Omit cwd to retain the terminal's current directory; use pwd to check.\n"
-                "The user sees the actual tmux session. runtime.exec and pane_read target explicit pane IDs in the "
-                "tmux tree, independently of the pane selected in the UI. Inspect terminal_list/pane_read "
-                "before interacting with an existing terminal. Do not interrupt or overwrite the user's work; "
-                "create a window or split a pane for independent commands. Only close panes or windows when requested. "
-                "Control Sentinel's tmux layout through runtime actions: terminal_list to inspect, window_create/window_close "
-                "for windows, and pane_split/pane_close for panes. Give windows descriptive names with window_create name or "
-                "window_rename. Optionally label panes with pane_split title or pane_rename; the UI also shows the running process. "
-                "Names are display labels; always target stable window_id/pane_id values from terminal_list. For example, runtime with action=pane_split, "
-                "pane_id=%0, direction=horizontal creates a pane beside %0; vertical creates one below it. "
-                "Use the runtime layout actions to keep the UI synchronized. Use exec for shell commands and pane_input for interactive program input. "
-                "Commands without explicit cwd/env retain shell state. Explicit cwd/env and multiline commands execute in a subshell."
-            )
+            if "shell" not in location.features:
+                content = (
+                    f"Workspace distribution: {location.distribution}. Isolation: private VM.\n"
+                    f"Attached workspace directory: {workspace}\n"
+                    "Terminal, file, git and browser tools are not available on "
+                    f"{location.distribution} workspaces yet; do not try to run commands in "
+                    "this workspace."
+                )
+            else:
+                # The OS, its shell, the project folder and packages: the distribution's own words.
+                content = (
+                    f"{location.guide or f'Workspace distribution: {location.distribution}.'} "
+                    "Isolation: private VM.\n"
+                    f"Attached workspace directory: {workspace}\n"
+                    "This directory is reusable and may be shared with other chats. Your tmux session is separate; other chats may change the same files.\n"
+                    "HOME is /root; /tmp and installed packages stay inside this workspace. "
+                    "Omit cwd to retain the terminal's current directory; use pwd to check.\n"
+                    "The user sees the actual tmux session. runtime.exec and pane_read target explicit pane IDs in the "
+                    "tmux tree, independently of the pane selected in the UI. Inspect terminal_list/pane_read "
+                    "before interacting with an existing terminal. Do not interrupt or overwrite the user's work; "
+                    "create a window or split a pane for independent commands. Only close panes or windows when requested. "
+                    "Control Sentinel's tmux layout through runtime actions: terminal_list to inspect, window_create/window_close "
+                    "for windows, and pane_split/pane_close for panes. Give windows descriptive names with window_create name or "
+                    "window_rename. Optionally label panes with pane_split title or pane_rename; the UI also shows the running process. "
+                    "Names are display labels; always target stable window_id/pane_id values from terminal_list. For example, runtime with action=pane_split, "
+                    "pane_id=%0, direction=horizontal creates a pane beside %0; vertical creates one below it. "
+                    "Use the runtime layout actions to keep the UI synchronized. Use exec for shell commands and pane_input for interactive program input. "
+                    "Commands without explicit cwd/env retain shell state. Explicit cwd/env and multiline commands execute in a subshell."
+                )
         except Exception:
             logger.info("Machine environment unavailable for instance %s", self._instance_name)
             content = (

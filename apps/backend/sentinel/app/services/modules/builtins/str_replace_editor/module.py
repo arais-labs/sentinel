@@ -8,7 +8,7 @@ MODULE = ModuleDefinition(
     name="str_replace_editor",
     label="Str Replace Editor",
     description=(
-        "Replace one exact string in a file inside the attached workspace container. "
+        "Replace one exact string in a file inside the attached workspace. "
         "The old string must match exactly once."
     ),
     icon="file-edit",
@@ -18,7 +18,7 @@ MODULE = ModuleDefinition(
             id="edit",
             label="Edit File",
             description=(
-                "Replace one exact string in a container file. Use enough surrounding "
+                "Replace one exact string in a workspace file. Use enough surrounding "
                 "context in old_str to make the match unique."
             ),
             handler=handle_edit,
@@ -30,7 +30,7 @@ MODULE = ModuleDefinition(
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "File path inside the container. Relative paths start at the attached project directory; absolute paths within the shared project are identical on host and container. ~/ refers to the container home, not the host home.",
+                        "description": "File path inside the workspace. Relative paths start at the attached project directory; absolute paths within the shared project are identical on host and workspace. ~/ refers to the workspace home, not the host home.",
                     },
                     "old_str": {
                         "type": "string",

@@ -3,9 +3,9 @@ from uuid import uuid4
 
 import pytest
 
-from app.services.runtime.panes import TmuxPanes, validate_target
-from app.services.runtime.terminal_manager import RuntimeTerminalManager
-from app.services.runtime.workspace import WorkspaceLocation
+from app.services.workspaces.terminals.panes import TmuxPanes, validate_target
+from app.services.workspaces.terminals.manager import TerminalManager
+from app.services.workspaces.paths import WorkspaceLocation
 
 
 def test_targets_are_explicit_and_cannot_inject_tmux_commands():
@@ -19,7 +19,7 @@ def test_targets_are_explicit_and_cannot_inject_tmux_commands():
 async def test_unicode_prompt_preserves_wrapped_command_before_and_after_resize(
     tmp_path, container_transport
 ):
-    manager = RuntimeTerminalManager(
+    manager = TerminalManager(
         container_transport,
         workspace_location=WorkspaceLocation("/workspace", "/var/lib/sentinel"),
     )
@@ -46,7 +46,7 @@ async def test_unicode_prompt_preserves_wrapped_command_before_and_after_resize(
 
 @pytest.mark.asyncio
 async def test_agent_input_bypasses_copy_mode_and_preserves_history(tmp_path, container_transport):
-    manager = RuntimeTerminalManager(
+    manager = TerminalManager(
         container_transport,
         workspace_location=WorkspaceLocation("/workspace", "/var/lib/sentinel"),
     )
@@ -97,7 +97,7 @@ async def test_agent_input_bypasses_copy_mode_and_preserves_history(tmp_path, co
 
 @pytest.mark.asyncio
 async def test_native_pane_execution_and_background_share_shell(tmp_path, container_transport):
-    manager = RuntimeTerminalManager(
+    manager = TerminalManager(
         container_transport,
         workspace_location=WorkspaceLocation("/workspace", "/var/lib/sentinel"),
     )
@@ -180,7 +180,7 @@ async def test_native_pane_execution_and_background_share_shell(tmp_path, contai
 
 @pytest.mark.asyncio
 async def test_viewer_attaches_to_session_and_selects_native_panes(tmp_path, container_transport):
-    manager = RuntimeTerminalManager(
+    manager = TerminalManager(
         container_transport,
         workspace_location=WorkspaceLocation("/workspace", "/var/lib/sentinel"),
     )
@@ -303,10 +303,10 @@ async def test_viewer_attaches_to_session_and_selects_native_panes(tmp_path, con
 @pytest.mark.asyncio
 async def test_terminal_disconnect_cancels_pending_workspace_setup():
     from types import SimpleNamespace
-    from app.services.runtime.terminal_manager import RuntimeTerminalManager
-    from app.services.runtime.workspace import WorkspaceLocation
+    from app.services.workspaces.terminals.manager import TerminalManager
+    from app.services.workspaces.paths import WorkspaceLocation
 
-    manager = RuntimeTerminalManager(
+    manager = TerminalManager(
         None, workspace_location=WorkspaceLocation("/workspace", "/var/lib/sentinel")
     )
     preparing, cancelled = asyncio.Event(), asyncio.Event()

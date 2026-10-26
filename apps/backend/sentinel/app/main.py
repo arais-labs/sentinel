@@ -4,8 +4,8 @@ from app.services.agent.agent_modes import effective_agent_mode
 from app.services.host_runtime import host_processes
 from sentral.llm.http_pool import close_provider_http_pool
 from sentral.llm.providers.codex import close_codex_connections
-from app.services.runtime.ssh_runtime import close_runtime_terminal_manager
-from app.services.runtime.remote_mac import close_all as close_remote_runtimes
+from app.services.workspaces.managers import close_session_managers
+from app.services.workspaces.machines.remote.worker import close_all as close_remote_runtimes
 from app.services.sessions.compaction import CompactionService
 from app.services.sessions.job_reports import deliver_job_report
 
@@ -46,7 +46,7 @@ from app.routers import (
     models,
     module_permissions,
     onboarding,
-    runtime,
+    session_workspace,
     sessions,
     sessions_compaction,
     sub_agents,
@@ -473,7 +473,7 @@ async def lifespan(app: FastAPI):
 
         await _bounded("provider_http", close_provider_http_pool(), timeout=3.0)
 
-        await _bounded("runtime_ssh", close_runtime_terminal_manager(), timeout=3.0)
+        await _bounded("runtime_ssh", close_session_managers(), timeout=3.0)
 
         await _bounded("remote_runtimes", close_remote_runtimes(), timeout=3.0)
         await _bounded("instance_db_engines", instance_session_registry.dispose_all(), timeout=3.0)
@@ -538,7 +538,7 @@ app.include_router(
 )
 app.include_router(telegram.router, prefix=f"{_instance_api_prefix}/telegram", tags=["telegram"])
 app.include_router(backup.router, prefix=f"{_instance_api_prefix}/backup", tags=["backup"])
-app.include_router(runtime.router, prefix=f"{_instance_api_prefix}/runtime", tags=["runtime"])
+app.include_router(session_workspace.router, prefix=_instance_api_prefix, tags=["workspace"])
 app.include_router(ws.router, prefix="/ws/instances/{instance_name}/sessions", tags=["ws"])
 
 # Module/control-plane routes used by the Sentinel modules surface.

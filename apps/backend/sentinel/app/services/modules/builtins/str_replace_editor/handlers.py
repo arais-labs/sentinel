@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.services.runtime.files import (
-    RuntimePathInvalidError,
-    RuntimePathIsDirectoryError,
-    RuntimePathNotFoundError,
+from app.services.workspaces.files.manager import (
+    PathInvalidError,
+    PathIsDirectoryError,
+    PathNotFoundError,
 )
-from app.services.runtime.ssh_runtime import (
-    get_runtime_workspace_files,
-    runtime_configured,
+from app.services.workspaces.managers import (
+    get_workspace_files,
+    workspace_attached,
 )
 from sentral.errors import ToolValidationError
 from app.services.tools.registry import ToolRuntimeContext
@@ -32,7 +32,7 @@ def _string_field(payload: dict[str, Any], key: str, *, required: bool = False) 
 
 
 async def handle_edit(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:
-    if not await runtime_configured(
+    if not await workspace_attached(
         session_id=runtime.runtime_session_id or runtime.session_id,
         instance_name=runtime.instance_name,
         session_factory=runtime.db_session_factory,
@@ -49,7 +49,7 @@ async def handle_edit(payload: dict[str, Any], runtime: ToolRuntimeContext) -> d
     new_str = _string_field(payload, "new_str")
 
     try:
-        files = await get_runtime_workspace_files(
+        files = await get_workspace_files(
             session_id=runtime.runtime_session_id or runtime.session_id,
             instance_name=runtime.instance_name,
             session_factory=runtime.db_session_factory,
@@ -60,9 +60,9 @@ async def handle_edit(payload: dict[str, Any], runtime: ToolRuntimeContext) -> d
             old_str=old_str,
             new_str=new_str,
         )
-    except RuntimePathNotFoundError as exc:
+    except PathNotFoundError as exc:
         raise ToolValidationError(str(exc) or "Machine file not found.") from exc
-    except RuntimePathIsDirectoryError as exc:
+    except PathIsDirectoryError as exc:
         raise ToolValidationError(str(exc) or "Machine path is a directory.") from exc
-    except RuntimePathInvalidError as exc:
+    except PathInvalidError as exc:
         raise ToolValidationError(str(exc) or "Invalid runtime path.") from exc

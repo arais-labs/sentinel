@@ -9,7 +9,7 @@ from uuid import uuid4
 import httpx
 import pytest
 
-from app.services.runtime import uploads
+from app.services.workspaces.files import uploads
 
 
 @pytest.fixture
@@ -61,7 +61,7 @@ def upload_workspace(tmp_path, monkeypatch):
             if self.process is not None:
                 await self.process.finished
 
-    monkeypatch.setattr(uploads, "ContainerTransport", Transport)
+    monkeypatch.setattr(uploads, "GuestTransport", Transport)
     return workspace
 
 
@@ -246,13 +246,13 @@ async def test_progress_tracks_guest_acknowledgements_and_instance_scope(
 
 @pytest.mark.asyncio
 async def test_upload_transport_does_not_start_stopped_workspace(monkeypatch):
-    from app.services.runtime.container_transport import ContainerTransport
-    from app.services.runtime.workspace_containers import WorkspaceContainerError
+    from app.services.workspaces.transport.guest import GuestTransport
+    from app.services.workspaces.lifecycle import WorkspaceLifecycleError
 
-    transport = ContainerTransport(uuid4(), "/project", [])
+    transport = GuestTransport(uuid4(), "/project", [])
     monkeypatch.setattr(transport, "is_ready", AsyncMock(return_value=False))
     start = AsyncMock()
     monkeypatch.setattr(transport, "wait_ready", start)
-    with pytest.raises(WorkspaceContainerError, match="Start this workspace"):
+    with pytest.raises(WorkspaceLifecycleError, match="Start this workspace"):
         await transport.create_process("unused", start_if_needed=False)
     start.assert_not_awaited()

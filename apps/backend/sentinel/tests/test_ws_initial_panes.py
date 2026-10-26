@@ -3,38 +3,38 @@ from unittest.mock import AsyncMock
 import pytest
 
 from app.routers import ws
-from app.services.runtime.panes import TmuxPanes
+from app.services.workspaces.terminals.panes import TmuxPanes
 
 
 @pytest.mark.asyncio
 async def test_cleanup_transport_never_starts_and_preserves_live_errors(monkeypatch):
     from uuid import uuid4
-    from app.services.runtime.container_transport import ContainerTransport
-    from app.services.runtime import workspace_containers as containers
+    from app.services.workspaces.transport.guest import GuestTransport
+    from app.services.workspaces import lifecycle
 
-    transport = ContainerTransport(uuid4(), "/project", [])
+    transport = GuestTransport(uuid4(), "/project", [])
     readiness = AsyncMock(side_effect=AssertionError("Cleanup must not ensure readiness"))
     monkeypatch.setattr(transport, "wait_ready", readiness)
     status = AsyncMock(return_value={"state": "stopped"})
     monkeypatch.setattr(transport, "workspace_status", status)
-    execute = AsyncMock(side_effect=containers.WorkspaceContainerError("exec failed"))
-    monkeypatch.setattr(containers, "request", execute)
+    execute = AsyncMock(side_effect=lifecycle.WorkspaceLifecycleError("exec failed"))
+    monkeypatch.setattr(lifecycle, "request", execute)
     assert await transport.run_if_running("true") is None
     execute.assert_not_awaited()
     status.side_effect = [{"state": "running"}, {"state": "stopping"}]
     assert await transport.run_if_running("true") is None
     status.side_effect = None
     status.return_value = {"state": "running"}
-    with pytest.raises(containers.WorkspaceContainerError, match="exec failed"):
+    with pytest.raises(lifecycle.WorkspaceLifecycleError, match="exec failed"):
         await transport.run_if_running("true")
     readiness.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_unattached_chat_has_no_panes_and_does_not_start_runtime(monkeypatch):
-    monkeypatch.setattr(ws, "runtime_configured", AsyncMock(return_value=False))
+    monkeypatch.setattr(ws, "workspace_attached", AsyncMock(return_value=False))
     manager = AsyncMock()
-    monkeypatch.setattr(ws, "get_runtime_terminal_manager", manager)
+    monkeypatch.setattr(ws, "get_terminal_manager", manager)
 
     assert await ws._initial_panes("instance", "chat") == []
     manager.assert_not_awaited()
@@ -42,8 +42,8 @@ async def test_unattached_chat_has_no_panes_and_does_not_start_runtime(monkeypat
 
 @pytest.mark.asyncio
 async def test_attached_chat_receives_existing_panes_across_windows(monkeypatch):
-    monkeypatch.setattr(ws, "runtime_configured", AsyncMock(return_value=True))
-    monkeypatch.setattr(ws, "get_runtime_terminal_manager", AsyncMock())
+    monkeypatch.setattr(ws, "workspace_attached", AsyncMock(return_value=True))
+    monkeypatch.setattr(ws, "get_terminal_manager", AsyncMock())
     panes = [
         {"pane_id": "%0", "window_id": "@0", "busy": False},
         {"pane_id": "%1", "window_id": "@0", "busy": True},
@@ -63,18 +63,18 @@ async def test_preparing_workspace_pane_listing_does_not_wait_or_start_runtime(
     import asyncio
     from types import SimpleNamespace
     from uuid import uuid4
-    from app.services.runtime.container_transport import ContainerTransport
-    from app.services.runtime import workspace_containers as containers
+    from app.services.workspaces.transport.guest import GuestTransport
+    from app.services.workspaces import lifecycle
 
     workspace_id = uuid4()
-    transport = ContainerTransport(workspace_id, "/project", [])
+    transport = GuestTransport(workspace_id, "/project", [])
     monkeypatch.setattr(
-        containers,
+        lifecycle,
         "statuses",
         AsyncMock(return_value={str(workspace_id): {"state": "preparing"}}),
     )
     start = AsyncMock()
-    monkeypatch.setattr(containers, "start", start)
+    monkeypatch.setattr(lifecycle, "start", start)
     transport.run = AsyncMock(
         side_effect=AssertionError("Listing must not execute while preparing")
     )

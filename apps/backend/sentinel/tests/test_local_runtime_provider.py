@@ -7,8 +7,8 @@ import pytest
 
 from app.models.manager import Machine
 from app.schemas.machines import MachineProviderConfig
-from app.services.runtime import providers
-from app.services.runtime.providers import LocalMachineProvider, MachineJob
+from app.services.workspaces.machines import providers
+from app.services.workspaces.machines.providers import LocalMachineProvider, MachineJob
 
 
 def _runtime(name: str = "local", workspaces_dir: str | None = None) -> Machine:

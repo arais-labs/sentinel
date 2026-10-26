@@ -47,7 +47,7 @@ from app.services.messages import (
     normalize_generation_metadata,
     with_generation_metadata,
 )
-from app.services.runtime.session_cleanup import cleanup_records
+from app.services.workspaces.session_cleanup import cleanup_records
 from app.services.sessions import session_bindings
 from app.services.sessions.agent_run_registry import AgentRunRegistry
 from app.services.sessions.context_usage import normalize_context_budget

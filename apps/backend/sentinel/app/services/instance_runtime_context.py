@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from app.services.mcp import connections as mcp_connections, oauth as mcp_oauth
 
-import app.services.runtime.session_cleanup as session_cleanup
+import app.services.workspaces.session_cleanup as session_cleanup
 import app.services.telegram.bridge as telegram_bridge_module
 
 import asyncio

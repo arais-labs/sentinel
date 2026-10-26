@@ -1,12 +1,8 @@
 import asyncio
 import base64
-import shlex
-import sys
-import importlib.util
 import json
-from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -16,80 +12,30 @@ from sentral.llm.runtime_adapter import SentinelProviderAdapter
 from sentral.llm.generic.types import ImageContent, ToolResultMessage, UserMessage
 from tests.test_runtime_desktop_cleanup import desktop_manager
 
-path = Path(__file__).parents[1] / "app/services/runtime/guest_commands/linux/desktop/computer.py"
-spec = importlib.util.spec_from_file_location("workspace_computer_worker", path)
-worker = importlib.util.module_from_spec(spec)
-# Import the actual guest adapter without requiring a display on the test host.
-adapter_path = (
-    Path(__file__).resolve().parents[4]
-    / "apps/desktop/sentinel/native/graphics/guest/sentinel_display.py"
-)
-adapter_spec = importlib.util.spec_from_file_location("sentinel_display", adapter_path)
-adapter = importlib.util.module_from_spec(adapter_spec)
-adapter_spec.loader.exec_module(adapter)
-with patch.dict(sys.modules, {"sentinel_display": adapter}):
-    spec.loader.exec_module(worker)
-
-
-@pytest.mark.parametrize(
-    "actions",
-    [
-        [{"type": "move", "x": 800, "y": 0}],
-        [{"type": "click", "x": True, "y": 0}],
-        [{"type": "scroll", "x": 1, "y": 1, "direction": "down", "ticks": 1000}],
-        [{"type": "keypress", "keys": ["--window"]}],
-        [{"type": "type", "text": "x\x00"}],
-        [{"type": "wait", "milliseconds": 30000}],
-        [{"type": "exec", "code": "anything"}],
-        [{"type": "drag", "path": [{"x": 1, "y": 1}]}],
-        [{"type": "move", "x": 1, "y": 1}] * 17,
-    ],
-)
-def test_invalid_action_batches_rejected(actions):
-    with pytest.raises(ValueError):
-        worker.validate({"actions": actions, "viewport": {"width": 800, "height": 600}}, 800, 600)
-
-
-def test_resize_requires_fresh_observation():
-    with pytest.raises(ValueError, match="dimensions"):
-        worker.validate(
-            {
-                "actions": [{"type": "click", "x": 2, "y": 2}],
-                "viewport": {"width": 900, "height": 600},
-            },
-            800,
-            600,
-        )
-    assert worker.validate({}, 800, 600) == []
-
 
 @pytest.mark.asyncio
-async def test_computer_uses_bound_container_and_preserves_partial_failure():
+async def test_computer_is_the_sentineld_op_and_preserves_partial_failure(monkeypatch):
     manager, transport = desktop_manager()
     manager.ensure_session_desktop = AsyncMock()
     payload = {"ok": False, "completed_actions": 1, "error": "resized", "screenshot": "image"}
-    transport.run = AsyncMock(
-        return_value=SimpleNamespace(stdout=json.dumps(payload), exit_status=0)
-    )
-    request = {
+    request = AsyncMock(return_value={"batch": payload})
+    monkeypatch.setattr("app.services.workspaces.desktop.manager.lifecycle.request", request)
+    batch = {
         "actions": [{"type": "type", "text": "$(do not execute)"}],
         "viewport": {"width": 800, "height": 600},
     }
-    assert await manager.computer("session", request) == payload
+    assert await manager.computer("session", batch) == payload
     manager.ensure_session_desktop.assert_awaited_once_with("session")
-    args = shlex.split(transport.run.call_args.args[0])
-    assert args[:2] == ["python3", "-c"]
-    sent = json.loads(args[3])
-    assert sent.pop("request_id")
-    assert sent == request
-    assert "$(do not execute)" not in args[2]
-    assert "from sentinel_display import Desktop" in args[2]
+    request.assert_awaited_once_with(
+        "computer", workspace=str(manager._workspace_location.workspace_id), **batch
+    )
+    transport.run.assert_not_awaited()  # nothing runs in the guest from here
 
 
 @pytest.mark.asyncio
 async def test_no_host_fallback_without_desktop_package():
     manager, transport = desktop_manager(desktop="none")
-    with pytest.raises(RuntimeError, match="Desktop"):
+    with pytest.raises(RuntimeError, match="Choose a desktop"):
         await manager.computer("session", {"actions": []})
     transport.run.assert_not_awaited()
 
@@ -108,7 +54,7 @@ async def test_module_routes_runtime_session_and_instance(monkeypatch):
     )
     manager = SimpleNamespace(computer=AsyncMock(return_value={"ok": True}))
     resolver = AsyncMock(return_value=manager)
-    monkeypatch.setattr(handlers, "get_runtime_desktop_manager", resolver)
+    monkeypatch.setattr(handlers, "get_desktop_manager", resolver)
     await handlers.handle_screenshot({}, runtime)
     resolver.assert_awaited_once_with(
         session_id=str(session), instance_name="test", session_factory=factory
@@ -133,49 +79,33 @@ def test_latest_tool_screenshot_reaches_model_as_image_not_base64_text():
     assert len(SentinelProviderAdapter(None)._messages([item, new])) == 2
 
 
-def test_release_runs_when_drag_action_is_interrupted():
-    desktop = object.__new__(worker.Desktop)
-    desktop.input = lambda *args: None
-    released = []
-    desktop.release = lambda: released.append(True)
-
-    def bad_move(point):
-        if point["x"] == 2:
-            raise TimeoutError("cancelled")
-
-    desktop.move = bad_move
-    with pytest.raises(TimeoutError):
-        desktop.execute({"type": "drag", "path": [{"x": 1, "y": 1}, {"x": 2, "y": 2}]})
-    assert released == [True]
-
-
 @pytest.mark.asyncio
-async def test_cancel_signals_only_its_own_workspace_request():
-    manager, transport = desktop_manager()
+async def test_cancel_stops_only_its_own_workspace_batch(monkeypatch):
+    manager, _ = desktop_manager()
     manager.ensure_session_desktop = AsyncMock()
-    started = asyncio.Event()
-    released = asyncio.Event()
+    started, released = asyncio.Event(), asyncio.Event()
     calls = []
 
-    async def run(command, *, timeout):
-        parts = shlex.split(command)
-        calls.append((parts[2], parts[3:]))
-        if len(calls) == 1:
+    async def request(action, **values):
+        calls.append((action, values))
+        if action == "computer":
             started.set()
             await released.wait()
-            return SimpleNamespace(stdout='{"ok":false,"error":"cancelled"}')
+            return {"batch": {"ok": False, "error": "cancelled"}}
         released.set()
-        return SimpleNamespace(stdout="")
+        return {"cancelled": True}
 
-    transport.run = run
+    monkeypatch.setattr("app.services.workspaces.desktop.manager.lifecycle.request", request)
     task = asyncio.create_task(manager.computer("session", {"actions": []}))
     await started.wait()
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
-    assert len(calls) == 2
-    assert calls[1][1] == [json.loads(calls[0][1][0])["request_id"]]
-    assert "signal.SIGTERM" in calls[1][0]
+    workspace = str(manager._workspace_location.workspace_id)
+    assert calls == [
+        ("computer", {"workspace": workspace, "actions": []}),
+        ("computer_cancel", {"workspace": workspace}),
+    ]
 
 
 def test_screenshot_is_an_image_in_codex_request():

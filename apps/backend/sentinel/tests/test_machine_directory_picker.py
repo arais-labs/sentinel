@@ -1,6 +1,6 @@
 import subprocess
 
-from app.services.runtime.guest_commands import load_guest_command
+from app.services.workspaces.guest_commands import load_guest_command
 
 
 def test_directory_picker_preserves_names_and_only_lists_folders(tmp_path):
@@ -34,7 +34,7 @@ def test_directory_picker_missing_path_fails(tmp_path):
 
 
 def test_local_picker_matches_shell_listing_without_starting_processes(tmp_path, monkeypatch):
-    from app.services.runtime.directories import list_local_directories
+    from app.services.workspaces.machines.folders import list_local_directories
 
     (tmp_path / "folder with spaces").mkdir()
     (tmp_path / ".hidden").mkdir()
@@ -56,7 +56,7 @@ def test_local_picker_matches_shell_listing_without_starting_processes(tmp_path,
 def test_local_picker_invalid_path_errors(tmp_path):
     import pytest
 
-    from app.services.runtime.directories import list_local_directories
+    from app.services.workspaces.machines.folders import list_local_directories
 
     with pytest.raises(FileNotFoundError):
         list_local_directories(str(tmp_path / "missing"))
@@ -65,7 +65,7 @@ def test_local_picker_invalid_path_errors(tmp_path):
 def test_create_local_folder_preserves_literal_name_and_rejects_existing(tmp_path):
     import pytest
 
-    from app.services.runtime.directories import create_local_directory
+    from app.services.workspaces.machines.folders import create_local_directory
 
     name = "my project's $(touch marker)"
     result = create_local_directory(str(tmp_path), name)
@@ -84,7 +84,7 @@ def test_create_local_folder_preserves_literal_name_and_rejects_existing(tmp_pat
 def test_create_folder_rejects_traversal_and_missing_parent(tmp_path):
     import pytest
 
-    from app.services.runtime.directories import create_local_directory
+    from app.services.workspaces.machines.folders import create_local_directory
 
     for name in ["", " ", ".", "..", "../escape", "a/b", "a\\b", "a\x00b", "a\nb"]:
         with pytest.raises(ValueError):
@@ -121,13 +121,13 @@ def test_create_directory_endpoint_local_errors(tmp_path, monkeypatch):
     from fastapi import HTTPException
 
     from app.routers import machines as router
-    from app.services.runtime import machines
+    from app.services.workspaces.machines import registry
 
     async def get_machine(*args):
         return SimpleNamespace(provider="local")
 
     monkeypatch.setattr(router.machines_module, "get_machine", get_machine)
-    monkeypatch.setattr(machines, "resolve_machine_secret", lambda value: value)
+    monkeypatch.setattr(registry, "resolve_machine_secret", lambda value: value)
     payload = router.DirectoryCreateRequest(path=str(tmp_path), name="new project")
     result = asyncio.run(router.create_machine_directory(uuid.uuid4(), payload, None))
     assert result["path"] == str(tmp_path / "new project")

@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-SOURCE = Path(__file__).parents[1] / "app/services/runtime/guest_commands/linux/browser/start.py"
+SOURCE = Path(__file__).parents[1] / "app/services/workspaces/guest_commands/linux/browser/start.py"
 spec = importlib.util.spec_from_file_location("browser_guest_start", SOURCE)
 worker = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(worker)
@@ -40,7 +40,7 @@ def test_gui_uses_published_session_and_default_sandbox(tmp_path, monkeypatch, p
         environment["WAYLAND_DISPLAY"] = "wayland-0"
     session.write_text(
         json.dumps(
-            {"protocol": protocol, "user": {"uid": ACCOUNT.pw_uid}, "environment": environment}
+            {"session_type": protocol, "user": {"uid": ACCOUNT.pw_uid}, "environment": environment}
         )
     )
     monkeypatch.setenv("VTEST_SOCKET_NAME", "/obsolete/renderer.sock")

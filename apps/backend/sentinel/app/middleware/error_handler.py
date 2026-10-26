@@ -3,7 +3,8 @@ from __future__ import annotations
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from app.services.runtime.compatibility import RuntimeCompatibilityError
+from app.services.workspaces.compatibility import RuntimeCompatibilityError
+from app.services.workspaces.machines.remote.worker import RemoteMacError, RuntimeUnavailable
 
 
 def _status_to_code(status_code: int) -> str:
@@ -50,6 +51,20 @@ def register_error_handlers(app: FastAPI) -> None:
         response = JSONResponse(
             status_code=409,
             content=_error_payload(code=exc.code, message=str(exc), details=exc.details),
+        )
+        if request_id := _request_id(request):
+            response.headers["X-Request-ID"] = request_id
+        return response
+
+    # A worker Mac that is off, asleep or unreachable is not a server bug: say which and why.
+    @app.exception_handler(RemoteMacError)
+    async def remote_mac_handler(request: Request, exc: RemoteMacError) -> JSONResponse:
+        unavailable = isinstance(exc, RuntimeUnavailable)
+        response = JSONResponse(
+            status_code=503 if unavailable else 502,
+            content=_error_payload(
+                code="machine_unavailable" if unavailable else "machine_error", message=str(exc)
+            ),
         )
         if request_id := _request_id(request):
             response.headers["X-Request-ID"] = request_id

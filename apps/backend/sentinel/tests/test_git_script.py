@@ -6,7 +6,7 @@ import pytest
 
 from app.services.modules.builtins.git_tool import credential_broker as broker
 from app.services.modules.builtins.git_tool import handlers
-from app.services.runtime.local_transport import LocalTransport
+from app.services.workspaces.transport.local import LocalTransport
 from tests.test_git_tool import (
     _fake_db_with_account,
     _runtime_context,
@@ -20,7 +20,7 @@ from tests.test_git_tool import (
 async def test_script_handler_uses_broker_with_selected_account(monkeypatch):
     monkeypatch.setattr(handlers, "AsyncSessionLocal", _SessionFactory(_fake_db_with_account()))
     monkeypatch.setattr(
-        handlers, "get_runtime_terminal_manager", _terminal_manager_stub(_TerminalManagerStub())
+        handlers, "get_terminal_manager", _terminal_manager_stub(_TerminalManagerStub())
     )
     captured = {}
 

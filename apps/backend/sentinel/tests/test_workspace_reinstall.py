@@ -5,7 +5,7 @@ import asyncio
 import pytest
 
 from app.models import Session, Workspace
-from app.services.runtime import workspace_containers as containers
+from app.services.workspaces import lifecycle
 from tests.test_workspace_removal import linked_workspace
 
 
@@ -17,10 +17,10 @@ async def test_reinstall_forwards_explicit_alpine_instead_of_retaining_previous_
     from uuid import uuid4
 
     workspace_id = uuid4()
-    monkeypatch.setitem(containers._workspace_distributions, str(workspace_id), previous)
+    monkeypatch.setitem(lifecycle._workspace_distributions, str(workspace_id), previous)
     request = AsyncMock(return_value={})
-    monkeypatch.setattr(containers, "request", request)
-    await containers.reinstall(workspace_id, "/project", ["git"], distribution="alpine")
+    monkeypatch.setattr(lifecycle, "request", request)
+    await lifecycle.reinstall(workspace_id, "/project", ["git"], distribution="alpine")
     assert request.await_args.kwargs["distribution"] == "alpine"
     assert request.await_args.kwargs["confirmed"] is True
 
@@ -31,11 +31,12 @@ async def test_remote_reinstall_uses_reviewed_revision_and_worker_defaults(
     workspace_app, monkeypatch, revision
 ):
     from app.models.manager import Machine
-    from app.services.runtime import ssh_runtime, worker_catalog
+    from app.services.workspaces import managers
+    from app.services.workspaces import catalog
 
     client, factory, machine, *_ = workspace_app
     workspace_id, _ = await linked_workspace(workspace_app)
-    async with ssh_runtime.ManagerSessionLocal() as db:
+    async with managers.ManagerSessionLocal() as db:
         remote = await db.get(Machine, machine.id)
         remote.provider = "ssh"
         await db.commit()
@@ -49,12 +50,12 @@ async def test_remote_reinstall_uses_reviewed_revision_and_worker_defaults(
         "resources": {"cpus": 4, "memory_gib": 8, "disk_gib": 64},
     }
     monkeypatch.setattr(
-        worker_catalog,
+        catalog,
         "snapshot",
         AsyncMock(return_value={"workspaces": {str(workspace_id): {"revision": 7, "spec": spec}}}),
     )
     reinstall = AsyncMock()
-    monkeypatch.setattr(containers, "reinstall", reinstall)
+    monkeypatch.setattr(lifecycle, "reinstall", reinstall)
     settings = {"name": "Reviewed name"}
     if revision is not None:
         settings["revision"] = revision
@@ -87,7 +88,7 @@ async def test_reinstall_requires_explicit_destructive_confirmation(
     client, *_ = workspace_app
     workspace_id, _ = await linked_workspace(workspace_app)
     reinstall = AsyncMock()
-    monkeypatch.setattr(containers, "reinstall", reinstall)
+    monkeypatch.setattr(lifecycle, "reinstall", reinstall)
     response = await client.post(f"workspaces/{workspace_id}/reinstall", json=payload)
     assert response.status_code == 422
     reinstall.assert_not_awaited()
@@ -98,10 +99,10 @@ async def test_reinstall_preserves_workspace_and_session_bindings(workspace_app,
     client, factory, _, first, _, _ = workspace_app
     workspace_id, _ = await linked_workspace(workspace_app)
     reinstall = AsyncMock()
-    monkeypatch.setattr(containers, "reinstall", reinstall)
+    monkeypatch.setattr(lifecycle, "reinstall", reinstall)
     response = await client.post(f"workspaces/{workspace_id}/reinstall", json={"confirmed": True})
     assert response.status_code == 200, response.text
-    assert response.json()["container_state"] == "preparing"
+    assert response.json()["state"] == "preparing"
     async with factory() as db:
         workspace = await db.get(Workspace, workspace_id)
         reinstall.assert_awaited_once_with(
@@ -111,7 +112,7 @@ async def test_reinstall_preserves_workspace_and_session_bindings(workspace_app,
             notification_context={"instanceName": "main", "name": workspace.name},
         )
         assert (await db.get(Session, first.id)).workspace_id == workspace_id
-    containers.stop.assert_not_awaited()
+    lifecycle.stop.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -119,7 +120,7 @@ async def test_confirmed_os_change_reinstalls_and_updates_workspace(workspace_ap
     client, factory, *_ = workspace_app
     workspace_id, _ = await linked_workspace(workspace_app)
     reinstall = AsyncMock()
-    monkeypatch.setattr(containers, "reinstall", reinstall)
+    monkeypatch.setattr(lifecycle, "reinstall", reinstall)
     response = await client.post(
         f"workspaces/{workspace_id}/reinstall",
         json={"confirmed": True, "settings": {"distribution": "ubuntu"}},
@@ -137,7 +138,7 @@ async def test_reinstall_blocks_active_agents(workspace_app, monkeypatch, active
     client, _, _, first, _, registry = workspace_app
     workspace_id, child = await linked_workspace(workspace_app)
     reinstall = AsyncMock()
-    monkeypatch.setattr(containers, "reinstall", reinstall)
+    monkeypatch.setattr(lifecycle, "reinstall", reinstall)
     run = await registry.start(str(first.id if active == "parent" else child.id), asyncio.sleep(60))
     try:
         response = await client.post(
@@ -156,12 +157,26 @@ async def test_reinstall_blocks_busy_workspace(workspace_app, monkeypatch, state
     client, *_ = workspace_app
     workspace_id, _ = await linked_workspace(workspace_app)
     reinstall = AsyncMock()
-    monkeypatch.setattr(containers, "reinstall", reinstall)
+    monkeypatch.setattr(lifecycle, "reinstall", reinstall)
     monkeypatch.setattr(
-        containers,
+        lifecycle,
         "statuses",
         AsyncMock(return_value={str(workspace_id): {"state": state}}),
     )
     response = await client.post(f"workspaces/{workspace_id}/reinstall", json={"confirmed": True})
     assert response.status_code == 409, response.text
     reinstall.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reinstall_asks_only_its_workspace_machine(workspace_app, monkeypatch):
+    # The status of every machine (an enrolled remote Mac over SSH included) must not delay the
+    # reinstall of a workspace on another one.
+    client, *_ = workspace_app
+    workspace_id, _ = await linked_workspace(workspace_app)
+    monkeypatch.setattr(lifecycle, "reinstall", AsyncMock())
+    statuses = AsyncMock(return_value={str(workspace_id): {"state": "running"}})
+    monkeypatch.setattr(lifecycle, "statuses", statuses)
+    response = await client.post(f"workspaces/{workspace_id}/reinstall", json={"confirmed": True})
+    assert response.status_code == 200, response.text
+    assert statuses.await_args_list and all(call.args for call in statuses.await_args_list)

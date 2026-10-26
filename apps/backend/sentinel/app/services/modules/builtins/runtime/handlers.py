@@ -8,8 +8,8 @@ from sqlalchemy import select
 
 from app.models import Session, Workspace
 from app.services.modules.runtime_services import get_ws_manager, notify_runtime_job_completed
-from app.services.runtime.panes import FOREGROUND_WAIT_SECONDS, TmuxPanes
-from app.services.runtime.ssh_runtime import get_runtime_terminal_manager
+from app.services.workspaces.terminals.panes import FOREGROUND_WAIT_SECONDS, TmuxPanes
+from app.services.workspaces.managers import get_terminal_manager
 from sentral.errors import ToolValidationError
 
 
@@ -22,7 +22,7 @@ def _session_key(runtime):
 
 async def handle_tmux(payload, runtime):
     session_id = _session_key(runtime)
-    manager = await get_runtime_terminal_manager(
+    manager = await get_terminal_manager(
         session_id=session_id,
         instance_name=runtime.instance_name,
         session_factory=runtime.db_session_factory,

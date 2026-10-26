@@ -8,7 +8,7 @@ import subprocess
 
 import pytest
 
-from app.services.runtime.tmux import SENTINEL_BASHRC
+from app.services.workspaces.terminals.tmux import SENTINEL_BASHRC
 
 
 @pytest.mark.parametrize(

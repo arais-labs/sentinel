@@ -1,9 +1,9 @@
 import subprocess
 
-from app.services.runtime.workspace import WorkspaceLocation
-from app.services.runtime.tmux import build_open_tmux_script
-from app.services.runtime.status import (
-    RuntimeStatusCheck,
+from app.services.workspaces.paths import WorkspaceLocation
+from app.services.workspaces.terminals.tmux import build_open_tmux_script
+from app.services.workspaces.machines.status import (
+    StatusCheck,
     _capabilities,
     _detected_os,
     _detected_sandbox,
@@ -12,7 +12,7 @@ from app.services.runtime.status import (
 
 def test_tmux_bootstrap_streams_config_without_window_aliases():
     root = WorkspaceLocation("/projects/app", "/private/sentinel/workspaces/abc")
-    for os_name, sandbox in [("linux", "container")]:
+    for os_name, sandbox in [("linux", "vm")]:
         script, args = build_open_tmux_script("chat", root=root, os_name=os_name, sandbox=sandbox)
         subprocess.run(["/bin/bash", "-n"], input=script, text=True, check=True)
         assert "source-file -" in script
@@ -25,16 +25,16 @@ def test_tmux_bootstrap_streams_config_without_window_aliases():
 
 def test_runtime_capabilities_require_os_sandbox() -> None:
     checks = [
-        RuntimeStatusCheck("ssh_connect", "SSH", "pass"),
-        RuntimeStatusCheck("ssh_command", "Remote command", "pass"),
-        RuntimeStatusCheck("workspace_writable", "Workspace", "pass"),
-        RuntimeStatusCheck("os", "OS", "pass", detail="linux"),
-        RuntimeStatusCheck("sandbox", "Sandbox", "fail", detail="unavailable"),
-        RuntimeStatusCheck("binary_bash", "bash", "pass"),
-        RuntimeStatusCheck("binary_tmux", "tmux", "pass"),
-        RuntimeStatusCheck("binary_python3", "python3", "pass"),
-        RuntimeStatusCheck("binary_git", "git", "pass"),
-        RuntimeStatusCheck("binary_gh", "gh", "pass"),
+        StatusCheck("ssh_connect", "SSH", "pass"),
+        StatusCheck("ssh_command", "Remote command", "pass"),
+        StatusCheck("workspace_writable", "Workspace", "pass"),
+        StatusCheck("os", "OS", "pass", detail="linux"),
+        StatusCheck("sandbox", "Sandbox", "fail", detail="unavailable"),
+        StatusCheck("binary_bash", "bash", "pass"),
+        StatusCheck("binary_tmux", "tmux", "pass"),
+        StatusCheck("binary_python3", "python3", "pass"),
+        StatusCheck("binary_git", "git", "pass"),
+        StatusCheck("binary_gh", "gh", "pass"),
     ]
 
     assert _detected_os(checks) == "linux"
@@ -44,17 +44,17 @@ def test_runtime_capabilities_require_os_sandbox() -> None:
 
 def test_runtime_capabilities_support_container_core() -> None:
     checks = [
-        RuntimeStatusCheck("ssh_connect", "SSH", "pass"),
-        RuntimeStatusCheck("ssh_command", "Remote command", "pass"),
-        RuntimeStatusCheck("workspace_writable", "Workspace", "pass"),
-        RuntimeStatusCheck("os", "OS", "pass", detail="linux"),
-        RuntimeStatusCheck("sandbox", "Sandbox", "pass", detail="container"),
-        RuntimeStatusCheck("binary_bash", "bash", "pass"),
-        RuntimeStatusCheck("binary_tmux", "tmux", "pass"),
-        RuntimeStatusCheck("binary_python3", "python3", "pass"),
-        RuntimeStatusCheck("binary_git", "git", "pass"),
-        RuntimeStatusCheck("binary_gh", "gh", "pass"),
-        RuntimeStatusCheck("desktop_stack", "Desktop", "warn", detail="Linux-only", required=False),
+        StatusCheck("ssh_connect", "SSH", "pass"),
+        StatusCheck("ssh_command", "Remote command", "pass"),
+        StatusCheck("workspace_writable", "Workspace", "pass"),
+        StatusCheck("os", "OS", "pass", detail="linux"),
+        StatusCheck("sandbox", "Sandbox", "pass", detail="vm"),
+        StatusCheck("binary_bash", "bash", "pass"),
+        StatusCheck("binary_tmux", "tmux", "pass"),
+        StatusCheck("binary_python3", "python3", "pass"),
+        StatusCheck("binary_git", "git", "pass"),
+        StatusCheck("binary_gh", "gh", "pass"),
+        StatusCheck("desktop_stack", "Desktop", "warn", detail="Linux-only", required=False),
     ]
 
     capabilities = _capabilities(checks)

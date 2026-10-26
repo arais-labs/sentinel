@@ -14,8 +14,8 @@ from app.dependencies import get_db, get_manager_db
 from app.models import Base, Session
 from app.models.manager import ManagerBase, Machine
 from app.routers.workspaces import router
-from app.services.runtime import ssh_runtime
-from app.services.runtime.workspace import (
+from app.services.workspaces import managers
+from app.services.workspaces.paths import (
     WorkspaceLocation,
     workspace_paths,
     build_prepare_workspace_script,
@@ -25,7 +25,7 @@ from app.services.sessions.agent_run_registry import AgentRunRegistry
 
 
 @pytest.mark.asyncio
-async def test_workspace_browser_is_saved_and_alpine_rejects_chrome(workspace_app):
+async def test_workspace_browser_is_saved_and_validated_as_catalog_id(workspace_app):
     client, _, machine, *_ = workspace_app
     payload = {
         "name": "Browser test",
@@ -40,23 +40,46 @@ async def test_workspace_browser_is_saved_and_alpine_rejects_chrome(workspace_ap
     response = await client.patch(f"workspaces/{workspace_id}", json={"browser": "chromium"})
     assert response.status_code == 200
     assert response.json()["browser"] == "chromium"
+    # sentineld checks the id against its catalog; the API only rejects malformed ids.
     response = await client.patch(f"workspaces/{workspace_id}", json={"browser": "chrome"})
+    assert response.status_code == 200
+    response = await client.post("workspaces", json={**payload, "browser": "Google Chrome"})
     assert response.status_code == 422
-    response = await client.post("workspaces", json={**payload, "browser": "chrome"})
-    assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_omitted_resources_default_to_the_distribution_minimum(workspace_app):
+    from app.services.workspaces import lifecycle
+
+    client, _, machine, *_ = workspace_app
+    payload = {"machine_id": str(machine.id), "directory": "/project"}
+    response = await client.post(
+        "workspaces", json={**payload, "name": "Big", "distribution": "windows-11"}
+    )
+    assert response.status_code == 201
+    expected = {"cpus": 2, "memory_gib": 8, "disk_gib": 64}
+    assert response.json()["resources"] == expected
+    assert lifecycle.start.await_args.kwargs["resources"] == expected
+    # An explicit allocation is passed through; sentineld validates it.
+    explicit = {"cpus": 1, "memory_gib": 4, "disk_gib": 32}
+    response = await client.post(
+        "workspaces",
+        json={**payload, "name": "Small", "distribution": "windows-11", "resources": explicit},
+    )
+    assert lifecycle.start.await_args.kwargs["resources"] == explicit
 
 
 @pytest_asyncio.fixture
 async def workspace_app(tmp_path, monkeypatch):
     from unittest.mock import AsyncMock
-    from app.services.runtime import workspace_containers as containers
+    from app.services.workspaces import lifecycle
 
-    monkeypatch.setattr(containers, "available", lambda: True)
-    monkeypatch.setattr(containers, "start", AsyncMock())
-    monkeypatch.setattr(containers, "stop", AsyncMock())
-    monkeypatch.setattr(containers, "statuses", AsyncMock(return_value={}))
+    monkeypatch.setattr(lifecycle, "available", lambda: True)
+    monkeypatch.setattr(lifecycle, "start", AsyncMock())
+    monkeypatch.setattr(lifecycle, "stop", AsyncMock())
+    monkeypatch.setattr(lifecycle, "statuses", AsyncMock(return_value={}))
     monkeypatch.setattr(
-        containers,
+        lifecycle,
         "overview",
         AsyncMock(
             return_value={
@@ -102,7 +125,7 @@ async def workspace_app(tmp_path, monkeypatch):
 
     app.dependency_overrides[get_db] = session_db
     app.dependency_overrides[get_manager_db] = manager_db
-    monkeypatch.setattr(ssh_runtime, "ManagerSessionLocal", manager_factory)
+    monkeypatch.setattr(managers, "ManagerSessionLocal", manager_factory)
     from app import dependencies
 
     async def get_factory(name):
@@ -114,7 +137,7 @@ async def workspace_app(tmp_path, monkeypatch):
         transport=httpx.ASGITransport(app=app), base_url="http://test/instances/main/"
     ) as client:
         yield client, factory, machine, first, second, app.state.agent_run_registry
-    await ssh_runtime.close_runtime_terminal_manager()
+    await managers.close_session_managers()
     await instance_engine.dispose()
     await manager_engine.dispose()
 
@@ -124,7 +147,7 @@ async def test_workspace_catalog_and_healthy_status_do_not_wait_for_remote(
     workspace_app, monkeypatch
 ):
     from app.models import Workspace
-    from app.services.runtime import workspace_containers as containers
+    from app.services.workspaces import lifecycle
 
     client, factory, machine, *_ = workspace_app
     async with factory() as db:
@@ -140,17 +163,17 @@ async def test_workspace_catalog_and_healthy_status_do_not_wait_for_remote(
             await release.wait()
         return {str(workspace_id): {"state": "running"}}
 
-    monkeypatch.setattr(containers, "statuses", statuses)
+    monkeypatch.setattr(lifecycle, "statuses", statuses)
     pending = asyncio.create_task(client.get(f"workspaces/{slow.id}/status"))
     try:
         await asyncio.wait_for(entered.wait(), 1)
-        catalog = await asyncio.wait_for(client.get("workspaces?include_runtime=false"), 1)
+        catalog = await asyncio.wait_for(client.get("workspaces?include_status=false"), 1)
         assert catalog.status_code == 200
         assert {row["name"] for row in catalog.json()} == {"Slow remote", "Healthy"}
-        assert all(row["container_state"] == "checking" for row in catalog.json())
-        containers.overview.assert_not_awaited()
+        assert all(row["state"] == "checking" for row in catalog.json())
+        lifecycle.overview.assert_not_awaited()
         ready = await asyncio.wait_for(client.get(f"workspaces/{healthy.id}/status"), 1)
-        assert ready.json()["container_state"] == "running"
+        assert ready.json()["state"] == "running"
         assert not pending.done()
     finally:
         release.set()
@@ -161,34 +184,35 @@ async def test_workspace_catalog_and_healthy_status_do_not_wait_for_remote(
 async def test_workspace_status_timeout_is_local_to_its_card(workspace_app, monkeypatch):
     from unittest.mock import AsyncMock
     from app.models import Workspace
-    from app.services.runtime import workspace_containers as containers
+    from app.services.workspaces import lifecycle
 
     client, factory, machine, *_ = workspace_app
     async with factory() as db:
         row = Workspace(name="Remote", machine_id=machine.id, directory="/remote")
         db.add(row)
         await db.commit()
-    monkeypatch.setattr(containers, "statuses", AsyncMock(side_effect=TimeoutError))
+    monkeypatch.setattr(lifecycle, "statuses", AsyncMock(side_effect=TimeoutError))
     response = await client.get(f"workspaces/{row.id}/status")
     assert response.status_code == 200
-    assert response.json()["container_state"] == "unavailable"
-    assert "timed out" in response.json()["container_error"]
+    assert response.json()["state"] == "unavailable"
+    assert "timed out" in response.json()["error"]
     assert (await client.get(f"workspaces/{uuid4()}/status")).status_code == 404
 
 
 @pytest.mark.asyncio
 async def test_development_tool_plan_is_saved_and_macos_only(workspace_app, monkeypatch):
-    from app.services.runtime import development_tools
+    from app.services.workspaces.machines import environment
+    from tests.conftest import TEST_CATALOG
 
     client, _, machine, *_ = workspace_app
 
     async def macos(_):
         return "darwin"
 
-    monkeypatch.setattr(development_tools, "machine_os", macos)
+    monkeypatch.setattr(environment, "machine_os", macos)
     options = await client.get(f"machines/{machine.id}/development-tools")
     assert options.status_code == 200
-    assert options.json()["stacks"] == development_tools.STACKS
+    assert options.json()["stacks"] == TEST_CATALOG["stacks"]
     payload = {
         "name": "Full stack",
         "machine_id": str(machine.id),
@@ -204,16 +228,16 @@ async def test_development_tool_plan_is_saved_and_macos_only(workspace_app, monk
         "python",
     ]
     assert (
-        await client.post("workspaces", json={**payload, "development_tools": ["unknown"]})
+        await client.post("workspaces", json={**payload, "development_tools": ["../git"]})
     ).status_code == 422
 
     async def linux(_):
         return "linux"
 
-    monkeypatch.setattr(development_tools, "machine_os", linux)
+    monkeypatch.setattr(environment, "machine_os", linux)
     assert (await client.get(f"machines/{machine.id}/development-tools")).json()["stacks"] == []
     monkeypatch.setattr(
-        __import__("app.services.runtime.workspace_containers", fromlist=["available"]),
+        __import__("app.services.workspaces.lifecycle", fromlist=["available"]),
         "available",
         lambda: False,
     )
@@ -224,7 +248,7 @@ async def test_development_tool_plan_is_saved_and_macos_only(workspace_app, monk
 async def test_sessions_start_unattached_and_share_workspace(workspace_app, tmp_path):
     client, factory, machine, first, second, registry = workspace_app
     assert (await client.get(f"sessions/{first.id}/workspace")).json() is None
-    assert not await ssh_runtime.runtime_configured(
+    assert not await managers.workspace_attached(
         instance_name="main", session_id=first.id, session_factory=factory
     )
     created = await client.post(
@@ -242,10 +266,10 @@ async def test_sessions_start_unattached_and_share_workspace(workspace_app, tmp_
             f"sessions/{session.id}/workspace", json={"workspace_id": workspace["id"]}
         )
         assert result.status_code == 200, result.text
-    first_manager = await ssh_runtime.get_runtime_terminal_manager(
+    first_manager = await managers.get_terminal_manager(
         instance_name="main", session_id=first.id, session_factory=factory
     )
-    second_manager = await ssh_runtime.get_runtime_terminal_manager(
+    second_manager = await managers.get_terminal_manager(
         instance_name="main", session_id=second.id, session_factory=factory
     )
     assert first_manager is not second_manager
@@ -278,13 +302,16 @@ async def test_sessions_start_unattached_and_share_workspace(workspace_app, tmp_
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("detach", [False, True])
+@pytest.mark.parametrize("unreachable", [False, True])
 async def test_switch_from_incompatible_runtime_preserves_remote_programs(
-    workspace_app, monkeypatch, detach
+    workspace_app, monkeypatch, detach, unreachable
 ):
+    # An incompatible or unreachable worker (a Mac that is off) never pins a session to it.
     from unittest.mock import AsyncMock
     from app.models import Workspace
     from app.routers import workspaces as routes
-    from app.services.runtime.compatibility import RuntimeCompatibilityError
+    from app.services.workspaces.compatibility import RuntimeCompatibilityError
+    from app.services.workspaces.machines.remote.worker import RuntimeUnavailable
 
     client, factory, machine, first, *_ = workspace_app
     async with factory() as db:
@@ -297,25 +324,29 @@ async def test_switch_from_incompatible_runtime_preserves_remote_programs(
         await db.commit()
     monkeypatch.setattr(
         routes,
-        "runtime_configured",
+        "workspace_attached",
         AsyncMock(
-            side_effect=RuntimeCompatibilityError(
-                "runtime_update_required", "Update the worker", machine_id=machine.id
+            side_effect=(
+                RuntimeUnavailable("Can't reach mac (192.0.2.1): it refused the connection.")
+                if unreachable
+                else RuntimeCompatibilityError(
+                    "runtime_update_required", "Update the worker", machine_id=machine.id
+                )
             )
         ),
     )
     terminal = AsyncMock()
-    monkeypatch.setattr(routes, "get_runtime_terminal_manager", terminal)
+    monkeypatch.setattr(routes, "get_terminal_manager", terminal)
     pool = AsyncMock()
     monkeypatch.setattr(routes, "get_browser_pool", lambda: pool)
     invalidate = AsyncMock()
-    monkeypatch.setattr(routes, "invalidate_runtime_for_session", invalidate)
+    monkeypatch.setattr(routes, "invalidate_session_managers", invalidate)
     target = None if detach else str(new.id)
     response = await client.put(f"sessions/{first.id}/workspace", json={"workspace_id": target})
     assert response.status_code == 200, response.text
     terminal.assert_not_awaited()
     pool.remove.assert_awaited_once_with(str(first.id), instance_name="main", stop_remote=False)
-    invalidate.assert_awaited_once_with("main", first.id, stop_remote=False)
+    invalidate.assert_awaited_once_with("main", first.id)
     async with factory() as db:
         assert str((await db.get(Session, first.id)).workspace_id) == str(
             None if detach else new.id
@@ -372,19 +403,19 @@ def test_project_and_private_state_paths_are_separate():
 
 @pytest.mark.asyncio
 async def test_container_sessions_share_files_but_not_shell_state(tmp_path, container_transport):
-    from app.services.runtime.terminal_manager import RuntimeTerminalManager
+    from app.services.workspaces.terminals.manager import TerminalManager
 
     root = WorkspaceLocation("/workspace", "/var/lib/sentinel")
     first, second = str(uuid4()), str(uuid4())
-    one = RuntimeTerminalManager(container_transport, workspace_location=root)
-    two = RuntimeTerminalManager(container_transport, workspace_location=root)
-    from app.services.runtime.panes import TmuxPanes
+    one = TerminalManager(container_transport, workspace_location=root)
+    two = TerminalManager(container_transport, workspace_location=root)
+    from app.services.workspaces.terminals.panes import TmuxPanes
 
     async def execute(manager, session, command, **kwargs):
-        from app.schemas.runtime import RuntimeExecResult
+        from app.schemas.session_workspace import ExecResult
 
         result = await TmuxPanes(manager).execute(session, command, **kwargs)
-        return RuntimeExecResult(
+        return ExecResult(
             exit_status=result["exit_status"],
             stdout=result["stdout"],
             stderr=result["stderr"],
@@ -448,7 +479,7 @@ async def test_container_sessions_share_files_but_not_shell_state(tmp_path, cont
 
 @pytest.mark.asyncio
 async def test_edit_workspace_adds_tools_and_preserves_location(workspace_app):
-    from app.services.runtime import workspace_containers as containers
+    from app.services.workspaces import lifecycle
 
     client, factory, machine, first, second, registry = workspace_app
     created = await client.post(
@@ -461,7 +492,7 @@ async def test_edit_workspace_adds_tools_and_preserves_location(workspace_app):
         },
     )
     workspace_id = created.json()["id"]
-    containers.start.reset_mock()
+    lifecycle.start.reset_mock()
     result = await client.patch(
         f"workspaces/{workspace_id}",
         json={
@@ -472,8 +503,8 @@ async def test_edit_workspace_adds_tools_and_preserves_location(workspace_app):
     assert result.status_code == 200, result.text
     assert result.json()["development_tools"] == ["git", "node"]
     assert result.json()["directory"] == "/projects/tools"
-    assert result.json()["container_state"] == "preparing"
-    containers.start.assert_awaited_once()
+    assert result.json()["state"] == "preparing"
+    lifecycle.start.assert_awaited_once()
     assert (
         await client.patch(
             f"workspaces/{workspace_id}",
@@ -483,7 +514,7 @@ async def test_edit_workspace_adds_tools_and_preserves_location(workspace_app):
             },
         )
     ).status_code == 422
-    containers.statuses.return_value = {workspace_id: {"state": "preparing"}}
+    lifecycle.statuses.return_value = {workspace_id: {"state": "preparing"}}
     assert (
         await client.patch(
             f"workspaces/{workspace_id}",
@@ -502,7 +533,7 @@ async def test_workspace_browser_reads_without_a_session_and_never_starts_contai
     import json
     from unittest.mock import AsyncMock
     from app.models import Workspace
-    from app.services.runtime import workspace_containers as containers
+    from app.services.workspaces import lifecycle
 
     client, factory, machine, *_ = workspace_app
     async with factory() as db:
@@ -512,9 +543,9 @@ async def test_workspace_browser_reads_without_a_session_and_never_starts_contai
         identifier = str(workspace.id)
     response = await client.get(f"workspaces/{identifier}/browse/files")
     assert response.status_code == 409
-    containers.start.assert_not_awaited()
+    lifecycle.start.assert_not_awaited()
     monkeypatch.setattr(
-        containers,
+        lifecycle,
         "statuses",
         AsyncMock(return_value={identifier: {"state": "running"}}),
     )
@@ -524,7 +555,7 @@ async def test_workspace_browser_reads_without_a_session_and_never_starts_contai
             "exitCode": 0,
         }
     )
-    monkeypatch.setattr(containers, "request", execute)
+    monkeypatch.setattr(lifecycle, "request", execute)
     response = await client.get(f"workspaces/{identifier}/browse/files")
     assert response.status_code == 200
     assert response.json() == {"entries": [], "workspace_id": identifier}
@@ -538,7 +569,7 @@ async def test_workspace_browser_reads_without_a_session_and_never_starts_contai
     request = json.loads(execute.call_args.kwargs["arguments"][-1])
     assert request["operation"] == "git_context"
     assert request["payload"]["include_worktrees"] is False
-    containers.start.assert_not_awaited()
+    lifecycle.start.assert_not_awaited()
     execute.reset_mock()
     assert (await client.get(f"workspaces/{identifier}/browse/str_replace")).status_code == 422
     execute.assert_not_awaited()
@@ -550,7 +581,7 @@ async def test_workspace_browser_surfaces_git_failure(workspace_app, monkeypatch
     import json
     from unittest.mock import AsyncMock
     from app.models import Workspace
-    from app.services.runtime import workspace_containers as containers
+    from app.services.workspaces import lifecycle
 
     client, factory, machine, *_ = workspace_app
     async with factory() as db:
@@ -561,12 +592,12 @@ async def test_workspace_browser_surfaces_git_failure(workspace_app, monkeypatch
         await db.commit()
         identifier = str(workspace.id)
     monkeypatch.setattr(
-        containers,
+        lifecycle,
         "statuses",
         AsyncMock(return_value={identifier: {"state": "running"}}),
     )
     monkeypatch.setattr(
-        containers,
+        lifecycle,
         "request",
         AsyncMock(
             return_value={
@@ -587,7 +618,7 @@ async def test_workspace_browser_surfaces_git_failure(workspace_app, monkeypatch
 
 @pytest.mark.asyncio
 async def test_install_desktop_without_renaming_workspace(workspace_app):
-    from app.services.runtime import workspace_containers as containers
+    from app.services.workspaces import lifecycle
 
     client, _, machine, *_ = workspace_app
     created = await client.post(
@@ -601,7 +632,7 @@ async def test_install_desktop_without_renaming_workspace(workspace_app):
     )
     assert created.status_code == 201, created.text
     identifier = created.json()["id"]
-    containers.start.reset_mock()
+    lifecycle.start.reset_mock()
     # Same partial payload used by the Desktop tab's Install button.
     result = await client.patch(
         f"workspaces/{identifier}",
@@ -612,23 +643,23 @@ async def test_install_desktop_without_renaming_workspace(workspace_app):
     assert result.json()["name"] == "My project"
     assert result.json()["directory"] == "/projects/desktop"
     assert result.json()["development_tools"] == ["git", "node"]
-    assert result.json()["container_state"] == "preparing"
+    assert result.json()["state"] == "preparing"
     from uuid import UUID
 
-    containers.start.assert_awaited_once_with(
+    lifecycle.start.assert_awaited_once_with(
         UUID(identifier),
         "/projects/desktop",
         ["git", "node"],
         notification_context={"instanceName": "main", "name": "My project"},
     )
     # Retrying the same selection neither renames nor restarts the workspace.
-    containers.start.reset_mock()
+    lifecycle.start.reset_mock()
     retry = await client.patch(
         f"workspaces/{identifier}",
         json={"development_tools": ["git", "node"]},
     )
     assert retry.status_code == 200
-    containers.start.assert_not_awaited()
+    lifecycle.start.assert_not_awaited()
     for invalid_name in ["", "   "]:
         assert (
             await client.patch(f"workspaces/{identifier}", json={"name": invalid_name})
@@ -637,7 +668,7 @@ async def test_install_desktop_without_renaming_workspace(workspace_app):
 
 @pytest.mark.asyncio
 async def test_provisioning_passes_validated_resources_to_runtime(workspace_app):
-    from app.services.runtime import workspace_containers as containers
+    from app.services.workspaces import lifecycle
 
     client, _, machine, *_ = workspace_app
     allocation = {"cpus": 4, "memory_gib": 8, "disk_gib": 64}
@@ -650,7 +681,7 @@ async def test_provisioning_passes_validated_resources_to_runtime(workspace_app)
     }
     response = await client.post("workspaces", json=payload)
     assert response.status_code == 201, response.text
-    assert containers.start.await_args.kwargs == {
+    assert lifecycle.start.await_args.kwargs == {
         "resources": allocation,
         "notification_context": {"instanceName": "main", "name": "Clusters"},
     }
@@ -665,7 +696,7 @@ async def test_provisioning_passes_validated_resources_to_runtime(workspace_app)
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("desktop", ["none", "xfce", "weston", "lxqt", "gnome", "plasma"])
+@pytest.mark.parametrize("desktop", ["none", "xfce", "lxqt", "gnome", "plasma"])
 async def test_desktop_choice_round_trip_without_renaming(workspace_app, desktop):
     client, _, machine, *_ = workspace_app
     response = await client.post(
@@ -684,13 +715,13 @@ async def test_desktop_choice_round_trip_without_renaming(workspace_app, desktop
     updated = await client.patch(f"workspaces/{workspace['id']}", json={"name": "Renamed"})
     assert updated.status_code == 200, updated.text
     assert updated.json()["desktop"] == desktop
-    listing = (await client.get("workspaces?include_runtime=false")).json()
+    listing = (await client.get("workspaces?include_status=false")).json()
     assert next(row for row in listing if row["id"] == workspace["id"])["desktop"] == desktop
 
 
 @pytest.mark.asyncio
 async def test_distribution_persisted_immutable_and_compatible(workspace_app):
-    from app.services.runtime import workspace_containers as containers
+    from app.services.workspaces import lifecycle
 
     client, factory, machine, *_ = workspace_app
     for distro in ("ubuntu", "debian"):
@@ -707,8 +738,8 @@ async def test_distribution_persisted_immutable_and_compatible(workspace_app):
         assert response.status_code == 201, response.text
         row = response.json()
         assert row["distribution"] == distro
-        assert containers._workspace_distributions[row["id"]] == distro
-        listing = (await client.get("workspaces?include_runtime=false")).json()
+        assert lifecycle._workspace_distributions[row["id"]] == distro
+        listing = (await client.get("workspaces?include_status=false")).json()
         assert next(item for item in listing if item["id"] == row["id"])["distribution"] == distro
         assert (
             await client.patch(f"workspaces/{row['id']}", json={"distribution": "alpine"})
@@ -716,13 +747,13 @@ async def test_distribution_persisted_immutable_and_compatible(workspace_app):
         assert (
             await client.patch(
                 f"workspaces/{row['id']}",
-                json={"desktop": "weston"},
+                json={"desktop": "lxqt"},
             )
         ).status_code == 200
     for distro, tools in [
-        ("arch", []),
-        ("ubuntu", ["unknown"]),
-        ("debian", ["unknown"]),
+        ("Arch Linux", []),
+        ("ubuntu", ["Unknown Tool"]),
+        ("../debian", []),
     ]:
         response = await client.post(
             "workspaces",
@@ -742,7 +773,7 @@ async def test_recovery_requires_confirmation_and_rejects_active_agents(
     workspace_app, tmp_path, monkeypatch
 ):
     from unittest.mock import AsyncMock
-    from app.services.runtime import workspace_containers as containers
+    from app.services.workspaces import lifecycle
 
     client, factory, machine, first, second, registry = workspace_app
     created = await client.post(
@@ -756,7 +787,7 @@ async def test_recovery_requires_confirmation_and_rejects_active_agents(
     assert created.status_code == 201, created.text
     workspace_id = created.json()["id"]
     request = AsyncMock(return_value={"state": "recovering"})
-    monkeypatch.setattr(containers, "request", request)
+    monkeypatch.setattr(lifecycle, "request", request)
     for payload in [
         {},
         {"confirmed": False},

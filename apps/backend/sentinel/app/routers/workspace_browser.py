@@ -13,10 +13,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies import get_db
 from app.models import Workspace
-from app.services.runtime import workspace_containers as containers
-from app.services.runtime.guest_commands import load_guest_python
-from app.services.runtime.uploads import upload_file, get_progress, record_progress
-from app.services.runtime.file_stream import file_response
+from app.services.workspaces import lifecycle
+from app.services.workspaces.guest_commands import load_guest_python
+from app.services.workspaces.files.uploads import upload_file, get_progress, record_progress
+from app.services.workspaces.files.stream import file_response
 
 router = APIRouter()
 OPERATIONS = {
@@ -66,7 +66,7 @@ async def upload_workspace_file(
     workspace = await db.get(Workspace, workspace_id)
     if workspace is None:
         raise HTTPException(404, "Workspace not found")
-    containers.bind(workspace.id, workspace.machine_id, workspace.distribution)
+    lifecycle.bind(workspace.id, workspace.machine_id, workspace.distribution)
     await db.close()
     key = (
         request.path_params.get("instance_name", ""),
@@ -89,7 +89,7 @@ async def upload_workspace_file(
         raise HTTPException(499, "Upload cancelled") from None
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
-    except (containers.WorkspaceContainerError, TimeoutError) as exc:
+    except (lifecycle.WorkspaceLifecycleError, TimeoutError) as exc:
         raise HTTPException(503, str(exc) or "File transfer timed out. Try again.") from exc
 
 
@@ -105,7 +105,7 @@ async def read_workspace_file(
     workspace = await db.get(Workspace, workspace_id)
     if workspace is None:
         raise HTTPException(404, "Workspace not found")
-    containers.bind(workspace.id, workspace.machine_id, workspace.distribution)
+    lifecycle.bind(workspace.id, workspace.machine_id, workspace.distribution)
     await db.close()
     try:
         return await file_response(
@@ -118,7 +118,7 @@ async def read_workspace_file(
         )
     except (ValueError, OSError) as exc:
         raise HTTPException(422, str(exc) or "Could not read file") from exc
-    except (containers.WorkspaceContainerError, TimeoutError) as exc:
+    except (lifecycle.WorkspaceLifecycleError, TimeoutError) as exc:
         raise HTTPException(503, str(exc) or "File transfer timed out") from exc
 
 
@@ -180,7 +180,7 @@ async def delete_workspace_path(
 
 async def _file_operation(workspace: Workspace, operation: str, payload: dict):
     workspace_id = workspace.id
-    containers.bind(workspace.id, workspace.machine_id, workspace.distribution)
+    lifecycle.bind(workspace.id, workspace.machine_id, workspace.distribution)
     request = {
         "operation": operation,
         "workspace": workspace.directory,
@@ -190,13 +190,13 @@ async def _file_operation(workspace: Workspace, operation: str, payload: dict):
     }
     try:
         async with asyncio.timeout(35):
-            state = (await containers.statuses()).get(str(workspace_id), {})
+            state = (await lifecycle.statuses(workspace_id)).get(str(workspace_id), {})
             if state.get("state") != "running":
                 raise HTTPException(
                     409,
                     state.get("error") or "Start this workspace to browse its files.",
                 )
-            result = await containers.request(
+            result = await lifecycle.request(
                 "exec",
                 workspace=str(workspace_id),
                 timeout=30,
@@ -207,7 +207,7 @@ async def _file_operation(workspace: Workspace, operation: str, payload: dict):
                     json.dumps(request),
                 ],
             )
-    except (containers.WorkspaceContainerError, TimeoutError) as exc:
+    except (lifecycle.WorkspaceLifecycleError, TimeoutError) as exc:
         raise HTTPException(503, str(exc) or "Workspace browsing timed out. Try again.") from exc
     if result.get("exitCode", 0):
         raise HTTPException(502, result.get("stderr") or "Workspace file service failed")

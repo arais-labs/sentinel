@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from app.services.runtime.guest_commands import load_guest_python
+from app.services.workspaces.guest_commands import load_guest_python
 
 
 @pytest.fixture
@@ -34,7 +34,7 @@ def file_runtime(tmp_path, monkeypatch):
             "payload": payload,
         }
         # Exercise the shipped command against test-owned folders. Production
-        # executes this same command through ContainerTransport, never on the host.
+        # executes this same command through GuestTransport, never on the host.
         result = subprocess.run(
             [sys.executable, "-c", script, json.dumps(request)],
             env={**os.environ, "PATH": f"{Path(sys.executable).parent}:{os.environ['PATH']}"},

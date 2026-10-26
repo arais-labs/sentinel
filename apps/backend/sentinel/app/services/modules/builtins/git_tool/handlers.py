@@ -1,4 +1,4 @@
-"""Native module: git — workspace container git/GitHub execution."""
+"""Native module: git — git/GitHub execution inside the attached workspace."""
 
 from __future__ import annotations
 
@@ -19,11 +19,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.database import AsyncSessionLocal
 from app.models import GitAccount
-from app.services.runtime.ssh_runtime import (
-    get_runtime_terminal_manager,
-    runtime_configured,
+from app.services.workspaces.managers import (
+    get_terminal_manager,
+    workspace_attached,
 )
-from app.services.runtime.workspace import RemoteWorkspacePaths, workspace_paths
+from app.services.workspaces.paths import RemoteWorkspacePaths, workspace_paths
 from app.services.secrets import is_invalid_secret
 from sentral.errors import ToolValidationError
 from app.services.tools.registry import ToolRuntimeContext
@@ -690,8 +690,8 @@ def _build_hidden_runtime_command(
     cwd: str,
     tokens: list[str],
 ) -> str:
-    if os_name != "linux" or sandbox != "container":
-        raise ToolValidationError("Git requires an attached workspace container.")
+    if os_name != "linux" or sandbox != "vm":
+        raise ToolValidationError("Git requires an attached workspace.")
     return (
         "cd "
         + quote(_project_cwd(cwd, paths.workspace))
@@ -712,7 +712,7 @@ async def _run_hidden_runtime_command(
 ) -> dict[str, Any]:
     if runtime.instance_name is None:
         raise ToolValidationError("Git tool requires an active instance context.")
-    if not await runtime_configured(
+    if not await workspace_attached(
         session_id=runtime.runtime_session_id or runtime.session_id,
         instance_name=runtime.instance_name,
         session_factory=runtime.db_session_factory,
@@ -720,7 +720,7 @@ async def _run_hidden_runtime_command(
         raise ToolValidationError(
             "No usable workspace attached. Ask the user to attach a workspace from the session toolbar before using this tool."
         )
-    terminal_manager = await get_runtime_terminal_manager(
+    terminal_manager = await get_terminal_manager(
         session_id=runtime.runtime_session_id or runtime.session_id,
         instance_name=runtime.instance_name,
         session_factory=runtime.db_session_factory,
@@ -843,7 +843,7 @@ async def _run_network_git(
     mode: str,
 ) -> dict[str, Any]:
 
-    terminal = await get_runtime_terminal_manager(
+    terminal = await get_terminal_manager(
         session_id=runtime.runtime_session_id or runtime.session_id,
         instance_name=runtime.instance_name,
         session_factory=runtime.db_session_factory,
@@ -1002,7 +1002,7 @@ async def _execute_gh_command(
                 raise ToolValidationError("Choose a matching git account for this GitHub command")
             account = matching[0]
 
-    terminal = await get_runtime_terminal_manager(
+    terminal = await get_terminal_manager(
         session_id=runtime.runtime_session_id or runtime.session_id,
         instance_name=runtime.instance_name,
         session_factory=runtime.db_session_factory,
@@ -1035,7 +1035,7 @@ async def _handle_run(payload: dict[str, Any], runtime: ToolRuntimeContext) -> d
     if not isinstance(cli_command, str) or not cli_command.strip():
         raise ToolValidationError("Field 'cli_command' must be a non-empty string")
     timeout_seconds = _timeout_seconds(payload)
-    terminal = await get_runtime_terminal_manager(
+    terminal = await get_terminal_manager(
         session_id=runtime.runtime_session_id or runtime.session_id,
         instance_name=runtime.instance_name,
         session_factory=runtime.db_session_factory,
@@ -1248,7 +1248,7 @@ async def handle_run_script(payload, runtime):
         )
     session_id = _session_key(runtime)
     timeout = _timeout_seconds(payload)
-    terminal = await get_runtime_terminal_manager(
+    terminal = await get_terminal_manager(
         session_id=runtime.runtime_session_id or runtime.session_id,
         instance_name=runtime.instance_name,
         session_factory=runtime.db_session_factory,

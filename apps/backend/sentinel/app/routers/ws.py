@@ -23,10 +23,10 @@ from app.services.messages import (
     normalize_generation_metadata,
     with_generation_metadata,
 )
-from app.services.runtime.panes import TmuxPanes
-from app.services.runtime.ssh_runtime import (
-    get_runtime_terminal_manager,
-    runtime_configured,
+from app.services.workspaces.terminals.panes import TmuxPanes
+from app.services.workspaces.managers import (
+    get_terminal_manager,
+    workspace_attached,
 )
 from app.services.sessions.agent_run_registry import AgentRunRegistry
 from app.services.sessions.compaction import CompactionService
@@ -550,14 +550,14 @@ def _apply_terminal_tool_result_update(
 async def _initial_panes(
     instance_name: str, session_id: str, session_factory=None
 ) -> list[dict[str, Any]]:
-    if not await runtime_configured(
+    if not await workspace_attached(
         instance_name=instance_name,
         session_id=session_id,
         session_factory=session_factory,
     ):
         return []
 
-    terminal = await get_runtime_terminal_manager(
+    terminal = await get_terminal_manager(
         instance_name=instance_name,
         session_id=session_id,
         session_factory=session_factory,
@@ -595,7 +595,7 @@ async def stream_terminal(
 
     try:
         await (
-            await get_runtime_terminal_manager(
+            await get_terminal_manager(
                 session_id=id, instance_name=str(websocket.path_params["instance_name"])
             )
         ).attach_ws(str(id), websocket, on_panes=publish_panes, retry_setup=retry)

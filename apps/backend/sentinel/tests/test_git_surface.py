@@ -77,7 +77,7 @@ async def test_real_client_uses_broker_without_guest_token(tmp_path, monkeypatch
     import shutil
     import sys
 
-    from app.services.runtime.local_transport import LocalTransport
+    from app.services.workspaces.transport.local import LocalTransport
 
     if client == "gh" and sys.platform == "darwin":
         pytest.skip("macOS Go uses Keychain roots; production gh runs in Linux")
@@ -129,7 +129,7 @@ async def test_real_client_uses_broker_without_guest_token(tmp_path, monkeypatch
 async def test_real_git_protocol_read_through_broker(tmp_path, monkeypatch):
     import shutil
 
-    from app.services.runtime.local_transport import LocalTransport
+    from app.services.workspaces.transport.local import LocalTransport
 
     seen = []
 
@@ -167,7 +167,7 @@ async def test_real_git_protocol_read_through_broker(tmp_path, monkeypatch):
 async def test_actual_post_cannot_cross_read_broker(tmp_path, monkeypatch):
     import shutil
 
-    from app.services.runtime.local_transport import LocalTransport
+    from app.services.workspaces.transport.local import LocalTransport
 
     async def upstream(request):
         pytest.fail("Read broker forwarded a mutation")
@@ -270,8 +270,8 @@ async def test_cherry_pick_supplies_committer_without_overriding_author(monkeypa
 
     manager = _TerminalManagerStub()
     monkeypatch.setattr(handlers, "AsyncSessionLocal", _SessionFactory(_fake_db_with_account()))
-    monkeypatch.setattr(handlers, "get_runtime_terminal_manager", _terminal_manager_stub(manager))
-    monkeypatch.setattr(handlers, "runtime_configured", _runtime_configured_stub)
+    monkeypatch.setattr(handlers, "get_terminal_manager", _terminal_manager_stub(manager))
+    monkeypatch.setattr(handlers, "workspace_attached", _runtime_configured_stub)
     result = await handlers.handle_write(
         {"cli_command": "git cherry-pick --continue"}, _runtime_context(uuid4())
     )
@@ -327,8 +327,8 @@ async def test_revert_creates_commit_without_configured_identity(monkeypatch, tm
 
     manager = _TerminalManagerStub()
     monkeypatch.setattr(handlers, "AsyncSessionLocal", _SessionFactory(_fake_db_with_account()))
-    monkeypatch.setattr(handlers, "get_runtime_terminal_manager", _terminal_manager_stub(manager))
-    monkeypatch.setattr(handlers, "runtime_configured", _runtime_configured_stub)
+    monkeypatch.setattr(handlers, "get_terminal_manager", _terminal_manager_stub(manager))
+    monkeypatch.setattr(handlers, "workspace_attached", _runtime_configured_stub)
 
     async def run_actual_git(**kwargs):
         assert "account-token" not in str(kwargs.get("env"))
@@ -400,7 +400,7 @@ async def test_scoped_graphql_resolves_mutation_target_on_host():
 async def test_broker_timeout_is_reported_and_process_is_reaped(tmp_path):
     import sys
 
-    from app.services.runtime.local_transport import LocalTransport
+    from app.services.workspaces.transport.local import LocalTransport
 
     result = await broker.run_brokered(
         terminal=SimpleNamespace(ssh=LocalTransport()),

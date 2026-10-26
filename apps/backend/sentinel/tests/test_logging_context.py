@@ -26,12 +26,15 @@ def test_logging_override_round_trip():
 
     from app.logging_context import clear_runtime_logger_override, set_runtime_logger_override
 
-    snapshot = set_runtime_logger_override("app.services.runtime.qemu", "DEBUG")
-    assert snapshot["runtime_overrides"]["app.services.runtime.qemu"] == "DEBUG"
-    assert logging.getLogger("app.services.runtime.qemu").getEffectiveLevel() == logging.DEBUG
+    snapshot = set_runtime_logger_override("app.services.workspaces.transport.guest", "DEBUG")
+    assert snapshot["runtime_overrides"]["app.services.workspaces.transport.guest"] == "DEBUG"
+    assert (
+        logging.getLogger("app.services.workspaces.transport.guest").getEffectiveLevel()
+        == logging.DEBUG
+    )
 
-    snapshot = clear_runtime_logger_override("app.services.runtime.qemu")
-    assert "app.services.runtime.qemu" not in snapshot["runtime_overrides"]
+    snapshot = clear_runtime_logger_override("app.services.workspaces.transport.guest")
+    assert "app.services.workspaces.transport.guest" not in snapshot["runtime_overrides"]
 
 
 def test_logging_routes_allow_runtime_override():

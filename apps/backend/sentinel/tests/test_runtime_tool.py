@@ -25,7 +25,7 @@ async def test_exec_dispatches_to_native_pane_bridge(monkeypatch):
             calls.append((session, command, kwargs))
             return {"pane_id": kwargs["pane_id"], "exit_status": 0, "stdout": "ok", "stderr": ""}
 
-    monkeypatch.setattr(handlers, "get_runtime_terminal_manager", manager)
+    monkeypatch.setattr(handlers, "get_terminal_manager", manager)
     monkeypatch.setattr(handlers, "TmuxPanes", Bridge)
     session = uuid4()
     result, _ = await ToolExecutor(build_default_registry()).execute(

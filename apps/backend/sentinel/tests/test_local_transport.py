@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from app.services.runtime.local_transport import LocalTransport
+from app.services.workspaces.transport.local import LocalTransport
 
 
 @pytest.mark.asyncio

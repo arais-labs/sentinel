@@ -3,8 +3,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from app.services.runtime.remote_mac import RemoteMacError, UpdateApprovalRequired
-from app.services.runtime.remote_update import apply_update
+from app.services.workspaces.machines.remote.worker import RemoteMacError, UpdateApprovalRequired
+from app.services.workspaces.machines.remote.update import apply_update
 
 OLD = {"version": "old", "storeVersion": 1, "updateProtocol": 1}
 NEW = {"version": "new", "storeVersion": 1, "updateProtocol": 1}
@@ -315,7 +315,8 @@ async def test_only_update_owner_can_attach_during_transaction(monkeypatch, upda
     from types import SimpleNamespace
     from unittest.mock import Mock
     from tests.test_remote_mac import machine
-    from app.services.runtime import remote_mac as remote, workspace_containers
+    from app.services.workspaces.machines.remote import worker as remote
+    from app.services.workspaces import lifecycle
 
     target = machine(host_key="key", runtime_root="/remote/runtime")
     runtime = remote.RemoteMacRuntime(target)
@@ -327,9 +328,8 @@ async def test_only_update_owner_can_attach_during_transaction(monkeypatch, upda
                 {"phase": "resuming"}
                 if name.endswith("update.json")
                 else {
-                    "executable": "/new/helper",
-                    "kernel": "/kernel",
-                    "initImage": "init",
+                    "executable": "/new/sentineld/bin/sentineld",
+                    "workspace": "/new/sentinel-workspace",
                 }
             )
             yield SimpleNamespace(read=AsyncMock(return_value=json.dumps(value)))
@@ -348,7 +348,7 @@ async def test_only_update_owner_can_attach_during_transaction(monkeypatch, upda
     monkeypatch.setattr(remote, "service_request", status)
     monkeypatch.setattr(remote, "wait_for_runtime_ready", AsyncMock())
     monkeypatch.setattr(
-        workspace_containers,
+        lifecycle,
         "local_request",
         AsyncMock(return_value={"socket": "/bridge"}),
     )
@@ -371,7 +371,7 @@ async def test_only_update_owner_can_attach_during_transaction(monkeypatch, upda
 async def test_update_lease_conflict_closes_probe_without_sending_mutations():
     from types import SimpleNamespace
     from unittest.mock import Mock
-    from app.services.runtime.remote_update import UpdateSession
+    from app.services.workspaces.machines.remote.update import UpdateSession
 
     process = SimpleNamespace(
         stdout=SimpleNamespace(readline=AsyncMock(return_value='{"error":"Runtime is busy"}\n')),
@@ -390,7 +390,7 @@ async def test_update_lease_conflict_closes_probe_without_sending_mutations():
 async def test_lost_update_reply_is_not_retried_or_masked_by_cleanup():
     from types import SimpleNamespace
     from unittest.mock import Mock
-    from app.services.runtime.remote_update import UpdateSession
+    from app.services.workspaces.machines.remote.update import UpdateSession
 
     process = SimpleNamespace(
         stdout=SimpleNamespace(readline=AsyncMock(side_effect=['{"event":"locked"}\n', ""])),

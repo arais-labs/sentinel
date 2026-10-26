@@ -13,7 +13,7 @@ from starlette.requests import Request
 
 from app.models import Base, Session, Workspace
 from app.models.manager import ManagerBase, SentinelInstance
-from app.services.runtime import control
+from app.services.workspaces import control
 
 
 @pytest_asyncio.fixture
@@ -47,7 +47,7 @@ def request():
         {
             "type": "http",
             "method": "GET",
-            "path": "/instances/test/runtime/live-view",
+            "path": "/instances/test/sessions/test/workspace/desktop",
             "headers": [],
             "path_params": {"instance_name": "test"},
         }
@@ -73,23 +73,21 @@ async def test_desktop_request_releases_lookup_connection_before_runtime(databas
             assert await db.scalar(select(Session.id)) == sid
         return {"state": "stopped"}
 
-    monkeypatch.setattr(control, "runtime_configured", AsyncMock(return_value=True))
-    monkeypatch.setattr(control, "get_runtime_desktop_manager", get_manager)
+    monkeypatch.setattr(control, "workspace_attached", AsyncMock(return_value=True))
+    monkeypatch.setattr(control, "get_desktop_manager", get_manager)
 
     async with factory() as db:
-        result = await control.live_view_response(
+        result = await control.desktop_response(
             request=request(),
             session_id=str(sid),
             db=db,
-            geometry=None,
-            resolution_presets={"1920x1200"},
         )
         assert result.state == "stopped"
         assert engine.pool.checkedout() == 0
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("route", ["resolution", "action", "desktop_socket", "forward_socket"])
+@pytest.mark.parametrize("route", ["action", "forward_socket"])
 async def test_runtime_handoffs_release_lookup_connection(database, monkeypatch, route):
     from app.routers import sessions
 
@@ -102,28 +100,16 @@ async def test_runtime_handoffs_release_lookup_connection(database, monkeypatch,
         # Stop at the handoff without starting a real runtime or socket stream.
         raise asyncio.CancelledError
 
-    monkeypatch.setattr(control, "runtime_configured", AsyncMock(return_value=True))
-    monkeypatch.setattr(control, "get_runtime_desktop_manager", runtime_probe)
-    monkeypatch.setattr(sessions, "get_runtime_port_forward_manager", runtime_probe)
+    monkeypatch.setattr(control, "workspace_attached", AsyncMock(return_value=True))
+    monkeypatch.setattr(control, "get_desktop_manager", runtime_probe)
+    monkeypatch.setattr(sessions, "get_forward_manager", runtime_probe)
     socket = SimpleNamespace(path_params={"instance_name": "test"}, close=AsyncMock())
     async with factory() as db:
-        if route == "resolution":
-            operation = control.set_live_view_resolution_response(
-                request=request(),
-                session_id=str(sid),
-                db=db,
-                geometry="1920x1200",
-                resolution_presets={"1920x1200"},
-            )
-        elif route == "action":
-            monkeypatch.setattr(control, "runtime_configured", runtime_probe)
-            operation = control.require_runtime_session(str(sid), instance_name="test", db=db)
-        elif route == "desktop_socket":
-            operation = control.bridge_runtime_desktop_stream(
-                websocket=socket, session_id=sid, db=db
-            )
+        if route == "action":
+            monkeypatch.setattr(control, "workspace_attached", runtime_probe)
+            operation = control.require_workspace_session(str(sid), instance_name="test", db=db)
         else:
-            operation = sessions.proxy_runtime_forward_websocket(
+            operation = sessions.proxy_forward_websocket(
                 websocket=socket,
                 id=sid,
                 forward_id="test",
@@ -147,8 +133,8 @@ async def test_workspace_reads_release_connection_before_runtime(database, monke
             assert await other.get(Workspace, wid) is not None
         raise asyncio.CancelledError
 
-    monkeypatch.setattr(workspaces.containers, "overview", runtime_probe)
-    monkeypatch.setattr(workspaces.containers, "statuses", runtime_probe)
+    monkeypatch.setattr(workspaces.lifecycle, "overview", runtime_probe)
+    monkeypatch.setattr(workspaces.lifecycle, "statuses", runtime_probe)
     monkeypatch.setattr(workspaces.workspace_metrics, "get", runtime_probe)
     async with factory() as db:
         if route == "browse":

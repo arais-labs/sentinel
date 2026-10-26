@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from app.services.runtime.playwright_runtime import (
+from app.services.browser.launch_options import (
     DEFAULT_BROWSER_LOCALE,
     DEFAULT_BROWSER_TIMEZONE_ID,
     DEFAULT_BROWSER_LANGUAGES,

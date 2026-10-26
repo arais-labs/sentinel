@@ -7,7 +7,7 @@ import pytest
 from app.models.manager import SentinelInstance
 from app.schemas.machines import MachineCreateRequest, MachineUpdateRequest
 from app.services.secrets import InvalidSecretValue
-from app.services.runtime.machines import (
+from app.services.workspaces.machines.registry import (
     ResolvedMachine,
     MachineErrorBase,
     create_machine,
@@ -47,7 +47,7 @@ async def test_address_changes_preserve_worker_identity_but_account_changes_requ
         MachineCreateRequest(
             name="Work Mac",
             provider="ssh",
-            host="192.168.0.161",
+            host="192.0.2.10",
             port=22,
             username="worker",
             auth_type="password",
@@ -60,7 +60,7 @@ async def test_address_changes_preserve_worker_identity_but_account_changes_requ
         "runtime_root": "/worker/runtime",
     }
     machine.provider_config = identity.copy()
-    await update_machine(db, machine.id, MachineUpdateRequest(host="192.168.0.149", port=2222))
+    await update_machine(db, machine.id, MachineUpdateRequest(host="192.0.2.10", port=2222))
     assert machine.provider_config == identity
     assert resolve_machine_secret(machine).worker_id == identity["worker_id"]
     await update_machine(db, machine.id, MachineUpdateRequest(username="other-account"))
@@ -214,7 +214,7 @@ async def test_invalid_secret_reports_runtime_detail_without_mutating_row() -> N
 
 
 def test_runtime_capabilities_offer_ssh_and_local() -> None:
-    from app.services.runtime.providers import MachineProviderService
+    from app.services.workspaces.machines.providers import MachineProviderService
 
     capabilities = MachineProviderService().capabilities()
     assert {item.provider for item in capabilities.providers} == {"ssh", "local"}
@@ -231,7 +231,7 @@ async def test_runtime_restart_names_span_instances_and_keep_unknown_workspaces(
     from types import SimpleNamespace
     from unittest.mock import AsyncMock, Mock
     from app.database.instance_sessions import instance_session_registry
-    from app.services.runtime.machines import runtime_workspace_labels
+    from app.services.workspaces.machines.registry import runtime_workspace_labels
 
     machine_id, first, second, unknown = uuid4(), uuid4(), uuid4(), uuid4()
     db = AsyncMock()
