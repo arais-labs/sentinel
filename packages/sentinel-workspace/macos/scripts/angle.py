@@ -35,7 +35,19 @@ def _download(url, archive):
     if archive.is_file():
         return
     partial = archive.with_suffix(".download")
-    run("curl", "-fsSL", "--retry", "2", "--max-time", "900", url, "-o", partial)
+    run(
+        "curl",
+        "-fsSL",
+        "--retry",
+        "6",
+        "--retry-delay",
+        "10",
+        "--max-time",
+        "900",
+        url,
+        "-o",
+        partial,
+    )
     partial.replace(archive)
 
 
