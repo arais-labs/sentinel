@@ -200,9 +200,8 @@ $(SRC)/$(ARCHIVE).tar.xz:
 # resize2fs is the rule, mke2fs follows from it).
 $(TOOLS)/mke2fs: $(TOOLS)/resize2fs
 	@test -f $@
-$(TOOLS)/resize2fs: $(SRC)/$(E2FS).tar.xz $(SRC)/$(ARCHIVE).tar.xz $(wildcard patches/e2fsprogs-*.patch)
+$(TOOLS)/resize2fs: $(SRC)/$(E2FS).tar.xz $(SRC)/$(ARCHIVE).tar.xz
 	rm -rf $(SRC)/$(E2FS) $(SRC)/$(ARCHIVE) && tar -xf $(SRC)/$(E2FS).tar.xz -C $(SRC) && tar -xf $(SRC)/$(ARCHIVE).tar.xz -C $(SRC)
-	for p in patches/e2fsprogs-*.patch; do patch --batch --forward --fuzz=0 -s -d $(SRC)/$(E2FS) -p1 -i $(CURDIR)/$$p; done
 	cd $(SRC)/$(E2FS) && ./configure --quiet --disable-nls --disable-fuse2fs --disable-debugfs --disable-imager \
 		--disable-defrag --disable-tdb \
 		CPPFLAGS="-I$(CURDIR)/$(SRC)/$(ARCHIVE)/libarchive" ARCHIVE_LIBS=-larchive
