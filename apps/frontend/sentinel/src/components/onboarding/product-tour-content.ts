@@ -333,7 +333,7 @@ export const tourSteps: TourStep[] = [
     instruction:
       'In Chat, open the workspace pill to see available environments. Close the picker after looking, or attach one when you want to use it.',
     detail:
-      'An attached chat uses that workspace for runtime commands, files, browser activity, and forwarded services. Desktop is an optional tool bundle in the environment, not a separate project.',
+      'An attached chat uses that workspace for shell commands, files, browser activity, and forwarded services. Desktop is an optional tool bundle in the environment, not a separate project.',
     target: '[data-tour="workspace-attachment"]',
     preparePane: 'sessions',
     unavailable: 'Select a chat and show its pane. The picker is disabled while the agent is busy.',

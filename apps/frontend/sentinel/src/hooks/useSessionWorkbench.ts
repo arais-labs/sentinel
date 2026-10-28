@@ -5,16 +5,16 @@ import { notificationPublisher } from '../lib/notifications';
 import { api, downloadFile } from '../lib/api';
 import { useInstanceName } from '../lib/workspace-context';
 import { useSessionWorkspace } from './useSessionWorkspace';
-import { buildRuntimeGitChangedTree } from '../lib/runtimeGitTree';
+import { buildWorkspaceGitChangedTree } from '../lib/workspaceGitTree';
 import type { WorkbenchTab } from '../components/workbench/Workbench';
 import type {
-  SessionRuntimeFileEntry,
-  SessionRuntimeFilePreviewResponse,
-  SessionRuntimeFilesResponse,
-  SessionRuntimeGitChangedFilesResponse,
-  SessionRuntimeGitDiffResponse,
-  SessionRuntimeGitRoot,
-  SessionRuntimeGitRootsResponse,
+  SessionWorkspaceFileEntry,
+  SessionWorkspaceFilePreviewResponse,
+  SessionWorkspaceFilesResponse,
+  SessionWorkspaceGitChangedFilesResponse,
+  SessionWorkspaceGitDiffResponse,
+  SessionWorkspaceGitRoot,
+  SessionWorkspaceGitRootsResponse,
 } from '../types/api';
 
 const notify = notificationPublisher('Files');
@@ -23,12 +23,12 @@ const notify = notificationPublisher('Files');
 export interface WorkbenchRepoChangeSection {
   id: string;
   title: string;
-  tree: ReturnType<typeof buildRuntimeGitChangedTree>;
+  tree: ReturnType<typeof buildWorkspaceGitChangedTree>;
   loading: boolean;
 }
 
 function buildDiffBaseRefOptions(
-  roots: SessionRuntimeGitRoot[],
+  roots: SessionWorkspaceGitRoot[],
   currentRef: string | null | undefined,
 ): string[] {
   const options = new Set<string>();
@@ -46,23 +46,23 @@ function buildDiffBaseRefOptions(
 
 export interface UseSessionWorkbenchResult {
   // explorer (directory browse)
-  runtimeFiles: SessionRuntimeFilesResponse | null;
-  runtimePath: string;
-  runtimeFilesLoading: boolean;
-  runtimeFilesRefreshKey: number;
-  fetchRuntimeFiles: (
+  workspaceFiles: SessionWorkspaceFilesResponse | null;
+  workspacePath: string;
+  workspaceFilesLoading: boolean;
+  workspaceFilesRefreshKey: number;
+  fetchWorkspaceFiles: (
     path?: string,
     options?: { refreshGit?: boolean; silent?: boolean },
   ) => Promise<void>;
-  bumpRuntimeFilesRefreshKey: () => void;
-  loadRuntimeDirectoryEntries: (path: string) => Promise<SessionRuntimeFileEntry[]>;
-  downloadRuntimeEntry: (entry: SessionRuntimeFileEntry) => Promise<void>;
+  bumpWorkspaceFilesRefreshKey: () => void;
+  loadWorkspaceDirectoryEntries: (path: string) => Promise<SessionWorkspaceFileEntry[]>;
+  downloadWorkspaceEntry: (entry: SessionWorkspaceFileEntry) => Promise<void>;
 
   // repo changes (git)
   repoChangeSections: WorkbenchRepoChangeSection[];
   expandedGitDirs: Record<string, boolean>;
   toggleGitDir: (path: string) => void;
-  fetchChangedFilesForRepo: (path: string) => Promise<SessionRuntimeGitChangedFilesResponse | null>;
+  fetchChangedFilesForRepo: (path: string) => Promise<SessionWorkspaceGitChangedFilesResponse | null>;
   forgetRepoRoot: (path: string) => void;
 
   // workbench tabs (open file → view + diff)
@@ -71,22 +71,22 @@ export interface UseSessionWorkbenchResult {
   setActiveWorkbenchPath: React.Dispatch<React.SetStateAction<string | null>>;
   workbenchLoadingPath: string | null;
   activeWorkbenchTab: WorkbenchTab | null;
-  openRuntimeFile: (path: string, options?: { suppressErrorToast?: boolean }) => Promise<boolean>;
-  openRuntimeDirectory: (path: string, options?: { autoOpenFirstDiff?: boolean }) => Promise<void>;
-  openRuntimeFileDiff: (path: string) => Promise<void>;
+  openWorkspaceFile: (path: string, options?: { suppressErrorToast?: boolean }) => Promise<boolean>;
+  openWorkspaceDirectory: (path: string, options?: { autoOpenFirstDiff?: boolean }) => Promise<void>;
+  openWorkspaceFileDiff: (path: string) => Promise<void>;
   closeWorkbenchTab: (path: string) => void;
   closeAllWorkbenchTabs: () => void;
 
   // diff view
   workbenchShowDiffByPath: Record<string, boolean>;
   setShowDiffForPath: (path: string, enabled: boolean) => void;
-  activeWorkbenchDiff: SessionRuntimeGitDiffResponse | null;
+  activeWorkbenchDiff: SessionWorkspaceGitDiffResponse | null;
   activeWorkbenchDiffError: string | null;
   activeWorkbenchDiffLoading: boolean;
   activeWorkbenchBaseRef: string;
   setDiffBaseRefForPath: (path: string, baseRef: string) => void;
   activeWorkbenchBaseRefOptions: string[];
-  fetchRuntimeGitDiff: (path: string, options?: { baseRef?: string }) => Promise<void>;
+  fetchWorkspaceGitDiff: (path: string, options?: { baseRef?: string }) => Promise<void>;
 
   /** Clear ALL workbench/explorer/git state (e.g. when the session goes null). */
   resetWorkbench: () => void;
@@ -94,8 +94,8 @@ export interface UseSessionWorkbenchResult {
 
 /**
  * Owns the per-session files / workbench surface:
- *   - directory browse + lazy directory load (`loadRuntimeDirectoryEntries`);
- *   - open file to view (`openRuntimeFile`) and git diff (`openRuntimeFileDiff`);
+ *   - directory browse + lazy directory load (`loadWorkspaceDirectoryEntries`);
+ *   - open file to view (`openWorkspaceFile`) and git diff (`openWorkspaceFileDiff`);
  *   - repo-changes sections + expanded git dirs;
  *   - file/folder download.
  *
@@ -106,13 +106,13 @@ export interface UseSessionWorkbenchResult {
 export function useSessionWorkbench(sessionId: string | null): UseSessionWorkbenchResult {
   const instanceName = useInstanceName();
   const { workspace, loading: workspaceLoading } = useSessionWorkspace(sessionId, instanceName ?? null);
-  const [runtimeFiles, setRuntimeFiles] = useState<SessionRuntimeFilesResponse | null>(null);
-  const [runtimePath, setRuntimePath] = useState('');
-  const [runtimeFilesLoading, setRuntimeFilesLoading] = useState(false);
-  const [runtimeFilesRefreshKey, setRuntimeFilesRefreshKey] = useState(0);
+  const [workspaceFiles, setWorkspaceFiles] = useState<SessionWorkspaceFilesResponse | null>(null);
+  const [workspacePath, setWorkspacePath] = useState('');
+  const [workspaceFilesLoading, setWorkspaceFilesLoading] = useState(false);
+  const [workspaceFilesRefreshKey, setWorkspaceFilesRefreshKey] = useState(0);
 
   const [repoChangesByRoot, setRepoChangesByRoot] = useState<
-    Record<string, SessionRuntimeGitChangedFilesResponse | null>
+    Record<string, SessionWorkspaceGitChangedFilesResponse | null>
   >({});
   const [repoChangesLoadingByRoot, setRepoChangesLoadingByRoot] = useState<Record<string, boolean>>({});
   const [expandedGitDirs, setExpandedGitDirs] = useState<Record<string, boolean>>({});
@@ -123,12 +123,12 @@ export function useSessionWorkbench(sessionId: string | null): UseSessionWorkben
   const [workbenchShowDiffByPath, setWorkbenchShowDiffByPath] = useState<Record<string, boolean>>({});
   const [workbenchDiffBaseRefByPath, setWorkbenchDiffBaseRefByPath] = useState<Record<string, string>>({});
   const [workbenchDiffByPath, setWorkbenchDiffByPath] = useState<
-    Record<string, SessionRuntimeGitDiffResponse | null>
+    Record<string, SessionWorkspaceGitDiffResponse | null>
   >({});
   const [workbenchDiffErrorByPath, setWorkbenchDiffErrorByPath] = useState<Record<string, string | null>>({});
   const [workbenchDiffLoadingPath, setWorkbenchDiffLoadingPath] = useState<string | null>(null);
   const [workbenchGitRootsByPath, setWorkbenchGitRootsByPath] = useState<
-    Record<string, SessionRuntimeGitRoot[]>
+    Record<string, SessionWorkspaceGitRoot[]>
   >({});
 
   // Stale-request guard. Each async fetch compares against the current session.
@@ -137,7 +137,7 @@ export function useSessionWorkbench(sessionId: string | null): UseSessionWorkben
     sessionIdRef.current = sessionId;
   }, [sessionId]);
 
-  // Keep a live view of the repo-changes map for fetchRuntimeFiles' refresh loop
+  // Keep a live view of the repo-changes map for fetchWorkspaceFiles' refresh loop
   // without making that callback depend on it (and re-subscribe every change).
   const repoChangesByRootRef = useRef(repoChangesByRoot);
   useEffect(() => {
@@ -147,8 +147,8 @@ export function useSessionWorkbench(sessionId: string | null): UseSessionWorkben
   const workspaceRevision = useRef(0);
   const resetWorkbench = useCallback(() => {
     workspaceRevision.current += 1;
-    setRuntimeFiles(null);
-    setRuntimePath('');
+    setWorkspaceFiles(null);
+    setWorkspacePath('');
     setRepoChangesByRoot({});
     setRepoChangesLoadingByRoot({});
     setExpandedGitDirs({});
@@ -163,19 +163,19 @@ export function useSessionWorkbench(sessionId: string | null): UseSessionWorkben
     setWorkbenchDiffLoadingPath(null);
   }, []);
 
-  const bumpRuntimeFilesRefreshKey = useCallback(() => {
-    setRuntimeFilesRefreshKey((current) => current + 1);
+  const bumpWorkspaceFilesRefreshKey = useCallback(() => {
+    setWorkspaceFilesRefreshKey((current) => current + 1);
   }, []);
 
   const fetchChangedFilesForRepo = useCallback(
-    async (path: string): Promise<SessionRuntimeGitChangedFilesResponse | null> => {
+    async (path: string): Promise<SessionWorkspaceGitChangedFilesResponse | null> => {
       const sid = sessionIdRef.current;
       const version = workspaceRevision.current;
       if (!sid) return null;
       setRepoChangesLoadingByRoot((current) => ({ ...current, [path]: true }));
       try {
-        const payload = await api.get<SessionRuntimeGitChangedFilesResponse>(
-          `/sessions/${sid}/runtime/git/changed?path=${encodeURIComponent(path)}&limit=200`,
+        const payload = await api.get<SessionWorkspaceGitChangedFilesResponse>(
+          `/sessions/${sid}/workspace/git/changed?path=${encodeURIComponent(path)}&limit=200`,
         );
         if ((sid !== sessionIdRef.current || version !== workspaceRevision.current)) return null;
         setRepoChangesByRoot((current) => ({ ...current, [path]: payload }));
@@ -193,26 +193,26 @@ export function useSessionWorkbench(sessionId: string | null): UseSessionWorkben
     [],
   );
 
-  const fetchRuntimeFiles = useCallback(
+  const fetchWorkspaceFiles = useCallback(
     async (path = '', options?: { refreshGit?: boolean; silent?: boolean }) => {
       const sid = sessionIdRef.current;
       const version = workspaceRevision.current;
       if (!sid || workspaceLoading || !workspace) return;
       const silent = Boolean(options?.silent);
       if (!silent) {
-        setRuntimeFilesLoading(true);
+        setWorkspaceFilesLoading(true);
       }
       try {
         const query = new URLSearchParams();
         if (path.length > 0) query.set('path', path);
         query.set('limit', '400');
         const suffix = query.toString();
-        const payload = await api.get<SessionRuntimeFilesResponse>(
-          `/sessions/${sid}/runtime/files${suffix ? `?${suffix}` : ''}`,
+        const payload = await api.get<SessionWorkspaceFilesResponse>(
+          `/sessions/${sid}/workspace/files${suffix ? `?${suffix}` : ''}`,
         );
         if ((sid !== sessionIdRef.current || version !== workspaceRevision.current)) return;
-        setRuntimeFiles(payload);
-        setRuntimePath(payload.path || '');
+        setWorkspaceFiles(payload);
+        setWorkspacePath(payload.path || '');
         // The caller decides whether to refresh git; SessionsPage gated this on
         // "files view visible" historically, but the hook is view-agnostic, so
         // refresh whenever explicitly requested.
@@ -226,21 +226,21 @@ export function useSessionWorkbench(sessionId: string | null): UseSessionWorkben
         // Directory no longer exists — walk up to the nearest valid parent.
         if ((err as { status?: number }).status === 404 && path && path !== '/') {
           const parent = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) || '/' : '';
-          void fetchRuntimeFiles(parent, options);
+          void fetchWorkspaceFiles(parent, options);
           return;
         }
         // Preserve the last successful explorer tree on transient failures.
       } finally {
         if ((sid === sessionIdRef.current && version === workspaceRevision.current) && !silent) {
-          setRuntimeFilesLoading(false);
+          setWorkspaceFilesLoading(false);
         }
       }
     },
     [fetchChangedFilesForRepo, workspace?.id, workspaceLoading],
   );
 
-  const loadRuntimeDirectoryEntries = useCallback(
-    async (path: string): Promise<SessionRuntimeFileEntry[]> => {
+  const loadWorkspaceDirectoryEntries = useCallback(
+    async (path: string): Promise<SessionWorkspaceFileEntry[]> => {
       const sid = sessionIdRef.current;
       const version = workspaceRevision.current;
       if (!sid) return [];
@@ -248,8 +248,8 @@ export function useSessionWorkbench(sessionId: string | null): UseSessionWorkben
       if (path.length > 0) query.set('path', path);
       query.set('limit', '400');
       const suffix = query.toString();
-      const payload = await api.get<SessionRuntimeFilesResponse>(
-        `/sessions/${sid}/runtime/files${suffix ? `?${suffix}` : ''}`,
+      const payload = await api.get<SessionWorkspaceFilesResponse>(
+        `/sessions/${sid}/workspace/files${suffix ? `?${suffix}` : ''}`,
       );
       if ((sid !== sessionIdRef.current || version !== workspaceRevision.current)) return [];
       return Array.isArray(payload?.entries) ? payload.entries : [];
@@ -257,24 +257,24 @@ export function useSessionWorkbench(sessionId: string | null): UseSessionWorkben
     [],
   );
 
-  const downloadRuntimeEntry = useCallback(async (entry: SessionRuntimeFileEntry) => {
+  const downloadWorkspaceEntry = useCallback(async (entry: SessionWorkspaceFileEntry) => {
     const sid = sessionIdRef.current;
       const version = workspaceRevision.current;
     if (!sid) return;
     try {
-      downloadFile(`/sessions/${sid}/runtime/download?path=${encodeURIComponent(entry.path)}`, entry.kind === 'directory' ? `${entry.name}.zip` : entry.name);
+      downloadFile(`/sessions/${sid}/workspace/download?path=${encodeURIComponent(entry.path)}`, entry.kind === 'directory' ? `${entry.name}.zip` : entry.name);
     } catch {
       notify.error(entry.kind === 'directory' ? 'Failed to download folder zip' : 'Failed to download file');
     }
   }, []);
 
-  const fetchRuntimeGitRoots = useCallback(async (path: string) => {
+  const fetchWorkspaceGitRoots = useCallback(async (path: string) => {
     const sid = sessionIdRef.current;
       const version = workspaceRevision.current;
     if (!sid) return;
     try {
-      const payload = await api.get<SessionRuntimeGitRootsResponse>(
-        `/sessions/${sid}/runtime/git/roots?path=${encodeURIComponent(path)}&limit=200`,
+      const payload = await api.get<SessionWorkspaceGitRootsResponse>(
+        `/sessions/${sid}/workspace/git/roots?path=${encodeURIComponent(path)}&limit=200`,
       );
       if ((sid !== sessionIdRef.current || version !== workspaceRevision.current)) return;
       setWorkbenchGitRootsByPath((current) => ({ ...current, [path]: payload.roots || [] }));
@@ -284,7 +284,7 @@ export function useSessionWorkbench(sessionId: string | null): UseSessionWorkben
     }
   }, []);
 
-  const fetchRuntimeGitDiff = useCallback(
+  const fetchWorkspaceGitDiff = useCallback(
     async (path: string, options?: { baseRef?: string }) => {
       const sid = sessionIdRef.current;
       const version = workspaceRevision.current;
@@ -301,14 +301,14 @@ export function useSessionWorkbench(sessionId: string | null): UseSessionWorkben
         query.set('staged', 'false');
         query.set('context_lines', '3');
         query.set('max_bytes', '120000');
-        const payload = await api.get<SessionRuntimeGitDiffResponse>(
-          `/sessions/${sid}/runtime/git/diff?${query.toString()}`,
+        const payload = await api.get<SessionWorkspaceGitDiffResponse>(
+          `/sessions/${sid}/workspace/git/diff?${query.toString()}`,
         );
         if ((sid !== sessionIdRef.current || version !== workspaceRevision.current)) return;
         setWorkbenchDiffByPath((current) => ({ ...current, [path]: payload }));
         setWorkbenchShowDiffByPath((current) => ({ ...current, [path]: true }));
         if (!workbenchGitRootsByPath[path]?.length) {
-          void fetchRuntimeGitRoots(path);
+          void fetchWorkspaceGitRoots(path);
         }
       } catch (error) {
         const detail = error instanceof Error ? error.message : 'Failed to load git diff';
@@ -319,18 +319,18 @@ export function useSessionWorkbench(sessionId: string | null): UseSessionWorkben
         }
       }
     },
-    [workbenchDiffBaseRefByPath, workbenchGitRootsByPath, fetchRuntimeGitRoots],
+    [workbenchDiffBaseRefByPath, workbenchGitRootsByPath, fetchWorkspaceGitRoots],
   );
 
-  const openRuntimeFile = useCallback(
+  const openWorkspaceFile = useCallback(
     async (path: string, options?: { suppressErrorToast?: boolean }): Promise<boolean> => {
       const sid = sessionIdRef.current;
       const version = workspaceRevision.current;
       if (!sid) return false;
       setWorkbenchLoadingPath(path);
       try {
-        const payload = await api.get<SessionRuntimeFilePreviewResponse>(
-          `/sessions/${sid}/runtime/file?path=${encodeURIComponent(path)}&max_bytes=32000`,
+        const payload = await api.get<SessionWorkspaceFilePreviewResponse>(
+          `/sessions/${sid}/workspace/file?path=${encodeURIComponent(path)}&max_bytes=32000`,
         );
         if ((sid !== sessionIdRef.current || version !== workspaceRevision.current)) return false;
         const nextTab: WorkbenchTab = {
@@ -359,7 +359,7 @@ export function useSessionWorkbench(sessionId: string | null): UseSessionWorkben
             ? current
             : { ...current, [nextTab.path]: false },
         );
-        void fetchRuntimeGitRoots(nextTab.path);
+        void fetchWorkspaceGitRoots(nextTab.path);
         return true;
       } catch {
         if (!options?.suppressErrorToast) {
@@ -372,7 +372,7 @@ export function useSessionWorkbench(sessionId: string | null): UseSessionWorkben
         }
       }
     },
-    [fetchRuntimeGitRoots],
+    [fetchWorkspaceGitRoots],
   );
 
   const ensureWorkbenchTab = useCallback((path: string) => {
@@ -389,35 +389,35 @@ export function useSessionWorkbench(sessionId: string | null): UseSessionWorkben
     setWorkbenchDiffErrorByPath((current) => ({ ...current, [path]: null }));
   }, []);
 
-  const openRuntimeFileDiff = useCallback(
+  const openWorkspaceFileDiff = useCallback(
     async (path: string) => {
       const sid = sessionIdRef.current;
       const version = workspaceRevision.current;
       if (!sid) return;
-      const opened = await openRuntimeFile(path, { suppressErrorToast: true });
+      const opened = await openWorkspaceFile(path, { suppressErrorToast: true });
       if (!opened) {
         ensureWorkbenchTab(path);
       }
       setWorkbenchShowDiffByPath((current) => ({ ...current, [path]: true }));
-      void fetchRuntimeGitDiff(path);
+      void fetchWorkspaceGitDiff(path);
     },
-    [openRuntimeFile, ensureWorkbenchTab, fetchRuntimeGitDiff],
+    [openWorkspaceFile, ensureWorkbenchTab, fetchWorkspaceGitDiff],
   );
 
-  const openRuntimeDirectory = useCallback(
+  const openWorkspaceDirectory = useCallback(
     async (path: string, options?: { autoOpenFirstDiff?: boolean }) => {
       const sid = sessionIdRef.current;
       const version = workspaceRevision.current;
       if (!sid) return;
       const shouldAutoOpenFirstDiff = Boolean(options?.autoOpenFirstDiff);
-      await fetchRuntimeFiles(path, { refreshGit: !shouldAutoOpenFirstDiff });
+      await fetchWorkspaceFiles(path, { refreshGit: !shouldAutoOpenFirstDiff });
       if (!shouldAutoOpenFirstDiff) return;
       const changed = await fetchChangedFilesForRepo(path);
       const firstPath = changed?.entries?.[0]?.path;
       if (!firstPath) return;
-      await openRuntimeFileDiff(firstPath);
+      await openWorkspaceFileDiff(firstPath);
     },
-    [fetchRuntimeFiles, fetchChangedFilesForRepo, openRuntimeFileDiff],
+    [fetchWorkspaceFiles, fetchChangedFilesForRepo, openWorkspaceFileDiff],
   );
 
   const closeWorkbenchTab = useCallback((path: string) => {
@@ -462,10 +462,10 @@ export function useSessionWorkbench(sessionId: string | null): UseSessionWorkben
     (path: string, enabled: boolean) => {
       setWorkbenchShowDiffByPath((current) => ({ ...current, [path]: enabled }));
       if (enabled) {
-        void fetchRuntimeGitDiff(path);
+        void fetchWorkspaceGitDiff(path);
       }
     },
-    [fetchRuntimeGitDiff],
+    [fetchWorkspaceGitDiff],
   );
 
   const setDiffBaseRefForPath = useCallback(
@@ -473,12 +473,12 @@ export function useSessionWorkbench(sessionId: string | null): UseSessionWorkben
       setWorkbenchDiffBaseRefByPath((current) => ({ ...current, [path]: baseRef }));
       setWorkbenchShowDiffByPath((current) => {
         if (current[path]) {
-          void fetchRuntimeGitDiff(path, { baseRef });
+          void fetchWorkspaceGitDiff(path, { baseRef });
         }
         return current;
       });
     },
-    [fetchRuntimeGitDiff],
+    [fetchWorkspaceGitDiff],
   );
 
   const toggleGitDir = useCallback((path: string) => {
@@ -534,7 +534,7 @@ export function useSessionWorkbench(sessionId: string | null): UseSessionWorkben
             .split('/')
             .filter(Boolean)
             .pop() || rootPath || 'repo',
-        tree: buildRuntimeGitChangedTree(payload),
+        tree: buildWorkspaceGitChangedTree(payload),
         loading: Boolean(repoChangesLoadingByRoot[rootPath]),
       })),
     [repoChangesByRoot, repoChangesLoadingByRoot],
@@ -558,14 +558,14 @@ export function useSessionWorkbench(sessionId: string | null): UseSessionWorkben
   );
 
   return {
-    runtimeFiles,
-    runtimePath,
-    runtimeFilesLoading,
-    runtimeFilesRefreshKey,
-    fetchRuntimeFiles,
-    bumpRuntimeFilesRefreshKey,
-    loadRuntimeDirectoryEntries,
-    downloadRuntimeEntry,
+    workspaceFiles,
+    workspacePath,
+    workspaceFilesLoading,
+    workspaceFilesRefreshKey,
+    fetchWorkspaceFiles,
+    bumpWorkspaceFilesRefreshKey,
+    loadWorkspaceDirectoryEntries,
+    downloadWorkspaceEntry,
 
     repoChangeSections,
     expandedGitDirs,
@@ -578,9 +578,9 @@ export function useSessionWorkbench(sessionId: string | null): UseSessionWorkben
     setActiveWorkbenchPath,
     workbenchLoadingPath,
     activeWorkbenchTab,
-    openRuntimeFile,
-    openRuntimeDirectory,
-    openRuntimeFileDiff,
+    openWorkspaceFile,
+    openWorkspaceDirectory,
+    openWorkspaceFileDiff,
     closeWorkbenchTab,
     closeAllWorkbenchTabs,
 
@@ -592,7 +592,7 @@ export function useSessionWorkbench(sessionId: string | null): UseSessionWorkben
     activeWorkbenchBaseRef,
     setDiffBaseRefForPath,
     activeWorkbenchBaseRefOptions,
-    fetchRuntimeGitDiff,
+    fetchWorkspaceGitDiff,
 
     resetWorkbench,
   };

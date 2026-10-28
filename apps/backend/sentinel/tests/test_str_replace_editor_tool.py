@@ -59,8 +59,8 @@ async def test_str_replace_editor_runs_through_runtime_workspace(monkeypatch, pa
     async def _get_workspace_files(**_kwargs: object) -> _WorkspaceFilesStub:
         return stub
 
-    monkeypatch.setattr(handlers, "runtime_configured", _runtime_configured)
-    monkeypatch.setattr(handlers, "get_runtime_workspace_files", _get_workspace_files)
+    monkeypatch.setattr(handlers, "workspace_attached", _runtime_configured)
+    monkeypatch.setattr(handlers, "get_workspace_files", _get_workspace_files)
 
     registry = build_default_registry()
     executor = ToolExecutor(registry)

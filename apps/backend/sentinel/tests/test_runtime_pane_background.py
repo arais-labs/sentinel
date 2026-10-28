@@ -6,19 +6,19 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from app.schemas.runtime import RuntimeExecResult
-from app.services.runtime import panes
-from app.services.runtime.terminal_manager import RuntimeTerminalManager
-from app.services.runtime.workspace import WorkspaceLocation
+from app.schemas.session_workspace import ExecResult
+from app.services.workspaces.terminals import panes
+from app.services.workspaces.terminals.manager import TerminalManager
+from app.services.workspaces.paths import WorkspaceLocation
 
 
 @pytest.fixture
 def execution(monkeypatch):
     transport = SimpleNamespace(
-        run=AsyncMock(return_value=RuntimeExecResult(exit_status=0, stdout="0", stderr="")),
+        run=AsyncMock(return_value=ExecResult(exit_status=0, stdout="0", stderr="")),
         close=AsyncMock(),
     )
-    manager = RuntimeTerminalManager(
+    manager = TerminalManager(
         transport, workspace_location=WorkspaceLocation("/project", "/internal/workspace")
     )
     bridge = panes.TmuxPanes(manager)
@@ -32,7 +32,7 @@ def execution(monkeypatch):
     async def watch(*args, **kwargs):
         started.set()
         await release.wait()
-        return RuntimeExecResult(exit_status=0, stdout="complete", stderr="")
+        return ExecResult(exit_status=0, stdout="complete", stderr="")
 
     monitor = AsyncMock(side_effect=watch)
     monkeypatch.setattr(manager, "_await_command_complete", monitor)

@@ -9,7 +9,7 @@ MODULE = ModuleDefinition(
     label="Port Forward",
     description=(
         "Let the user view a web app running inside the attached workspace. Start the server first, "
-        "then open its container port. Present the returned url unchanged as a Markdown link; "
+        "then open its workspace port. Present the returned url unchanged as a Markdown link; "
         "clicking it opens a separate Sentinel preview window, including assets and WebSockets. "
         "This does not start the server or publish it to the internet. A localhost curl checks only "
         "the server, not the user-facing preview; do not claim the preview was verified unless you tested it."
@@ -31,11 +31,11 @@ MODULE = ModuleDefinition(
                 "properties": {
                     "port": {
                         "type": "integer",
-                        "description": "Service port inside the workspace container, reachable on localhost.",
+                        "description": "Service port inside the workspace, reachable on localhost.",
                     },
                     "host": {
                         "type": "string",
-                        "description": "Host inside the workspace container. Only 127.0.0.1 or localhost is allowed.",
+                        "description": "Host inside the workspace. Only 127.0.0.1 or localhost is allowed.",
                     },
                     "protocol": {
                         "type": "string",

@@ -1,7 +1,0 @@
-{
-  "uuid": "session-readiness@sentinel.local",
-  "name": "Sentinel session readiness",
-  "description": "Publish startup completion of a Sentinel-owned GNOME login.",
-  "shell-version": ["48", "50"],
-  "version": 1
-}

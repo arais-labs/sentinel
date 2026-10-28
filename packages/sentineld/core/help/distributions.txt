@@ -1,0 +1,173 @@
+Writing a distribution
+
+A distribution is one folder, <id>/, inside a folder given to sentineld with --distributions. The id is
+the folder's name. sentineld knows no operating system: everything about one is in its folder, which
+sentineld only reads (again at every catalog, configure and start, so edits apply without a restart).
+Every VM of the distribution also sees the folder, read-only, at /run/sentinel/distribution.
+
+  <id>/distribution.json       what sentineld and the guest agent need to know (below)
+  <id>/install/                files the install recipe uses ({install} in its steps)
+  <id>/desktops/<desktop>/     scripts for one desktop on this distribution (Desktops, below)
+  anything else                files its commands name, by /run/sentinel/distribution/<path>
+
+`sentineld ctl ... catalog` lists every distribution it read, and under "problems" each folder it could
+not use and why.
+
+THE MACHINE
+
+An ARM64 (aarch64) virtual machine with UEFI firmware, booting \EFI\BOOT\BOOTAA64.EFI from the EFI
+system partition of its first disk. Its devices are virtio, on PCI when machine.transport is "pci",
+else on virtio-mmio: block (the boot disk, then the root disk when the recipe has one), network
+(DHCP, NAT to the host's network), vsock, console (hvc0: what the guest prints there is the console
+log), entropy, GPU, keyboard and pointer, sound, and virtiofs shares. The GPU is Vulkan only (Venus):
+OpenGL runs on it through Mesa's Zink.
+
+INSTALL: HOW THE BASE DISK IS MADE
+
+The base disk is built once per recipe, cached, and cloned for every workspace. The cache key hashes
+the "install" object and the files under install/: changing either installs again.
+
+  "install": {
+    "sources":  { "<name>": { "url": "https://...", "sha256": "<hex>" }, ... },
+    "disk":     { "gib": N, "partitions": [ { "name": "<p>", "type": "esp|msr|basic|linux", "mib": N }, ... ] },
+    "root":     { "gib": N },                 (optional: a second disk holding one file system, no partitions)
+    "steps":    [ ... ],
+    "cpus": N, "memory_gib": N, "network": true, "timeout_min": N
+  }
+
+- sources: downloaded once and checked against their SHA-256. Pin URLs that stay published: a URL
+  that later disappears breaks every new install of the recipe.
+- disk: a GPT disk; the last partition without "mib" takes the rest.
+- steps run on the host, in a work folder, in order. In any string, {work}, {install}, {disk},
+  {disk.guid}, {root}, {<source name>} (the downloaded file) and, per partition, {<p>.guid},
+  {<p>.start}, {<p>.sectors}, {<p>.offset}, {<p>.size}, {<p>.kib} are replaced. A step writes only
+  inside {work}.
+    { "extract": "<archive>", "include": ["<glob>", ...], "to": "<dir>" }
+    { "copy": "<file or dir>", "to": "<path>" }
+    { "archive": [ { "from": "<archive or dir>", "include": ["<glob>", ...] }, ... ],
+      "to": "<file>", "format": "tar|newc" }      (newc: an initramfs; a later input's file wins)
+    { "fat32": "<p>", "label": "<LABEL>", "from": "<dir>" }  (formats partition p, fills it)
+    { "run": ["mke2fs" | "wimlib-imagex" | "mkntfs" | "hive", args...], "env": { ... } }
+                                                 (sentineld's own tools only, sandboxed)
+- Then the VM boots the new disks, as every workspace boots. The first boot finishes the install
+  inside the guest (typically: install the system with its own package manager). It must end by
+  writing the file sentinel/result on the EFI system partition, containing "ok" or the reason it
+  failed, and powering off. Powering off without it, a crash, or timeout_min fails the install.
+  sentineld starts the VM again after every guest reboot.
+- The root disk (when there is one) must be ext4: before each boot sentineld grows the file to the
+  workspace's size and runs resize2fs on it. Leave it cleanly unmounted at the end of the install.
+  A distribution without a root disk grows its own system disk instead: the "grow" command.
+
+EVERY BOOT: THE GUEST AGENT
+
+sentineld does everything else through its agent, which the guest must start at every boot, as root,
+and restart if it exits:
+
+  mount -t virtiofs -o ro sentinel /run/sentinel     (sentineld's share)
+  /run/sentinel/sentineld-agent                      (a static aarch64 Linux program)
+
+It listens on vsock port 1: the kernel needs the virtio vsock transport loaded
+(vmw_vsock_virtio_transport) before it starts. The agent mounts the other shares itself:
+"distribution" (this folder), "project" (the workspace's project) and "sentinel-cache" (packages).
+A "Kernel panic" on the console fails the start; a guest whose agent does not answer within 10
+minutes fails it with the console's end.
+
+distribution.json
+
+  name, detail          shown to users
+  features              guest features clients may use: "shell", "terminal" (tmux), "files"
+  guide                 text for agents working inside the workspace: its OS, shell, how to install packages
+  minimum               { "cpus", "memory_gib", "disk_gib" }: the least resources a workspace may ask
+  machine               { "transport": "pci" | (omit: mmio), "gpu": "3d" | "2d" | "none" | (omit: Venus) }
+  install               the recipe (above)
+  ready                 command (argv) that succeeds once the guest has finished booting
+  poweroff              command that powers the guest off
+  shutdown_s            seconds the guest may take to power off before it is cut (default 15)
+  hostname              command setting the hostname, {name} replaced
+                        (["sh", "/run/sentinel/hostname.sh", "{name}"] does it for a Linux guest)
+  grow                  command extending the system disk's file system (no root disk only)
+  share                 { "disk": true }: the share as a FAT32 disk instead of virtiofs
+  packages              how to install packages (below)
+  service               commands that enable and start the service {name}
+  tools                 per tool id: actions (below); a tool not listed is not offered here
+  desktop, desktops     the desktop session (Desktops, below)
+
+Commands are argv arrays, run by the agent as root.
+
+packages:
+  installed             succeeds when every package given (appended) is installed
+  prepare, refresh      commands run before installing (refresh: once per boot)
+  fetch                 downloads the packages (appended); must be safe to stop and retry
+  install               installs them (when fetching does not)
+  env                   environment for all of these
+  cache, no_cache       what the argument "{cache}" becomes with and without the shared package cache
+  cache_dirs            folders the package manager needs inside the cache
+
+TOOLS AND THEIR ACTIONS
+
+A distribution offers a tool by giving its actions under its id. The ids `catalog` lists already have
+a name; any other id is the distribution's own tool, named by its block: "name", "detail",
+"category" (default: the id, "", "Other"). The actions run in this order:
+
+  packages              ["<package>", ...] through the "packages" commands
+  package_url           { "url": "<url>" | { "<uname -m>": "<url>" }, "version": V }: a vendor package file
+  release               { "url", "sha256" (or sha512), "unpack": "binary|tar|zip", "strip": N,
+                          "into": "<dir>", "install": { "<path in archive>": "<destination>" }, "version": V }
+  npm                   { "package": "<name@version>", "version": V }
+  links                 { "<link path>": "<target>" }
+  files                 { "<path>": "<content>" }
+  service               "<name>": enabled and started through "service"
+  requires              ["<tool id>", ...] this tool needs on this distribution
+  where V = { "command": "<shell command>", "contains": "<text>" }: skipped when the command's output
+  contains the text (the pinned version is already installed).
+
+The hidden tool "base" is installed in every workspace: what Sentinel itself uses (bash, tmux, git,
+curl, python3, ripgrep, jq, coreutils, findutils, util-linux, socat, ca-certificates).
+
+DESKTOPS
+
+A workspace's desktop is drawn by the guest on the virtio GPU; its display output is what viewers
+see. A distribution offers a desktop by listing it, under any id: one `catalog` already names, or its
+own (named by "name", default the id):
+
+  "desktops": { "<desktop>": { "name": "...", "display": "x11|wayland", "paste": ["ctrl", "v"], actions... } }
+
+and describes how its session runs:
+
+  "desktop": {
+    "user": "<name>", "create_user": [...{user}...], "groups": [...], "join_group": [...{group} {user}...],
+    "prepare": [[...], ...],                         commands run before the session starts
+    "environment": { "x11": {...}, "wayland": {...} },  the session's variables ({uid} replaced)
+    "socket": { "x11": "<path>", "wayland": "<path>" },  the display server's socket, waited for
+    "session": { "x11": "<file>", "wayland": "<file>" }, a service file in this folder...
+    "install": "<path>",                              ...installed here and (re)started
+    "stop": [[...]], "restart": [[...]],              commands for that service
+    "failure": [...]                                   prints why a session did not come up
+  }
+
+The service runs /run/sentinel/desktop/session.sh. For x11 it runs it as root: the script starts an
+X server and then the desktop as the user. For wayland it runs it as the user, in a login session
+that holds the seat (the compositor drives the GPU itself). The variables in /etc/sentinel/desktop
+name the desktop and its "session" script.
+
+desktops/<desktop>/ holds, run as the desktop user:
+  session               starts the desktop (exec it)
+  keyboard              applies XKB_LAYOUT, XKB_VARIANT, XKB_MODEL, XKB_OPTIONS live
+  clipboard read|write  the clipboard's text on stdout / from stdin
+  wallpaper IMAGE       sets the wallpaper
+  type                  types stdin's text (computer use, when "paste" is not given)
+  defaults/             the user's home folder at the first session
+
+TESTING A DISTRIBUTION
+
+  sentineld ctl --state S catalog                    is it listed? any problem?
+  sentineld ctl --state S configure '{"workspace":"t1","revision":0,"spec":{"name":"t1",
+      "distribution":"<id>","desktop":"none","resources":{"cpus":2,"memory_gib":4,"disk_gib":16}}}'
+  sentineld ctl --state S start '{"workspace":"t1","revision":1}'
+  sentineld ctl --state S list '{"watch":true}'      progress, then state "running" or the error
+  sentineld ctl --state S exec '{"workspace":"t1","argv":["uname","-a"],"timeout":30}'
+  sentineld ctl --state S computer '{"workspace":"t1"}'   a screenshot of the desktop
+  sentineld view --state S t1                         the desktop in a window, to use it yourself
+  sentineld ctl --state S stop '{"workspace":"t1"}'
+
+When something fails, read the error, then the console logs (`sentineld help` lists where they are).

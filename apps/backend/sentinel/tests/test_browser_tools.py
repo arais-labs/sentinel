@@ -7,7 +7,7 @@ import json
 from uuid import UUID
 
 import app.services.browser.pool as browser_pool_module
-from app.schemas.runtime import RuntimeExecResult
+from app.schemas.session_workspace import ExecResult
 from app.services.browser.manager import BrowserManager
 from app.services.modules.runtime_services import configure_runtime_services, reset_runtime_services
 from sentral.errors import ToolValidationError
@@ -259,7 +259,7 @@ class _FakeSSH:
             'profile_dir = browser_dir / "chromium"' in script
             and "shutil.rmtree(profile_dir)" in script
         ):
-            return RuntimeExecResult(
+            return ExecResult(
                 exit_status=0,
                 stdout='{"ok":true,"profile_dir":"/tmp/profile"}',
                 stderr="",
@@ -269,8 +269,8 @@ class _FakeSSH:
             and "browser.json" in script
             and "kill_pid(pid)" in script
         ):
-            return RuntimeExecResult(exit_status=0, stdout='{"ok":true}', stderr="")
-        return RuntimeExecResult(
+            return ExecResult(exit_status=0, stdout='{"ok":true}', stderr="")
+        return ExecResult(
             exit_status=0,
             stdout='{"ok":true,"pid":1234,"port":9333,"profile_dir":"/tmp/profile","reused":false}',
             stderr="",
@@ -288,7 +288,7 @@ class _FakeSSH:
 class _FakeTerminalManager:
     def __init__(self, workspace_location: str | None = "/workspace"):
         self.ssh = _FakeSSH()
-        from app.services.runtime.workspace import WorkspaceLocation
+        from app.services.workspaces.paths import WorkspaceLocation
 
         self.workspace_location = (
             WorkspaceLocation("/workspace", "/var/lib/sentinel") if workspace_location else None

@@ -26,7 +26,7 @@ from app.dependencies import (
 )
 from app.models import VoiceTrace, VoiceTraceEvent
 from app.services.modules.builtins.session_layout.module import voice_ui_key
-from app.services.runtime.ssh_runtime import invalidate_runtime_for_session
+from app.services.workspaces.managers import invalidate_session_managers
 from app.services.voice import VoiceGateway, MAX_AUDIO_BYTES, VoiceUnavailable
 from app.services.voice.runtime import VoiceRuntime
 from app.services.voice.session import reset_voice_session, voice_session
@@ -55,7 +55,7 @@ async def voice_session_reset(request: Request, db: AsyncSession = Depends(get_d
     previous = await voice_session(db)
     await get_request_run_registry(request).cancel_and_wait(str(previous.id))
     if previous.workspace_id:
-        await invalidate_runtime_for_session(request.path_params["instance_name"], previous.id)
+        await invalidate_session_managers(request.path_params["instance_name"], previous.id)
     session = await reset_voice_session(db)
     return {"session_id": str(session.id), "previous_session_id": str(previous.id)}
 

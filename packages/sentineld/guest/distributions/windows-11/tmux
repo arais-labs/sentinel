@@ -1,0 +1,14 @@
+#!/usr/bin/bash
+# tmux for Sentinel's terminals on Windows (DESIGN.md §9), put first on PATH by userland.cmd. tmux's
+# server reads and writes a control-mode client's stdin and stdout itself, through descriptors the
+# client passes over its socket, which MSYS2 (Cygwin) cannot pass for pipes: such a client never sees
+# output and its input never arrives. A terminal the server opens by its name, so a control client on
+# pipes (the app's terminal view, through the agent) runs on a pty of its own, raw and without echo:
+# the protocol passes through it unchanged.
+for arg; do
+  case $arg in -C | -CC | -uC | -Cu) control=1 ;; esac
+done
+if [ -n "${control:-}" ] && [ ! -t 0 ]; then
+  exec /usr/bin/script -qfec "stty raw -echo && exec /usr/bin/tmux ${*@Q}" /dev/null
+fi
+exec /usr/bin/tmux "$@"

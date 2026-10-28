@@ -1,0 +1,32 @@
+mesa/kosmickrisp: a linear image over shared memory keeps the row pitch it is imported with.
+virglrenderer's dma-buf emulation imports another image's memory with its explicit layout
+(VkImageDrmFormatModifierExplicitCreateInfoEXT): the rows are that image's, which may be wider
+than this one, so the pitch comes from the layout, not from this image's width.
+
+--- a/src/kosmickrisp/vulkan/kk_image.c
++++ b/src/kosmickrisp/vulkan/kk_image.c
+@@ -570,6 +570,24 @@
+       kk_image_layout_init(dev, &image->vk, vk_format_to_pipe_format(format),
+                            width_scale, height_scale,
+                            &image->planes[plane].layout);
++   }
++
++   /* An image over memory another image was made in (a dma-buf, imported with its explicit
++    * layout): its rows are as long as that image's, which may be wider than this one. Without
++    * this, rows computed from this image's width drift across the shared memory. */
++   const VkImageDrmFormatModifierExplicitCreateInfoEXT *explicit_info =
++      vk_find_struct_const(pCreateInfo->pNext,
++                           IMAGE_DRM_FORMAT_MODIFIER_EXPLICIT_CREATE_INFO_EXT);
++   if (explicit_info && explicit_info->drmFormatModifierPlaneCount == 1 &&
++       image->plane_count == 1 && image->planes[0].layout.linear) {
++      struct kk_image_layout *layout = &image->planes[0].layout;
++      const uint64_t pitch_B = explicit_info->pPlaneLayouts[0].rowPitch;
++      if (pitch_B < layout->linear_stride_B || pitch_B % layout->align_B)
++         return VK_ERROR_INVALID_DRM_FORMAT_MODIFIER_PLANE_LAYOUT_EXT;
++      layout->linear_stride_B = pitch_B;
++      layout->layer_stride_B = pitch_B * layout->height_px;
++      layout->size_B = layout->layer_stride_B;
++      layout->level_offsets_B[1] = layout->layer_stride_B;
+    }
+ 
+    return VK_SUCCESS;

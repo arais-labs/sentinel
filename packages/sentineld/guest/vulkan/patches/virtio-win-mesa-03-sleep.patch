@@ -1,0 +1,31 @@
+util (Windows): os_time_sleep through a high-resolution waitable timer. Sleep() rounds up to the
+timer tick (15.6 ms), and Venus' fence and ring waits sleep 160 us and up, so every wait took a
+tick: 19 ms per submit-and-wait frame against 0.6 ms with this.
+
+diff --git a/src/util/os_time.c b/src/util/os_time.c
+index 71fc7e3032b..2b9c7312832 100644
+--- a/src/util/os_time.c
++++ b/src/util/os_time.c
+@@ -90,6 +90,22 @@ os_time_sleep(int64_t usecs)
+    usleep(usecs);
+ 
+ #elif DETECT_OS_WINDOWS
++   /* Sleep() rounds up to the system timer tick (15.6 ms by default), so
++    * short waits (Venus' fence/ring polling sleeps 160 us and up) would
++    * take a whole tick; a high-resolution waitable timer sleeps for the
++    * asked duration (Windows 10 1803 and later). */
++   if (usecs > 0) {
++      HANDLE timer = CreateWaitableTimerExW(NULL, NULL,
++                                            CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
++                                            TIMER_ALL_ACCESS);
++      if (timer) {
++         LARGE_INTEGER due = { .QuadPart = -usecs * 10 }; /* relative, 100 ns */
++         if (SetWaitableTimer(timer, &due, 0, NULL, NULL, FALSE))
++            WaitForSingleObject(timer, INFINITE);
++         CloseHandle(timer);
++         return;
++      }
++   }
+    DWORD dwMilliseconds = (DWORD) ((usecs + 999) / 1000);
+    /* Avoid Sleep(O) as that would cause to sleep for an undetermined duration */
+    if (dwMilliseconds) {

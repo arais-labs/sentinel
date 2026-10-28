@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from app.models import Session
 from app.services.agent.agent_modes import AgentMode
 from app.services.agent.context_builder import ContextBuilder
-from app.services.runtime.workspace import WorkspaceLocation
+from app.services.workspaces.paths import WorkspaceLocation
+from tests.conftest import TEST_CATALOG as GUIDE_CATALOG
 from tests.fake_db import FakeDB
 
 
@@ -54,23 +57,28 @@ def test_runtime_context_reports_detected_os_and_shared_workspace(monkeypatch):
     from types import SimpleNamespace
     from uuid import uuid4
 
-    from app.services.runtime import ssh_runtime
-    from app.services.runtime.environment import RuntimeEnvironment
+    from app.services.workspaces import managers
+    from app.services.workspaces.machines.environment import MachineEnvironment
 
     parent_id = uuid4()
     child_id = uuid4()
 
     async def environment():
-        return RuntimeEnvironment("linux", "container")
+        return MachineEnvironment("linux", "vm")
 
     async def manager(**kwargs):
         assert kwargs == {"instance_name": "work", "session_id": parent_id}
         return SimpleNamespace(
             runtime_environment=environment,
-            workspace_location=WorkspaceLocation("/Users/test/project", "/var/lib/sentinel"),
+            workspace_location=WorkspaceLocation(
+                "/Users/test/project",
+                "/var/lib/sentinel",
+                features=frozenset({"shell"}),
+                guide="Workspace OS: Linux (alpine). Shell: Bash.",
+            ),
         )
 
-    monkeypatch.setattr(ssh_runtime, "get_runtime_terminal_manager", manager)
+    monkeypatch.setattr(managers, "get_terminal_manager", manager)
     builder = ContextBuilder(
         instance_name="work", runtime_session_id=parent_id, available_tools={"runtime"}
     )
@@ -88,40 +96,79 @@ def test_runtime_context_reports_detected_os_and_shared_workspace(monkeypatch):
 
 def test_runtime_context_does_not_invent_environment_when_unavailable(monkeypatch):
     from uuid import uuid4
-    from app.services.runtime import ssh_runtime
+    from app.services.workspaces import managers
 
     async def unavailable(**kwargs):
         raise ConnectionError("offline")
 
-    monkeypatch.setattr(ssh_runtime, "get_runtime_terminal_manager", unavailable)
+    monkeypatch.setattr(managers, "get_terminal_manager", unavailable)
     builder = ContextBuilder(instance_name="work", available_tools={"runtime"})
     message = _run(builder._runtime_environment_message(uuid4()))
     assert "Use runtime.workspace to inspect the attachment" in message.content
     assert "Attached workspace directory:" not in message.content
 
 
-def test_runtime_context_uses_selected_distribution_package_manager(monkeypatch):
+@pytest.mark.parametrize(
+    ("distribution", "expected"),
+    [
+        ("ubuntu", "Workspace OS: Linux (ubuntu). Shell: Bash."),
+        ("windows-11", "Workspace OS: Windows 11 on Arm. Shell: MSYS2's Bash"),
+    ],
+)
+def test_runtime_context_names_selected_distribution(monkeypatch, distribution, expected):
     from types import SimpleNamespace
     from uuid import uuid4
-    from app.services.runtime import ssh_runtime
-    from app.services.runtime.environment import RuntimeEnvironment
+    from app.services.workspaces import managers
+    from app.services.workspaces.machines.environment import MachineEnvironment
 
     async def environment():
-        return RuntimeEnvironment("linux", "container")
+        return MachineEnvironment("linux", "vm")
 
     async def manager(**kwargs):
         return SimpleNamespace(
             runtime_environment=environment,
             workspace_location=WorkspaceLocation(
-                "/project", "/var/lib/sentinel", distribution="ubuntu"
+                "/project",
+                "/var/lib/sentinel",
+                distribution=distribution,
+                features=frozenset({"shell"}),
+                guide=next(
+                    item["guide"]
+                    for item in GUIDE_CATALOG["distributions"]
+                    if item["id"] == distribution
+                ),
             ),
         )
 
-    monkeypatch.setattr(ssh_runtime, "get_runtime_terminal_manager", manager)
+    monkeypatch.setattr(managers, "get_terminal_manager", manager)
     builder = ContextBuilder(instance_name="work", available_tools={"runtime"})
     message = _run(builder._runtime_environment_message(uuid4()))
-    assert "Ubuntu" in message.content
+    # The distribution's own guide: its OS, shell, project folder and package manager.
+    assert expected in message.content
+    assert "tmux" in message.content and "HOME is /root" in message.content
     # Distribution selection does not identify the installed guest release.
     assert "26.04" not in message.content
-    assert "Use apt-get" in message.content
-    assert "Use apk" not in message.content
+
+
+def test_runtime_context_does_not_offer_a_shell_without_the_feature(monkeypatch):
+    from types import SimpleNamespace
+    from uuid import uuid4
+    from app.services.workspaces import managers
+
+    async def environment():
+        raise AssertionError("a guest without a shell has no environment to probe")
+
+    async def manager(**kwargs):
+        return SimpleNamespace(
+            runtime_environment=environment,
+            workspace_location=WorkspaceLocation(
+                "/project", "/var/lib/sentinel", distribution="shell-less"
+            ),
+        )
+
+    monkeypatch.setattr(managers, "get_terminal_manager", manager)
+    builder = ContextBuilder(instance_name="work", available_tools={"runtime"})
+    message = _run(builder._runtime_environment_message(uuid4()))
+    assert "Workspace distribution: shell-less" in message.content
+    assert "not available on shell-less workspaces yet" in message.content
+    assert "Bash" not in message.content and "tmux" not in message.content

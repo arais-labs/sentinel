@@ -4,7 +4,7 @@ import { notificationPublisher } from '../../lib/notifications';
 import { api } from '../../lib/api';
 import { useSessionWorkspace } from '../../hooks/useSessionWorkspace';
 import { useWorkspaceStore } from '../../store/workspace-store';
-import { WorkspacePerformanceChip } from './WorkspaceRuntimeStats';
+import { WorkspacePerformanceChip } from './WorkspaceStats';
 import type { Workspace, Machine } from '../../types/api';
 
 const notify = notificationPublisher('Workspaces');
@@ -21,7 +21,7 @@ export function WorkspaceAttachment({ sessionId, instanceName, busy, compact = f
     if (!open) return;
     setLoading(true); setQuery('');
     let cancelled = false;
-    api.get<Workspace[]>('/workspaces?include_runtime=false').then(rows => {
+    api.get<Workspace[]>('/workspaces?include_status=false').then(rows => {
       if (!cancelled) setSpaces(rows);
     }).catch(error => { if (!cancelled) notify.error(error instanceof Error ? error.message : 'Could not load workspaces'); }).finally(() => { if (!cancelled) setLoading(false); });
     api.get<Machine[]>('/machines').then(hosts => {

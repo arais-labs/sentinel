@@ -1,0 +1,65 @@
+#!/bin/sh
+# Runs once, as the first boot's init: installs the system with Ubuntu's own tools, reports to
+# sentineld on the EFI system partition (sentinel/result: "ok" or why it failed), and powers off.
+# Ubuntu's base has no network tools: busybox (installed from its package) brings eth0 up, calling
+# this script again as its lease handler.
+b=/usr/bin/busybox
+if [ "$1" = bound ]; then
+	$b ip addr add "$ip/$mask" dev "$interface"
+	for r in $router; do $b ip route add default via "$r" dev "$interface" && break; done
+	for d in $dns; do echo "nameserver $d"; done > /etc/resolv.conf
+	exit 0
+fi
+[ -n "$1" ] && exit 0
+# Clean file systems: workspaces grow the root before booting it, which needs a clean one.
+off() {
+	sync
+	umount /boot/efi
+	mount -o remount,ro /
+	# busybox until the system is installed, then systemd's immediate power-off.
+	if [ -x $b ]; then $b poweroff -f; else systemctl poweroff -ff; fi
+	while :; do sleep 60; done
+}
+step() {
+	echo "sentinel-build: $*"
+	"$@" || { echo "failed: $*" > /boot/efi/sentinel/result; off; }
+}
+mountpoint -q /proc || mount -t proc proc /proc
+mountpoint -q /sys || mount -t sysfs sys /sys
+mountpoint -q /dev || mount -t devtmpfs dev /dev
+mkdir -p /dev/pts /boot/efi && mount -t devpts devpts /dev/pts
+mount -t tmpfs tmpfs /run
+# iocharset=default: the kernel's built-in table, as the build has no modules yet.
+mount -t vfat -o umask=0077,iocharset=default /dev/vda1 /boot/efi || { echo "sentinel-build: cannot mount the EFI system partition"; off; }
+export PATH=/usr/sbin:/usr/bin DEBIAN_FRONTEND=noninteractive
+# bootctl records itself in the firmware's boot entries, as on any EFI machine.
+mount -t efivarfs efivarfs /sys/firmware/efi/efivars
+step dpkg -i /var/cache/sentinel-build/busybox-static.deb
+step $b ip link set lo up
+step $b ip link set eth0 up
+step $b udhcpc -q -n -i eth0 -s /usr/sbin/sentinel-build
+# Ubuntu's own archive, as the image's sources say (snapshot.ubuntu.com would pin the packages, at a
+# tenth of the speed). Plain HTTP: apt checks the signatures.
+step apt-get -o Acquire::Retries=5 update
+# The virtual kernel flavour; systemd-boot finds the ESP at /boot/efi, installs itself there and
+# adds a boot entry for each kernel through kernel-install (/etc/kernel/cmdline, entry-token).
+step apt-get -o Acquire::Retries=5 install -y --no-install-recommends linux-image-virtual initramfs-tools systemd \
+	systemd-sysv systemd-resolved udev dbus kmod e2fsprogs systemd-boot
+step systemctl enable systemd-networkd systemd-resolved sentineld-agent
+ls /boot/efi/loader/entries/ubuntu-*.conf >/dev/null || { echo "failed: no boot entry" > /boot/efi/sentinel/result; off; }
+# The newest entry boots at once; each clone makes its own random seed; GRUB and the first boot go.
+echo 'timeout 0' > /boot/efi/loader/loader.conf
+rm -rf /boot/efi/grub /boot/efi/sentinel/linux /boot/efi/loader/random-seed
+step dpkg --purge busybox-static
+rm -rf /var/cache/sentinel-build /var/lib/apt/lists/*
+apt-get clean
+echo sentinel > /etc/hostname
+ln -sf ../run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
+: > /etc/machine-id
+rm -f /var/lib/dbus/machine-id
+# Done only once the root is clean (this script stays: the record of how the disk was made).
+sync
+mount -o remount,ro / && r=ok || r="failed: the root stays busy"
+echo "$r" > /boot/efi/sentinel/result
+umount /boot/efi
+systemctl poweroff -ff

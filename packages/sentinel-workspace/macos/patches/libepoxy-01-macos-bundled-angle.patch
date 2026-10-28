@@ -1,0 +1,22 @@
+libepoxy: on macOS, load ANGLE's libEGL/libGLESv2 from libepoxy's own directory (the bundle).
+dlopen() resolves a bare leaf name only against DYLD_* paths and the working directory.
+
+diff -ruN a/src/dispatch_common.c b/src/dispatch_common.c
+--- a/src/dispatch_common.c	2026-04-03 07:07:10
++++ b/src/dispatch_common.c	2026-10-13 19:01:44
+@@ -175,10 +175,12 @@
+ 
+ #if defined(__APPLE__)
+ #define GLX_LIB "/opt/X11/lib/libGL.1.dylib"
+-#define EGL_LIB "libEGL.dylib"
++/* EGL and GLES come from ANGLE, bundled next to libepoxy: dlopen() resolves a bare leaf name
++ * only against the environment and the working directory, never against the bundle. */
++#define EGL_LIB "@loader_path/libEGL.dylib"
+ #define OPENGL_LIB "/System/Library/Frameworks/OpenGL.framework/Versions/Current/OpenGL"
+-#define GLES1_LIB "libGLESv1_CM.dylib"
+-#define GLES2_LIB "libGLESv2.dylib"
++#define GLES1_LIB "@loader_path/libGLESv1_CM.dylib"
++#define GLES2_LIB "@loader_path/libGLESv2.dylib"
+ #elif defined(__ANDROID__)
+ #define GLX_LIB "libGLESv2.so"
+ #define EGL_LIB "libEGL.so"

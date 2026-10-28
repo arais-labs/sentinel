@@ -8,12 +8,12 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from app.services.browser.manager import BrowserManager
-from app.services.runtime.desktop import RuntimeDesktopManager
-from app.services.runtime.container_transport import ContainerTransport
-from app.services.runtime.guest_commands import guest_python_command
-import app.services.runtime.ssh_runtime as ssh_runtime
-from app.services.runtime.terminal_manager import RuntimeTerminalManager
-from app.services.runtime.workspace import WorkspaceLocation, workspace_paths
+from app.services.workspaces.desktop.manager import DesktopManager
+from app.services.workspaces.transport.guest import GuestTransport
+from app.services.workspaces.guest_commands import guest_python_command
+import app.services.workspaces.managers as ssh_runtime
+from app.services.workspaces.terminals.manager import TerminalManager
+from app.services.workspaces.paths import WorkspaceLocation, workspace_paths
 
 
 class BrowserPoolError(RuntimeError):
@@ -32,8 +32,8 @@ class _BrowserHandle:
 
 @dataclass(frozen=True, slots=True)
 class _BrowserRuntime:
-    terminal_manager: RuntimeTerminalManager
-    desktop_manager: RuntimeDesktopManager
+    terminal_manager: TerminalManager
+    desktop_manager: DesktopManager
     workspace_location: WorkspaceLocation | None
 
 
@@ -52,8 +52,8 @@ class BrowserPool:
     def __init__(
         self,
         *,
-        terminal_manager: RuntimeTerminalManager | None = None,
-        desktop_manager: RuntimeDesktopManager | None = None,
+        terminal_manager: TerminalManager | None = None,
+        desktop_manager: DesktopManager | None = None,
         manager_cls: type[BrowserManager] = BrowserManager,
         workspace_location: WorkspaceLocation | None = None,
     ) -> None:
@@ -210,16 +210,14 @@ class BrowserPool:
         )
 
     async def _stop_remote(self, session_id: str, *, instance_name: str | None) -> None:
-        terminal = self._terminal_manager or await ssh_runtime.get_runtime_terminal_manager(
+        terminal = self._terminal_manager or await ssh_runtime.get_terminal_manager(
             session_id=session_id, instance_name=instance_name
         )
         command = _build_browser_stop_command(
             session_id, root=self._workspace_location or terminal.workspace_location
         )
         transport = terminal.ssh
-        run = (
-            transport.run_if_running if isinstance(transport, ContainerTransport) else transport.run
-        )
+        run = transport.run_if_running if isinstance(transport, GuestTransport) else transport.run
         result = await run(command, timeout=30)
         if result is not None and result.exit_status not in {0, None}:
             raise BrowserPoolError(
@@ -238,10 +236,10 @@ class BrowserPool:
             raise BrowserPoolError(detail)
 
     async def _runtime(self, *, session_id: str, instance_name: str | None) -> _BrowserRuntime:
-        terminal_manager = self._terminal_manager or await ssh_runtime.get_runtime_terminal_manager(
+        terminal_manager = self._terminal_manager or await ssh_runtime.get_terminal_manager(
             session_id=session_id, instance_name=instance_name
         )
-        desktop_manager = self._desktop_manager or await ssh_runtime.get_runtime_desktop_manager(
+        desktop_manager = self._desktop_manager or await ssh_runtime.get_desktop_manager(
             session_id=session_id, instance_name=instance_name
         )
         workspace_location = self._workspace_location

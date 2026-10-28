@@ -313,7 +313,7 @@ function normalizeForwardUrl(value: string): string {
   return trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
 }
 
-function RuntimeForwardResultView({ raw }: { raw: string }) {
+function ForwardResultView({ raw }: { raw: string }) {
   const parsed = useMemo(() => parsePayloadJson(raw), [raw]);
   if (!isObjectRecord(parsed)) {
     return <ToolPayloadView raw={raw} emptyLabel="No output." payloadKind="output" toolName="port_forward" />;
@@ -396,7 +396,7 @@ function RuntimeForwardResultView({ raw }: { raw: string }) {
   return <ToolPayloadView raw={raw} emptyLabel="No output." payloadKind="output" toolName="port_forward" />;
 }
 
-function RuntimeForwardCompactSummary({ raw, outputError = false }: { raw: string; outputError?: boolean }) {
+function ForwardCompactSummary({ raw, outputError = false }: { raw: string; outputError?: boolean }) {
   const parsed = useMemo(() => parsePayloadJson(raw), [raw]);
   if (!isObjectRecord(parsed)) {
     return (
@@ -1079,10 +1079,10 @@ export const SessionMessageCard = memo(({
       />
     ),
     renderPortForwardCompact: () => (
-      <RuntimeForwardCompactSummary raw={message.content} outputError={toolFailed} />
+      <ForwardCompactSummary raw={message.content} outputError={toolFailed} />
     ),
     renderPortForwardExpanded: () => (
-      <RuntimeForwardResultView raw={message.content} />
+      <ForwardResultView raw={message.content} />
     ),
   };
   const customToolCard = isToolResult ? findCustomToolCard(customToolCardContext) : null;

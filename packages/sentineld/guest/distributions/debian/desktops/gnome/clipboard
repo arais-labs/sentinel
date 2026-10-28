@@ -1,0 +1,14 @@
+#!/bin/sh
+# Debian's GNOME clipboard through Mutter's Xwayland selection bridge, run by the agent as the desktop
+# user: `write` puts stdin on the clipboard (xclip stays behind to serve it, its output closed so
+# the agent is not kept waiting), `read` prints it, nothing when it is empty. Xwayland authorizes
+# clients with a file Mutter creates per session.
+set -eu
+for auth in "$XDG_RUNTIME_DIR"/.mutter-Xwaylandauth.*; do
+	[ -e "$auth" ] && export XAUTHORITY="$auth"
+	break
+done
+case $1 in
+write) exec xclip -selection clipboard -in >/dev/null 2>&1 ;;
+read) xclip -selection clipboard -out 2>/dev/null || : ;;
+esac

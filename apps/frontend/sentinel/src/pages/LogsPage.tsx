@@ -27,7 +27,7 @@ import {
 import { notificationPublisher } from '../lib/notifications';
 
 import { AppShell } from '../components/AppShell';
-import { RuntimeExplorerModal } from '../components/RuntimeExplorerModal';
+import { WorkspaceExplorerModal } from '../components/WorkspaceExplorerModal';
 import { JsonBlock } from '../components/ui/JsonBlock';
 import { Markdown } from '../components/ui/Markdown';
 import { StatusChip } from '../components/ui/StatusChip';
@@ -36,7 +36,7 @@ import { formatCompactDate, truncate } from '../lib/format';
 import type {
   Message,
   MessageListResponse,
-  RuntimeStatusResponse,
+  WorkspaceStatusResponse,
   Session,
 } from '../types/api';
 
@@ -368,8 +368,8 @@ function mergeMessages(existing: Message[], incoming: Message[]): Message[] {
   return sortMessagesDesc(Array.from(byId.values()));
 }
 
-function runtimeIsAvailable(runtime: RuntimeStatusResponse | null): boolean {
-  return runtime?.status === 'ready' || runtime?.status === 'degraded';
+function workspaceIsAvailable(status: WorkspaceStatusResponse | null): boolean {
+  return status?.status === 'ready' || status?.status === 'degraded';
 }
 
 function extractRuntimeContextPayload(message: Message): RuntimeContextPayload | null {
@@ -1491,7 +1491,7 @@ function SessionLogs({ selectedSessionId, rootUsage, traceSelector }: { selected
   const [sessionError, setSessionError] = useState('');
   const [messages, setMessages] = useState<Message[]>([]);
   const [sessionUsage, setSessionUsage] = useState<SessionUsageTotal | null>(null);
-  const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatusResponse | null>(null);
+  const [workspaceStatus, setWorkspaceStatus] = useState<WorkspaceStatusResponse | null>(null);
 
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -1508,7 +1508,7 @@ function SessionLogs({ selectedSessionId, rootUsage, traceSelector }: { selected
     lens?: OperationalLens;
   } | null>(null);
   const [detailEvent, setDetailEvent] = useState<ArchitectureEvent | null>(null);
-  const [runtimeExplorerOpen, setRuntimeExplorerOpen] = useState(false);
+  const [workspaceExplorerOpen, setWorkspaceExplorerOpen] = useState(false);
   const [expandedClusters, setExpandedClusters] = useState<Set<string>>(new Set());
   const [collapsingClusters, setCollapsingClusters] = useState<Set<string>>(new Set());
   const collapseTimersRef = useRef<Record<string, number>>({});
@@ -1555,7 +1555,7 @@ function SessionLogs({ selectedSessionId, rootUsage, traceSelector }: { selected
       const items = Array.isArray(payload?.items) ? payload.items : [];
       setMessages(sortMessagesDesc(items));
       setHasMore(Boolean(payload?.has_more));
-      void refreshRuntimeStatus();
+      void refreshWorkspaceStatus();
     } catch {
       if (!silent) notify.error('Failed to load logs');
     } finally {
@@ -1569,18 +1569,22 @@ function SessionLogs({ selectedSessionId, rootUsage, traceSelector }: { selected
       const items = Array.isArray(payload?.items) ? payload.items : [];
       setMessages((current) => mergeMessages(current, items));
       setHasMore((current) => current || Boolean(payload?.has_more));
-      void refreshRuntimeStatus();
+      void refreshWorkspaceStatus();
     } catch {
       if (!silent) notify.error('Failed to refresh logs');
     }
   }
 
-  async function refreshRuntimeStatus() {
+  async function refreshWorkspaceStatus() {
+    if (!selectedSessionId) {
+      setWorkspaceStatus(null);
+      return;
+    }
     try {
-      const payload = await api.get<RuntimeStatusResponse>(`/runtime/status${selectedSessionId ? `?session_id=${encodeURIComponent(selectedSessionId)}` : ''}`);
-      setRuntimeStatus(payload);
+      const payload = await api.get<WorkspaceStatusResponse>(`/sessions/${encodeURIComponent(selectedSessionId)}/workspace/status`);
+      setWorkspaceStatus(payload);
     } catch {
-      setRuntimeStatus(null);
+      setWorkspaceStatus(null);
     }
   }
 
@@ -1650,8 +1654,8 @@ function SessionLogs({ selectedSessionId, rootUsage, traceSelector }: { selected
   }
 
   const totalUsage = sessionUsage?.session_id === selectedSessionId ? sessionUsage : null;
-  const activeRuntime = selectedSessionId ? runtimeStatus : null;
-  const runtimeAvailable = runtimeIsAvailable(activeRuntime);
+  const activeWorkspace = selectedSessionId ? workspaceStatus : null;
+  const workspaceAvailable = workspaceIsAvailable(activeWorkspace);
 
   const loopContextByUserMessageId = useMemo(
     () => mapRuntimeContextToUserMessages(messages),
@@ -2050,7 +2054,7 @@ function SessionLogs({ selectedSessionId, rootUsage, traceSelector }: { selected
                 Latest Snapshot
               </button>
               <button
-                onClick={() => setRuntimeExplorerOpen(true)}
+                onClick={() => setWorkspaceExplorerOpen(true)}
                 className="chat-header-pill inline-flex items-center uppercase"
               >
                 <Terminal size={14} className="text-amber-500/80" />
@@ -2080,7 +2084,7 @@ function SessionLogs({ selectedSessionId, rootUsage, traceSelector }: { selected
                 <div className="px-6 pt-6 pb-2 flex flex-wrap items-center justify-between gap-3">
                   <div className="logs-session-identity">
                     <div className="flex items-center gap-2 min-w-0">
-                      <div className={`w-2 h-2 rounded-full transition-all duration-500 ${runtimeAvailable ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.4)]' : 'bg-(--border-strong)'}`} />
+                      <div className={`w-2 h-2 rounded-full transition-all duration-500 ${workspaceAvailable ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.4)]' : 'bg-(--border-strong)'}`} />
                       <h2 className="text-sm font-medium text-(--text-primary) truncate max-w-[400px]">
                         {activeSession.title || 'Live Process'}
                       </h2>
@@ -2337,11 +2341,11 @@ function SessionLogs({ selectedSessionId, rootUsage, traceSelector }: { selected
         onClose={() => setDetailEvent(null)}
       />
 
-      <RuntimeExplorerModal
-        open={runtimeExplorerOpen}
+      <WorkspaceExplorerModal
+        open={workspaceExplorerOpen}
         session={activeSession ?? null}
-        runtime={activeRuntime ?? null}
-        onClose={() => setRuntimeExplorerOpen(false)}
+        info={activeWorkspace ?? null}
+        onClose={() => setWorkspaceExplorerOpen(false)}
       />
 
 

@@ -1,0 +1,356 @@
+libkrun: the display's refresh rate, live, and screen updates paced to it.
+DisplayBackend::refresh(index) hands the caller a DisplayRefresh; its set(hz) changes the rate the
+display's EDID says and, while a GPU device shows the display, raises VIRTIO_GPU_EVENT_DISPLAY so the
+guest reads the display again (the rate it already has changes nothing). A fenced RESOURCE_FLUSH is
+answered at the display's next refresh: the guest's display waits for that answer before it reports
+the frame shown, so a guest kernel without virtio-gpu vblank (before Linux 6.19) is paced at the
+display's rate, as a real display paces it (Sentinel: DESIGN.md §6, §16).
+
+--- a/include/libkrun.h
++++ b/include/libkrun.h
+@@ -28,6 +28,7 @@
+ typedef void* KrunDisplayInfoBuilder;
+ typedef void* KrunVhostUserDevice;
+ typedef void* KrunDisplayBackend;
++typedef void* KrunDisplayRefresh;
+ typedef void* KrunGpuDevice;
+ typedef void* KrunRamfbDevice;
+ typedef void* KrunInputDevice;
+@@ -623,6 +624,15 @@
+ typedef void (*krun_display_backend_add_display_fn)(KrunDisplayBackend handle, KrunDisplayInfoBuilder display);
+ void krun_display_backend_destroy(KrunDisplayBackend handle);
+ typedef void (*krun_display_backend_destroy_fn)(KrunDisplayBackend handle);
++KrunDisplayRefresh krun_display_backend_refresh(KrunDisplayBackend handle, uint32_t index, KrunError* err_out);
++typedef KrunDisplayRefresh (*krun_display_backend_refresh_fn)(KrunDisplayBackend handle, uint32_t index, KrunError* err_out);
++
++/* DisplayRefresh ---------------------------------------------------- */
++
++KrunResult krun_display_refresh_set(KrunDisplayRefresh handle, uint32_t hz, KrunError* err_out);
++typedef KrunResult (*krun_display_refresh_set_fn)(KrunDisplayRefresh handle, uint32_t hz, KrunError* err_out);
++void krun_display_refresh_destroy(KrunDisplayRefresh handle);
++typedef void (*krun_display_refresh_destroy_fn)(KrunDisplayRefresh handle);
+ 
+ /* GpuDevice --------------------------------------------------------- */
+ 
+--- a/src/devices/src/display/types.rs
++++ b/src/devices/src/display/types.rs
+@@ -3,6 +3,9 @@
+ 
+ //! Common display types for EDID generation.
+ 
++use std::sync::atomic::{AtomicU32, Ordering};
++use std::sync::{Arc, Mutex};
++
+ use virtio_bindings::virtio_gpu::VIRTIO_GPU_MAX_SCANOUTS;
+ 
+ pub const MAX_DISPLAYS: usize = VIRTIO_GPU_MAX_SCANOUTS as usize;
+@@ -34,6 +37,43 @@
+     DimensionsMillimeters(u16, u16),
+ }
+ 
++/// A display's refresh rate as the host shows it now (the screen its picture is on), which the host
++/// changes while the guest runs: the display's EDID says it, and a GPU device in use tells its guest
++/// (VIRTIO_GPU_EVENT_DISPLAY), whose desktop takes the new mode as its own display handling does.
++#[derive(Default)]
++pub struct LiveRefresh {
++    hz: AtomicU32, // 0: the EDID parameters' own
++    notify: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
++}
++
++impl std::fmt::Debug for LiveRefresh {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        f.debug_struct("LiveRefresh").field("hz", &self.get()).finish()
++    }
++}
++
++impl LiveRefresh {
++    pub fn get(&self) -> u32 {
++        self.hz.load(Ordering::Acquire)
++    }
++
++    /// A new rate (the one the display already has changes nothing); the device in use, if any,
++    /// tells its guest.
++    pub fn set(&self, hz: u32) {
++        if self.hz.swap(hz, Ordering::AcqRel) == hz {
++            return;
++        }
++        if let Some(notify) = self.notify.lock().unwrap().clone() {
++            notify();
++        }
++    }
++
++    /// What a change does: set by the device that shows the display while it is active.
++    pub fn on_change(&self, notify: Option<Arc<dyn Fn() + Send + Sync>>) {
++        *self.notify.lock().unwrap() = notify;
++    }
++}
++
+ /// User-configured display (monitor) properties.
+ /// Distinct from the scanout (guest framebuffer), which may be smaller.
+ #[derive(Clone, Debug)]
+@@ -41,6 +81,7 @@
+     pub width: u32,
+     pub height: u32,
+     pub edid: DisplayInfoEdid,
++    pub refresh: Arc<LiveRefresh>,
+ }
+ 
+ #[derive(Debug, Clone)]
+@@ -55,6 +96,7 @@
+             width,
+             height,
+             edid: DisplayInfoEdid::Generated(EdidParams::default()),
++            refresh: Arc::new(LiveRefresh::default()),
+         }
+     }
+ 
+@@ -62,8 +104,11 @@
+         match &self.edid {
+             DisplayInfoEdid::Provided(edid_bytes) => edid_bytes.clone(),
+             DisplayInfoEdid::Generated(edid_params) => {
+-                let edid_info = EdidInfo::new(self.width, self.height, edid_params);
+-                edid_info.bytes()
++                let mut params = edid_params.clone();
++                if self.refresh.get() != 0 {
++                    params.refresh_rate = self.refresh.get();
++                }
++                EdidInfo::new(self.width, self.height, &params).bytes()
+             }
+         }
+     }
+--- a/src/devices/src/display/mod.rs
++++ b/src/devices/src/display/mod.rs
+@@ -13,7 +13,7 @@
+ pub mod display_backend;
+ 
+ pub use edid::EdidInfo;
+-pub use types::{DisplayInfo, DisplayInfoEdid, EdidParams, MAX_DISPLAYS, PhysicalSize};
++pub use types::{DisplayInfo, DisplayInfoEdid, EdidParams, LiveRefresh, MAX_DISPLAYS, PhysicalSize};
+ 
+ #[cfg(feature = "gpu")]
+ pub use display_backend::NoopDisplayBackend;
+--- a/src/devices/src/virtio/gpu/device.rs
++++ b/src/devices/src/virtio/gpu/device.rs
+@@ -264,6 +264,16 @@
+             ActivateError::BadActivate
+         })?;
+ 
++        // A display whose refresh rate the host changes: its guest reads the display again.
++        for display in self.displays.iter() {
++            let events = self.events.clone();
++            let interrupt = interrupt.clone();
++            display.refresh.on_change(Some(Arc::new(move || {
++                events.fetch_or(super::protocol::VIRTIO_GPU_EVENT_DISPLAY, Ordering::AcqRel);
++                interrupt.signal_config_change();
++            })));
++        }
++
+         // None: a 2D GPU.
+         let shm_region = self.shm_region.clone();
+ 
+@@ -390,6 +400,9 @@
+             return false;
+         };
+         self.events.store(0, Ordering::Release);
++        for display in self.displays.iter() {
++            display.refresh.on_change(None);
++        }
+         threads.stop.store(true, Ordering::Release);
+         for evt in &threads.wake {
+             if let Err(e) = evt.write(1) {
+--- a/src/devices/src/virtio/gpu/worker.rs
++++ b/src/devices/src/virtio/gpu/worker.rs
+@@ -55,6 +55,12 @@
+     // The config space's pending events (device.rs), and when a display event was last raised.
+     events: Arc<AtomicU32>,
+     display_event: Option<Instant>,
++    // Fenced screen updates (RESOURCE_FLUSH) answered at the display's next refresh: the guest's
++    // display waits for the answer before it reports the frame shown, so a guest whose kernel has
++    // no vblank of its own is paced at the display's rate as by a real display. (descriptor, length,
++    // when)
++    paced: std::collections::VecDeque<(u16, u32, Instant)>,
++    refresh_epoch: Instant,
+ }
+ 
+ /// What a parked worker resumes with: the next activation's queue and state.
+@@ -111,6 +117,8 @@
+             park,
+             events,
+             display_event: None,
++            paced: std::collections::VecDeque::new(),
++            refresh_epoch: Instant::now(),
+         }
+     }
+ 
+@@ -161,16 +169,26 @@
+ 
+         loop {
+             // The GL renderer's fences (vrend) retire only when it is polled (on macOS it has no
+-            // fence thread): while the guest waits for one, poll every millisecond.
+-            if virtio_gpu.fences_pending() {
++            // fence thread): while the guest waits for one, poll every millisecond. Screen updates
++            // held for the display's refresh are answered when it comes.
++            let fences = virtio_gpu.fences_pending();
++            if fences || !self.paced.is_empty() {
++                let mut timeout = if fences { 1 } else { i32::MAX };
++                if let Some((_, _, due)) = self.paced.front() {
++                    let left = due.saturating_duration_since(Instant::now());
++                    timeout = timeout.min(left.as_micros().div_ceil(1000) as i32);
++                }
+                 let mut pfd = libc::pollfd {
+                     fd: self.control_evt.as_raw_fd(),
+                     events: libc::POLLIN,
+                     revents: 0,
+                 };
+                 // SAFETY: pfd is a valid pollfd for the duration of the call.
+-                if unsafe { libc::poll(&mut pfd, 1, 1) } == 0 {
+-                    virtio_gpu.event_poll();
++                if unsafe { libc::poll(&mut pfd, 1, timeout) } == 0 {
++                    if fences {
++                        virtio_gpu.event_poll();
++                    }
++                    self.answer_paced();
+                     continue;
+                 }
+             }
+@@ -215,9 +233,44 @@
+             if virtio_gpu.fences_pending() {
+                 virtio_gpu.event_poll();
+             }
++            self.answer_paced();
+         }
+     }
+ 
++    /// The display's next refresh after now, on a clock that started with the worker.
++    fn next_refresh(&self) -> Instant {
++        let hz = self.displays.first().map_or(60, |d| match d.refresh.get() {
++            0 => match &d.edid {
++                crate::display::DisplayInfoEdid::Generated(p) => p.refresh_rate,
++                crate::display::DisplayInfoEdid::Provided(_) => 60,
++            },
++            hz => hz,
++        });
++        let period = Duration::from_nanos(1_000_000_000 / u64::from(hz.max(1)));
++        let ticks = self.refresh_epoch.elapsed().as_nanos() / period.as_nanos() + 1;
++        self.refresh_epoch + period * ticks as u32
++    }
++
++    /// Answers the held screen updates whose refresh has come.
++    fn answer_paced(&mut self) {
++        let mem = self.mem.clone();
++        let now = Instant::now();
++        let mut used = false;
++        while let Some(&(index, len, due)) = self.paced.front() {
++            if due > now {
++                break;
++            }
++            self.paced.pop_front();
++            if let Err(e) = self.control_queue.lock().unwrap().add_used(&mem, index, len) {
++                error!("failed to add used elements to the queue: {e:?}");
++            }
++            used = true;
++        }
++        if used && let Err(e) = self.interrupt.try_signal_used_queue() {
++            error!("Error signaling queue: {e:?}");
++        }
++    }
++
+     fn process_gpu_command(
+         &mut self,
+         virtio_gpu: &mut VirtioGpu,
+@@ -512,6 +565,22 @@
+                 };
+ 
+                 let mut add_to_queue = true;
++
++                // A fenced screen update is answered at the display's next refresh (paced).
++                let flush = matches!(gpu_cmd, Some(GpuCommand::ResourceFlush(_)))
++                    && ctrl_hdr.is_some_and(|h| h.flags & VIRTIO_GPU_FLAG_FENCE != 0)
++                    && matches!(gpu_response, GpuResponse::OkNoData);
++                if flush && writer.available_bytes() != 0 {
++                    let h = ctrl_hdr.unwrap();
++                    match gpu_response.encode(h.flags, h.fence_id, h.ctx_id, h.ring_idx, &mut writer) {
++                        Ok(l) => {
++                            let due = self.next_refresh();
++                            self.paced.push_back((head.index, l, due));
++                        }
++                        Err(e) => debug!("ctrl queue response encode error: {e:?}"),
++                    }
++                    continue;
++                }
+ 
+                 if writer.available_bytes() != 0 {
+                     let mut fence_id = 0;
+--- a/src/libkrun/src/api/device_builders.rs
++++ b/src/libkrun/src/api/device_builders.rs
+@@ -1770,6 +1770,7 @@
+             }
+             DisplayInfoEdid::Provided(_) => {}
+         }
++        self.inner.refresh.set(rate);
+         self
+     }
+ }
+@@ -1819,8 +1820,42 @@
+     pub fn add_display(&mut self, display: DisplayInfoBuilder) {
+         self.displays.push(display.inner);
+     }
++
++    /// The refresh rate of display `index`, which the caller changes while the VM runs (the host
++    /// screen it is shown on): its EDID says the new rate, and the GPU tells its guest.
++    pub fn refresh(&self, index: u32) -> Result<DisplayRefresh, VmmError> {
++        let display = self.displays.get(index as usize).ok_or(VmmError::InvalidParam())?;
++        Ok(DisplayRefresh {
++            inner: display.refresh.clone(),
++        })
++    }
+ }
+ 
++/// A display's refresh rate, changed while the VM runs (DisplayBackend::refresh).
++#[cfg(any(feature = "gpu", feature = "vhost-user"))]
++pub struct DisplayRefresh {
++    pub(crate) inner: Arc<devices::display::LiveRefresh>,
++}
++
++#[cfg_attr(
++    feature = "ffi",
++    ffier::export(cfg = "any(feature = \"gpu\", feature = \"vhost-user\")")
++)]
++#[cfg_attr(
++    not(feature = "ffi"),
++    cfg(any(feature = "gpu", feature = "vhost-user"))
++)]
++impl DisplayRefresh {
++    /// The new rate in hertz (1 to 1000).
++    pub fn set(&self, hz: u32) -> Result<(), VmmError> {
++        if !(1..=1000).contains(&hz) {
++            return Err(VmmError::InvalidParam());
++        }
++        self.inner.set(hz);
++        Ok(())
++    }
++}
++
+ export_bitflags! {
+     #[cfg(feature = "gpu")]
+     bitflags::bitflags! {
+--- a/src/libkrun/src/api/mod.rs
++++ b/src/libkrun/src/api/mod.rs
+@@ -47,7 +47,7 @@
+ };
+ pub use device_builders::{ConsoleBuilder, ConsoleDevice};
+ #[cfg(any(feature = "gpu", feature = "vhost-user"))]
+-pub use device_builders::{DisplayBackend, DisplayInfoBuilder};
++pub use device_builders::{DisplayBackend, DisplayInfoBuilder, DisplayRefresh};
+ #[cfg(feature = "gpu")]
+ pub use device_builders::{GpuDevice, VirglRendererFlags};
+ #[cfg(all(feature = "gpu", target_os = "macos", target_arch = "aarch64"))]
+@@ -110,6 +110,8 @@
+     crate::api::device_builders::VhostUserDevice = 20,
+     #[cfg(any(feature = "gpu", feature = "vhost-user"))]
+     crate::api::device_builders::DisplayBackend = 22,
++    #[cfg(any(feature = "gpu", feature = "vhost-user"))]
++    crate::api::device_builders::DisplayRefresh = 29,
+     #[cfg(all(feature = "gpu", target_os = "macos", target_arch = "aarch64"))]
+     crate::api::device_builders::RamfbDevice = 28,
+     #[cfg(all(feature = "gpu", target_os = "macos", target_arch = "aarch64"))]

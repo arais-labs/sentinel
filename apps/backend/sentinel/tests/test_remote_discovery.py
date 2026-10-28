@@ -7,7 +7,7 @@ import asyncssh
 import pytest
 
 from app.routers import machines
-from app.services.runtime import remote_mac
+from app.services.workspaces.machines.remote import worker as remote_mac
 from tests.test_remote_mac import machine
 
 
@@ -21,7 +21,9 @@ async def test_new_machine_reads_existing_installation(monkeypatch, installed):
         paths.append(path)
         if not installed or path.endswith("update.json"):
             raise asyncssh.SFTPNoSuchFile("Missing")
-        yield SimpleNamespace(read=AsyncMock(return_value=json.dumps({"version": "existing"})))
+        document = {"version": "existing", "workspace": "/release/sentinel-workspace"}
+        text = "worker-1\n" if path.endswith("worker-id") else json.dumps(document)
+        yield SimpleNamespace(read=AsyncMock(return_value=text))
 
     @asynccontextmanager
     async def sftp():
@@ -36,11 +38,12 @@ async def test_new_machine_reads_existing_installation(monkeypatch, installed):
     result = await remote_mac.inspect_installation(machine(host_key="observed-key"))
     assert result["installed"] is installed
     assert result["installed_version"] == ("existing" if installed else None)
-    assert result["path"] == "/Users/test/.sentinel/runtime"
+    assert result["worker_id"] == ("worker-1" if installed else None)
+    assert result["path"] == "/Users/test/.sentinel/sentineld"
     assert paths == [
-        "/Users/test/.sentinel/runtime/manifest.json",
-        "/Users/test/.sentinel/runtime/update.json",
-        "/Users/test/.sentinel/runtime/workspaces.json",
+        "/Users/test/.sentinel/sentineld/manifest.json",
+        "/Users/test/.sentinel/sentineld/update.json",
+        "/Users/test/.sentinel/sentineld/state/worker-id",
     ]
     client.close.assert_awaited_once()
 
@@ -62,7 +65,7 @@ async def test_inspection_automatically_checks_new_hosts_but_never_changed_ident
         return_value={
             "installed": True,
             "installed_version": "existing",
-            "path": "/Users/test/.sentinel/runtime",
+            "path": "/Users/test/.sentinel/sentineld",
         }
     )
     monkeypatch.setattr(remote_mac, "inspect_installation", inspect)
@@ -77,7 +80,7 @@ async def test_inspection_automatically_checks_new_hosts_but_never_changed_ident
         assert inspect.call_args.args[0].host_key == "same-key"
         assert result["installed"]
         assert result["installed_version"] == "existing"
-        assert result["path"] == "/Users/test/.sentinel/runtime"
+        assert result["path"] == "/Users/test/.sentinel/sentineld"
     db.commit.assert_not_awaited()
 
 

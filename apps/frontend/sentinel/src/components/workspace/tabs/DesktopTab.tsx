@@ -6,18 +6,16 @@ import {
   Monitor,
   Play,
   RefreshCw,
-  Square,
   Image,
 } from 'lucide-react';
 import { api } from '../../../lib/api';
-import { desktopResolutions, defaultDesktopGeometry } from '../../../lib/desktop-modes';
 import { runtimeUpdateRequirement, type RuntimeUpdateRequirement } from '../../../lib/runtime-compatibility';
-import { RuntimeUpdateNotice } from '../../runtime/RuntimeUpdateNotice';
+import { RuntimeUpdateNotice } from '../../environment/RuntimeUpdateNotice';
 import { useSessionWorkspace } from '../../../hooks/useSessionWorkspace';
 import { useActiveSessionId } from '../../../store/active-session-store';
 import { useInstanceName, usePaneId } from '../../../lib/workspace-context';
 import { clearPaneActions, setPaneActions } from '../../../store/pane-actions-store';
-import type { RuntimeLiveView, Workspace } from '../../../types/api';
+import type { WorkspaceCatalog, WorkspaceDesktopStatus, Workspace } from '../../../types/api';
 import { DesktopView } from '../DesktopView';
 import { WallpaperChooser } from '../WallpaperChooser';
 import { WorkspaceAttachment } from '../../session/WorkspaceAttachment';
@@ -61,13 +59,11 @@ function WorkspaceDesktop({
   instance: string;
 }) {
   const prefix = `/instances/${encodeURIComponent(instance)}`;
-  const query = `session_id=${encodeURIComponent(session)}`;
-  const [desktop, setDesktop] = useState<RuntimeLiveView | null>(null);
+  const desktopPath = `${prefix}/sessions/${encodeURIComponent(session)}/workspace/desktop`;
+  const [desktop, setDesktop] = useState<WorkspaceDesktopStatus | null>(null);
   const [error, setError] = useState('');
   const [runtimeUpdate, setRuntimeUpdate] = useState<RuntimeUpdateRequirement>();
   const [busy, setBusy] = useState('');
-  const [geometry, setGeometry] = useState<string>(defaultDesktopGeometry);
-  const [confirmStop, setConfirmStop] = useState(false);
   const [showWallpapers, setShowWallpapers] = useState(false);
   const clipboardKey = `sentinel:desktop-clipboard:${instance}:${workspace.id}`;
   const [clipboardEnabled, setClipboardEnabled] = useState(() => {
@@ -85,14 +81,13 @@ function WorkspaceDesktop({
   const mounted = useRef(true);
   const refresh = useCallback(async () => {
     try {
-      const result = await api.get<RuntimeLiveView>(
-        `${prefix}/runtime/live-view?${query}`,
+      const result = await api.get<WorkspaceDesktopStatus>(
+        desktopPath,
       );
       if (mounted.current) {
         setDesktop(result);
         setRuntimeUpdate(undefined);
         setError('');
-        if (result.geometry) setGeometry(result.geometry);
       }
       return result.state;
     } catch (reason) {
@@ -105,7 +100,7 @@ function WorkspaceDesktop({
         );
       return 'unavailable';
     }
-  }, [prefix, query]);
+  }, [desktopPath]);
   useEffect(() => {
     mounted.current = true;
     let cancelled = false;
@@ -121,7 +116,7 @@ function WorkspaceDesktop({
       if (!cancelled)
         timer = setTimeout(
           poll,
-          state === 'preparing' || state === 'stopping' ? 3000 : 15000,
+          state === 'preparing' || state === 'stopping' || state === 'starting' ? 3000 : 15000,
         );
     };
     const visible = () => {
@@ -147,10 +142,10 @@ function WorkspaceDesktop({
         response &&
         typeof response === 'object' &&
         'available' in response &&
-        !(response as RuntimeLiveView).available
+        !(response as WorkspaceDesktopStatus).available
       )
         throw new Error(
-          (response as RuntimeLiveView).reason || 'Desktop could not start.',
+          (response as WorkspaceDesktopStatus).reason || 'Desktop could not start.',
         );
       await refresh();
     } catch (reason) {
@@ -173,15 +168,23 @@ function WorkspaceDesktop({
       );
       if (current.id !== workspace.id)
         throw new Error('The attached workspace changed. Open Desktop again.');
+      const catalog = await api.get<WorkspaceCatalog>(
+        `/machines/${current.machine_id}/development-tools`,
+      );
+      const choice = catalog.desktops.find((item) =>
+        item.distributions.includes(current.distribution),
+      );
+      if (!choice)
+        throw new Error('No desktop is available for this operating system.');
       const updated = await api.patch<Workspace>(
         `${prefix}/workspaces/${workspace.id}`,
         {
-          desktop: 'xfce',
+          desktop: choice.id,
           revision: current.revision,
         },
       );
-      if (updated.container_state === 'failed')
-        throw new Error(updated.container_error || 'Workspace setup failed.');
+      if (updated.state === 'failed')
+        throw new Error(updated.error || 'Workspace setup failed.');
     });
   const startWorkspace = () =>
     action('Starting workspace…', async () => {
@@ -189,41 +192,27 @@ function WorkspaceDesktop({
         `${prefix}/workspaces/${workspace.id}/start`,
         {},
       );
-      if (result.container_state === 'failed')
-        throw new Error(result.container_error || 'Workspace could not start.');
+      if (result.state === 'failed')
+        throw new Error(result.error || 'Workspace could not start.');
     });
-  const start = () =>
-    action('Starting desktop…', () =>
-      api.post(
-        `${prefix}/runtime/desktop/start?${query}`,
-        { geometry },
-        { timeoutMs: 35000 },
-      ),
-    );
-  const stop = () => {
-    setConfirmStop(false);
-    void action('Stopping desktop…', () =>
-      api.post(`${prefix}/runtime/desktop/stop?${query}`, {}),
-    );
-  };
   const running = !runtimeUpdate && desktop?.state === 'running' && desktop.available;
+  // The machine's screen while it starts: from power on, through setup, until the desktop runs.
+  const watching = !runtimeUpdate && !running && desktop?.viewable === true;
   const state = desktop?.state;
-  const preparing = state === 'preparing' || state === 'stopping';
+  const preparing = state === 'preparing' || state === 'stopping' || state === 'starting';
   const status =
     busy ||
     (preparing
       ? desktop?.reason || 'Preparing workspace…'
       : running
-        ? 'Running · Metal'
+        ? 'Running'
         : state === 'not_installed'
           ? 'Not installed'
           : state === 'workspace_stopped'
             ? 'Workspace stopped'
-            : state === 'stopped'
-              ? 'Stopped'
-              : desktop || error
-                ? 'Unavailable'
-                : 'Checking desktop…');
+            : desktop || error
+              ? 'Unavailable'
+              : 'Checking desktop…');
   const emptyTitle =
     busy ||
     (state === 'preparing'
@@ -232,17 +221,12 @@ function WorkspaceDesktop({
         ? 'Stopping workspace'
         : state === 'not_installed'
           ? 'Add a desktop to this workspace'
-          : state === 'stopped'
-            ? 'Desktop is stopped'
-            : status);
+          : status);
   const emptyDescription = busy
     ? null
     : state === 'not_installed'
-      ? 'Install an XFCE desktop and terminal, or choose Weston in workspace settings. The desktop starts only when needed.'
-      : state === 'stopped'
-        ? 'Open graphical applications alongside your terminal and files. Sessions attached to this workspace share the same desktop.'
-        : desktop?.reason ||
-          (error ? 'Use Refresh to check the workspace again.' : null);
+      ? 'Install the default desktop, or choose another desktop in workspace settings. It runs with the workspace, shared by every session attached to it.'
+      : desktop?.reason || (error ? 'Use Refresh to check the workspace again.' : null);
   return (
     <section className="workspace-desktop">
       <DesktopPaneControls>
@@ -269,15 +253,6 @@ function WorkspaceDesktop({
               <Clipboard size={13} />
               <span>Clipboard {clipboardEnabled ? 'on' : 'off'}</span>
             </button>
-            <button
-              className={actionClass}
-              disabled={!!busy}
-              onClick={() => setConfirmStop(true)}
-              title="Stop desktop applications"
-            >
-              <Square size={13} className="workspace-desktop-stop-icon" />
-              <span>Stop desktop</span>
-            </button>
           </>
         )}
         <button
@@ -292,7 +267,7 @@ function WorkspaceDesktop({
         </button>
       </DesktopPaneControls>
       {running && showWallpapers && <WallpaperChooser
-        endpoint={`${prefix}/runtime/desktop/wallpaper?${query}`}
+        endpoint={`${desktopPath}/wallpaper`}
         onClose={() => setShowWallpapers(false)} />}
       {error && running && (
         <div className="workspace-desktop-notice" role="alert">
@@ -302,20 +277,12 @@ function WorkspaceDesktop({
       {clipboardEnabled && clipboardError && (
         <div className="workspace-desktop-notice" role="alert">{clipboardError}</div>
       )}
-      {confirmStop && (
-        <div className="workspace-desktop-notice">
-          Stop desktop? Graphical apps will close for all sessions using{' '}
-          {workspace.name}.<button onClick={stop}>Stop desktop</button>
-          <button onClick={() => setConfirmStop(false)}>Cancel</button>
-        </div>
-      )}
       <div className="workspace-desktop-content">
-        {running && desktop.ws_url ? (
+        {running || watching ? (
           <DesktopView
-            key={desktop.geometry}
-            wsUrl={desktop.ws_url}
-            clipboardUrl={`${prefix}/runtime/desktop/clipboard?${query}`}
-            clipboardEnabled={clipboardEnabled}
+            viewerPath={`${desktopPath}/viewer`}
+            clipboardUrl={`${desktopPath}/clipboard`}
+            clipboardEnabled={clipboardEnabled && running}
             onClipboardError={setClipboardError}
             onDisconnect={() => void refresh()}
           />
@@ -353,30 +320,6 @@ function WorkspaceDesktop({
                     ? 'Retry workspace setup'
                     : 'Start workspace'}
                 </button>
-              ) : state === 'stopped' ? (
-                <>
-                  <label className="workspace-desktop-resolution">
-                    Resolution
-                    <select
-                      aria-label="Desktop resolution"
-                      value={geometry}
-                      onChange={(event) => setGeometry(event.target.value)}
-                    >
-                      {desktopResolutions.map((value) => (
-                        <option key={value} value={value}>
-                          {value.replace('x', ' × ')}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <button
-                    className="workspace-desktop-primary"
-                    onClick={() => void start()}
-                  >
-                    <Play size={15} />
-                    Start desktop
-                  </button>
-                </>
               ) : null)}
           </div>
         )}
@@ -384,7 +327,7 @@ function WorkspaceDesktop({
       <footer className="workspace-desktop-footer">
         {running
           ? 'Shared by sessions attached to this workspace. Closing this tab keeps applications running.'
-          : 'Stopping the desktop leaves your workspace, terminal, and files available.'}
+          : 'The desktop starts and stops with its workspace.'}
       </footer>
     </section>
   );

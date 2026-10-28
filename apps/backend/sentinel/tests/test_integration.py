@@ -125,9 +125,7 @@ def test_full_integration_happy_path():
         assert "runtime" in module_names
 
         live_view = client.get(
-            "/api/v1/instances/main/runtime/live-view",
-            headers=headers,
-            params={"session_id": session_id},
+            f"/api/v1/instances/main/sessions/{session_id}/workspace/desktop", headers=headers
         )
         assert live_view.status_code == 200
         assert "enabled" in live_view.json()

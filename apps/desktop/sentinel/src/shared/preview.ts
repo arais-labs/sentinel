@@ -3,8 +3,8 @@ export function previewTargetPath(href: string): string | null {
   if (!href.startsWith('/') && !href.startsWith('sentinel://app/')) return null;
   const url = new URL(href, 'sentinel://app');
   if (url.protocol !== 'sentinel:' || url.host !== 'app') return null;
-  const match = url.pathname.match(/^\/api\/v1\/instances\/([a-zA-Z0-9_-]+)\/sessions\/([a-fA-F0-9-]{36})\/runtime\/forwards\/(pf-[a-f0-9]+)\/?$/);
-  return match ? `/api/v1/instances/${match[1]}/sessions/${match[2]}/runtime/forward-target/${match[3]}` : null;
+  const match = url.pathname.match(/^\/api\/v1\/instances\/([a-zA-Z0-9_-]+)\/sessions\/([a-fA-F0-9-]{36})\/workspace\/forwards\/(pf-[a-f0-9]+)\/?$/);
+  return match ? `/api/v1/instances/${match[1]}/sessions/${match[2]}/workspace/forward-target/${match[3]}` : null;
 }
 
 export function previewOrigin(value: unknown): string {

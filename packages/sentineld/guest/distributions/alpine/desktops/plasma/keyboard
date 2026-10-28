@@ -1,0 +1,10 @@
+#!/bin/sh
+# Alpine's Plasma: the layouts in kxkbrc, which KWin reloads on the change notification (Plasma 6.6,
+# --notify, as System Settings writes) or the org.kde.keyboard reloadConfig signal (Plasma 6.3).
+# Run by the agent as the desktop user with XKB_LAYOUT, XKB_VARIANT, XKB_MODEL and XKB_OPTIONS.
+set -eu
+for setting in "LayoutList=$XKB_LAYOUT" "VariantList=$XKB_VARIANT" "Model=$XKB_MODEL" "Options=$XKB_OPTIONS" \
+	ResetOldOptions=true Use=true; do
+	kwriteconfig6 --notify --file kxkbrc --group Layout --key "${setting%%=*}" "${setting#*=}"
+done
+dbus-send --session --type=signal /Layouts org.kde.keyboard.reloadConfig

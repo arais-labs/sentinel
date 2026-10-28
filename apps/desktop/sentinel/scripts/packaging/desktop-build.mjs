@@ -10,7 +10,7 @@ const __filename = fileURLToPath(import.meta.url);
 const scriptDir = path.dirname(__filename);
 const desktopDir = path.resolve(scriptDir, '../..');
 const repoRoot = path.resolve(desktopDir, '../../..');
-const lockPath = path.join(desktopDir, 'runtime.lock.json');
+const lockPath = path.join(desktopDir, 'bundled-tools.lock.json');
 const packageJsonPath = path.join(desktopDir, 'package.json');
 const buildRoot = path.join(desktopDir, 'build');
 const distRoot = path.join(desktopDir, 'dist');
@@ -209,7 +209,7 @@ async function readLock(target) {
   const lock = JSON.parse(await readFile(lockPath, 'utf8'));
   const config = lock?.platforms?.[target];
   if (lock?.version !== 1 || !config) {
-    throw new Error(`No runtime lock entry for target '${target}' in ${path.relative(repoRoot, lockPath)}`);
+    throw new Error(`No bundled-tools lock entry for target '${target}' in ${path.relative(repoRoot, lockPath)}`);
   }
   return { lock, config };
 }

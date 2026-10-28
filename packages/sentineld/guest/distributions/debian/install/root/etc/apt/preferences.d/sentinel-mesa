@@ -1,0 +1,7 @@
+# Mesa from backports. The GPU is Vulkan only (Venus) and OpenGL runs on it through Zink; before
+# Mesa 25.2, Zink refuses to import a dma-buf without a DRM modifier on Venus ("driver can't handle
+# INVALID<->LINEAR"), so KWin's output test buffer fails and Plasma has no output (a black screen,
+# no X11 for its clients) and Xfce's X server shows black for a minute. Trixie has Mesa 25.0.
+Package: src:mesa
+Pin: release n=trixie-backports
+Pin-Priority: 500

@@ -11,8 +11,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.services.runtime.local_transport import LocalTransport
-from app.services.runtime.terminal_view import (
+from app.services.workspaces.transport.local import LocalTransport
+from app.services.workspaces.terminals.view import (
     PromptMarkFilter,
     serve_terminal,
     unescape_output,
@@ -105,7 +105,7 @@ async def test_live_panes_history_and_reconnect(monkeypatch):
             return result.stdout
 
         monkeypatch.setattr(
-            "app.services.runtime.terminal_view.tmux_host_socket_path", lambda *a, **kw: socket
+            "app.services.workspaces.terminals.view.tmux_host_socket_path", lambda *a, **kw: socket
         )
         manager = SimpleNamespace(ssh=transport, _tmux_command=command, workspace_location=None)
         task = None

@@ -1,0 +1,219 @@
+{
+  "name": "Windows 11",
+  "detail": "Windows 11 Pro on Arm, installed from Microsoft on first start",
+  "features": ["shell", "terminal", "files"],
+  "guide": "Workspace OS: Windows 11 on Arm. Shell: MSYS2's Bash with GNU tools (x64 programs under Windows' emulation); Windows programs (cmd.exe, powershell.exe) run from it, and drive C: is /c. Commands run as SYSTEM, apart from the signed-in user's desktop. The workspace directory is in this VM: the user's project folder is not shared with Windows workspaces, so files there are not on the user's Mac. Install missing tools with pacman (MSYS2 packages).",
+  "env": {
+    "PATH": "C:\\msys64\\usr\\local\\bin;C:\\msys64\\usr\\bin;C:\\msys64\\clangarm64\\bin;%PATH%",
+    "HOME": "/root",
+    "TMPDIR": "/tmp",
+    "TERM": "xterm-256color",
+    "MSYS": "noglob"
+  },
+  "userland": {
+    "run": ["cmd", "/c", "%SENTINEL_SHARE%\\distribution\\userland.cmd"],
+    "key": ["windows/msys2/version", "distribution/userland.cmd", "distribution/tmux"]
+  },
+  "poweroff": ["C:\\Windows\\System32\\shutdown.exe", "/s", "/f", "/t", "0"],
+  "minimum": {
+    "memory_gib": 8,
+    "disk_gib": 32
+  },
+  "share": "disk",
+  "shutdown_s": 120,
+  "grow": [
+    "powershell",
+    "-NoProfile",
+    "-Command",
+    "$ErrorActionPreference = 'Stop'; $c = Get-Partition -DriveLetter C; $max = ($c | Get-PartitionSupportedSize).SizeMax; if ($max - $c.Size -ge 1MB) { $c | Resize-Partition -Size $max }"
+  ],
+  "desktops": {
+    "windows": {}
+  },
+  "machine": {
+    "transport": "pci",
+    "gpu": "3d"
+  },
+  "install": {
+    "sources": {
+      "windows": {
+        "url": "http://dl.delivery.mp.microsoft.com/filestreamingservice/files/37acc189-7f4f-4e07-976c-1cf0a099ec79/26100.4349.250607-1500.ge_release_svc_refresh_CLIENTCONSUMER_RET_A64FRE_en-us.esd",
+        "sha256": "c01b6f474c772093159b63fb3a168d2666556b223d288f67efc37c4fbaeddd25"
+      },
+      "drivers": {
+        "url": "https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/archive-virtio/virtio-win-0.1.302-1/virtio-win-0.1.302.iso",
+        "sha256": "303f7ae40dad495d6ae474fdc571df58958a4dbc5c37a522d80f9a203867949d"
+      },
+      "gpu": {
+        "url": "https://github.com/osy/kvm-guest-drivers-windows/releases/download/v0.3/viogpu3d-arm64x-signed.zip",
+        "sha256": "af976d1fc6cbd1c8462ba06a45f860ae1638d9a6a007e2bfe95bb9b235251c5d"
+      }
+    },
+    "disk": {
+      "gib": 32,
+      "partitions": [
+        {
+          "name": "esp",
+          "type": "esp",
+          "mib": 260
+        },
+        {
+          "name": "msr",
+          "type": "msr",
+          "mib": 16
+        },
+        {
+          "name": "windows",
+          "type": "basic"
+        }
+      ]
+    },
+    "steps": [
+      {
+        "extract": "{drivers}",
+        "include": [
+          "viostor/2k25/ARM64/*",
+          "NetKVM/2k25/ARM64/*",
+          "viosock/2k25/ARM64/*",
+          "vioinput/2k25/ARM64/*",
+          "viorng/2k25/ARM64/*"
+        ],
+        "to": "{work}/drivers"
+      },
+      {
+        "extract": "{gpu}",
+        "include": [
+          "drivers/viogpu3d/*"
+        ],
+        "to": "{work}/drivers"
+      },
+      {
+        "copy": "{windows}",
+        "to": "{work}/windows.esd"
+      },
+      {
+        "run": [
+          "wimlib-imagex",
+          "extract",
+          "{work}/windows.esd",
+          "6",
+          "/Windows/System32/config/SYSTEM",
+          "/Windows/System32/config/BCD-Template",
+          "/Windows/Boot/EFI",
+          "--dest-dir={work}/image",
+          "--no-acls"
+        ]
+      },
+      {
+        "run": [
+          "hive",
+          "{work}/image/SYSTEM",
+          "{install}/viostor.json"
+        ]
+      },
+      {
+        "run": [
+          "hive",
+          "{work}/image/BCD-Template",
+          "{install}/bcd.json",
+          "esp={esp.guid}",
+          "windows={windows.guid}",
+          "disk={disk.guid}"
+        ]
+      },
+      {
+        "copy": "{work}/image/EFI",
+        "to": "{work}/esp/EFI/Microsoft/Boot"
+      },
+      {
+        "copy": "{work}/image/EFI/bootmgfw.efi",
+        "to": "{work}/esp/EFI/Boot/bootaa64.efi"
+      },
+      {
+        "copy": "{work}/image/BCD-Template",
+        "to": "{work}/esp/EFI/Microsoft/Boot/BCD"
+      },
+      {
+        "fat32": "esp",
+        "label": "SYSTEM",
+        "from": "{work}/esp"
+      },
+      {
+        "copy": "{install}/overlay",
+        "to": "{work}/overlay"
+      },
+      {
+        "copy": "{work}/drivers",
+        "to": "{work}/overlay/Windows/Drivers/VirtIO"
+      },
+      {
+        "copy": "{work}/drivers/viostor/2k25/ARM64/viostor.inf",
+        "to": "{work}/overlay/Windows/System32/DriverStore/FileRepository/viostor.inf_arm64_4f8ce8109004fe96/viostor.inf"
+      },
+      {
+        "copy": "{work}/drivers/viostor/2k25/ARM64/viostor.sys",
+        "to": "{work}/overlay/Windows/System32/DriverStore/FileRepository/viostor.inf_arm64_4f8ce8109004fe96/viostor.sys"
+      },
+      {
+        "copy": "{work}/drivers/viostor/2k25/ARM64/viostor.cat",
+        "to": "{work}/overlay/Windows/System32/DriverStore/FileRepository/viostor.inf_arm64_4f8ce8109004fe96/viostor.cat"
+      },
+      {
+        "copy": "{work}/drivers/viostor/2k25/ARM64/viostor.inf",
+        "to": "{work}/overlay/Windows/INF/oem0.inf"
+      },
+      {
+        "copy": "{work}/image/SYSTEM",
+        "to": "{work}/overlay/Windows/System32/config/SYSTEM"
+      },
+      {
+        "run": [
+          "wimlib-imagex",
+          "update",
+          "{work}/windows.esd",
+          "6",
+          "--command=add '{work}/overlay' /"
+        ]
+      },
+      {
+        "run": [
+          "mkntfs",
+          "-F",
+          "-f",
+          "-Q",
+          "-L",
+          "Windows",
+          "-p",
+          "{windows.start}",
+          "-H",
+          "255",
+          "-S",
+          "63",
+          "{disk}",
+          "{windows.sectors}"
+        ],
+        "env": {
+          "NTFS_OFFSET": "{windows.offset}",
+          "NTFS_SIZE": "{windows.size}"
+        }
+      },
+      {
+        "run": [
+          "wimlib-imagex",
+          "apply",
+          "{work}/windows.esd",
+          "6",
+          "{disk}"
+        ],
+        "env": {
+          "NTFS_OFFSET": "{windows.offset}",
+          "NTFS_SIZE": "{windows.size}"
+        }
+      }
+    ],
+    "cpus": 4,
+    "memory_gib": 8,
+    "network": false,
+    "timeout_min": 40
+  }
+}

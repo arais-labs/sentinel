@@ -57,7 +57,7 @@ interface BackupImportResponse {
   by_table: Record<string, Record<string, number>>;
 }
 
-const runtimeInputClass = 'h-10 rounded-lg border border-(--border-subtle) bg-(--surface-1) px-3 text-xs font-medium text-(--text-primary) placeholder:text-(--text-muted) outline-hidden transition-colors focus:border-(--accent-solid)';
+const settingsInputClass = 'h-10 rounded-lg border border-(--border-subtle) bg-(--surface-1) px-3 text-xs font-medium text-(--text-primary) placeholder:text-(--text-muted) outline-hidden transition-colors focus:border-(--accent-solid)';
 
 // ── OAuth help content ──────────────────────────────────────────────────────
 
@@ -621,7 +621,7 @@ export function SettingsPage({ initialSection = 'providers' }: { initialSection?
                   value={backupPassphrase}
                   onChange={(e) => setBackupPassphrase(e.target.value)}
                   placeholder="Encryption passphrase"
-                  className={`${runtimeInputClass} w-full pl-9`}
+                  className={`${settingsInputClass} w-full pl-9`}
                 />
               </div>
 
@@ -665,7 +665,7 @@ export function SettingsPage({ initialSection = 'providers' }: { initialSection?
                   value={restorePassphrase}
                   onChange={(e) => setRestorePassphrase(e.target.value)}
                   placeholder="Backup passphrase"
-                  className={`${runtimeInputClass} w-full pl-9`}
+                  className={`${settingsInputClass} w-full pl-9`}
                 />
               </div>
 

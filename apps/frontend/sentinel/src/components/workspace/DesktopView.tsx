@@ -1,13 +1,14 @@
 import { RetainedSessionContext } from '../../lib/workspace-context-values';
 import { Loader2, RefreshCw } from 'lucide-react';
 import { useContext, useEffect, useRef, useState } from 'react';
-import { DesktopSocket } from '../../lib/desktop-socket';
+import { DesktopTransport, type DesktopViewer } from '../../lib/desktop-transport';
+import { api } from '../../lib/api';
 import { DesktopVideo } from '../../lib/desktop-video';
 import { attachDesktopInput } from '../../lib/desktop-video-input';
 import { shareDesktopClipboard } from '../../lib/desktop-clipboard';
 
-export function DesktopView({ wsUrl, clipboardUrl, clipboardEnabled = false, onClipboardError, onDisconnect }: {
-  wsUrl: string;
+export function DesktopView({ viewerPath, clipboardUrl, clipboardEnabled = false, onClipboardError, onDisconnect }: {
+  viewerPath: string;  // POST: a WebTransport ticket for this desktop
   clipboardUrl: string;
   clipboardEnabled?: boolean;
   onClipboardError?: (message: string) => void;
@@ -32,7 +33,7 @@ export function DesktopView({ wsUrl, clipboardUrl, clipboardEnabled = false, onC
     let detach: (() => void) | undefined;
     let timer: ReturnType<typeof setTimeout>;
     let disposed = false;
-    let socket: DesktopSocket | WebSocket | undefined;
+    let socket: DesktopTransport | undefined;
     const lost = () => {
       if (disposed) return;
       clearTimeout(timer);
@@ -43,7 +44,7 @@ export function DesktopView({ wsUrl, clipboardUrl, clipboardEnabled = false, onC
       options.current.onDisconnect();
     };
     try {
-      socket = window.sentinelDesktop ? new DesktopSocket(wsUrl) : new WebSocket(wsUrl);
+      socket = new DesktopTransport(() => api.post<DesktopViewer>(viewerPath));
       const video = new DesktopVideo(canvas.current, socket, () => {
         clearTimeout(timer);
         if (!disposed) setState('connected');
@@ -63,10 +64,10 @@ export function DesktopView({ wsUrl, clipboardUrl, clipboardEnabled = false, onC
       detach?.();
       player.current?.close(); player.current = null;
     };
-  }, [wsUrl, clipboardUrl, retry]);
+  }, [viewerPath, clipboardUrl, retry]);
   return <div className="relative h-full min-h-0 w-full bg-(--app-bg) dark:bg-[#0c0c0e]">
     <canvas ref={canvas} tabIndex={0} aria-label="Workspace desktop"
-      className={`block h-full w-full object-contain outline-none${state === 'connected' && visible ? ' data-[guest-pointer]:cursor-none' : ''}`} />
+      className={`block h-full w-full object-contain outline-none${state === 'connected' && visible ? ' data-[guest-pointer]:[cursor:var(--guest-cursor,none)]' : ''}`} />
     {state !== 'connected' && <div className="absolute inset-0 flex items-center justify-center bg-(--app-bg)/90">
       <div className="flex items-center gap-3 text-sm text-(--text-secondary)" role="status">
         {state === 'connecting' ? <><Loader2 size={16} className="animate-spin" />Connecting to desktop…</> :

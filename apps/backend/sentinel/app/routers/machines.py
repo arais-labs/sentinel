@@ -10,14 +10,14 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-import app.services.runtime.development_tools as development_tools_module
-import app.services.runtime.directories as directories_module
-import app.services.runtime.machines as machines_module
-import app.services.runtime.guest_commands as guest_commands_module
-import app.services.runtime.remote_mac as remote_mac_module
-import app.services.runtime.remote_verify as remote_verify_module
-import app.services.runtime.storage as storage_module
-import app.services.runtime.workspace_containers as workspace_containers_module
+import app.services.workspaces.machines.environment as environment_module
+import app.services.workspaces.machines.folders as directories_module
+import app.services.workspaces.machines.registry as machines_module
+import app.services.workspaces.guest_commands as guest_commands_module
+import app.services.workspaces.machines.remote.worker as remote_mac_module
+import app.services.workspaces.machines.remote.verify as remote_verify_module
+import app.services.workspaces.machines.transport as storage_module
+from app.services.workspaces import lifecycle
 from app.dependencies import get_manager_db
 from app.schemas.machines import (
     MachineCapabilitiesResponse,
@@ -29,15 +29,14 @@ from app.schemas.machines import (
     MachineTestResponse,
     MachineUpdateRequest,
 )
-from app.services.runtime.directories import list_local_directories
-from app.services.runtime.distributions import DISTRIBUTIONS
-from app.services.runtime.providers import (
+from app.services.workspaces.machines.folders import list_local_directories
+from app.services.workspaces.machines.providers import (
     MachineJobNotFound,
     MachineProviderError,
     machine_provider_service,
 )
-from app.services.runtime.ssh_runtime import (
-    close_runtime_terminal_manager,
+from app.services.workspaces.managers import (
+    close_session_managers,
 )
 
 router = APIRouter()
@@ -115,7 +114,9 @@ async def inspect_remote_runtime(machine_id: UUID, db: AsyncSession = Depends(ge
             "identity_verified": bool(
                 machine.host_key and machine.host_key == identity["host_key"]
             ),
-            "path": installation.get("path") or machine.runtime_root or "~/.sentinel/runtime",
+            "path": installation.get("path")
+            or machine.runtime_root
+            or "~/" + remote_mac_module.RUNTIME_DIRECTORY,
             "host_key_changed": bool(machine.host_key and machine.host_key != identity["host_key"]),
         }
     except machines_module.MachineNotFound as exc:
@@ -201,7 +202,7 @@ async def install_remote_runtime(
                     db, machine_id, running
                 ),
             }
-        assets = await workspace_containers_module.local_request("deployment")
+        assets = await lifecycle.local_request("deployment")
         try:
             config = await remote_mac_module.install(
                 machine,
@@ -255,7 +256,7 @@ async def development_tool_options(machine_id: UUID, db: AsyncSession = Depends(
         machine = machines_module.resolve_machine_secret(
             await machines_module.get_machine(db, machine_id)
         )
-        os_name = await development_tools_module.machine_os(machine)
+        os_name = await environment_module.machine_os(machine)
     except machines_module.MachineNotFound as exc:
         raise HTTPException(404, str(exc)) from exc
     except (machines_module.MachineErrorBase, RuntimeError, OSError, TimeoutError) as exc:
@@ -264,16 +265,28 @@ async def development_tool_options(machine_id: UUID, db: AsyncSession = Depends(
             "Could not detect this machine's operating system. Check its connection.",
         ) from exc
 
+    available = os_name == "darwin" and (
+        (machine.provider == "local" and lifecycle.available())
+        or (machine.provider == "ssh" and bool(machine.runtime_root))
+    )
+    catalog = {}
+    if available:
+        # sentineld's catalog is the source of truth for what a workspace can be.
+        try:
+            remote = (
+                await remote_mac_module.get_runtime(machine.id)
+                if machine.provider == "ssh"
+                else None
+            )
+            catalog = await lifecycle.catalog(remote, refresh=True)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(
+                503, f"Could not read this machine's workspace catalog: {exc}"
+            ) from exc
     return {
         "os": os_name,
-        "container_available": os_name == "darwin"
-        and (
-            (machine.provider == "local" and workspace_containers_module.available())
-            or (machine.provider == "ssh" and bool(machine.runtime_root))
-        ),
-        "distributions": DISTRIBUTIONS if os_name == "darwin" else [],
-        "stacks": development_tools_module.STACKS if os_name == "darwin" else [],
-        "tools": development_tools_module.TOOLS if os_name == "darwin" else [],
+        "workspaces_available": available,
+        **{key: catalog.get(key, []) for key in ("distributions", "desktops", "tools", "stacks")},
     }
 
 
@@ -471,7 +484,7 @@ async def update_machine_row(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except machines_module.MachineNotFound as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
-    await close_runtime_terminal_manager()
+    await close_session_managers()
     return await machine_provider_service.machine_response(runtime)
 
 
@@ -492,7 +505,7 @@ async def delete_machine_row(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except MachineProviderError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    await close_runtime_terminal_manager()
+    await close_session_managers()
 
 
 @router.post("/machines/{machine_id}/{action}", response_model=MachineLifecycleResponse)

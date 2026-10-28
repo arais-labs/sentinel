@@ -1,6 +1,16 @@
-export type WorkspaceDesktop = "none" | "xfce" | "weston" | "lxqt" | "gnome" | "plasma";
-export type WorkspaceBrowser = 'chromium' | 'firefox' | 'chrome';
-export interface Workspace { browser?: WorkspaceBrowser; desktop?: WorkspaceDesktop; revision?: number | null; distribution?: "alpine" | "ubuntu" | "debian"; id: string; name: string; machine_id: string; directory: string; development_tools?: string[]; recovery_available?: boolean; recovery_backup?: string | null; container_state?: 'recovering' | 'checking' | 'preparing' | 'running' | 'stopped' | 'stopping' | 'failed' | 'unavailable'; container_error?: string | null; container_message?: string | null; resources?: { cpus: number; memory_gib: number; disk_gib: number } | null; }
+export interface Workspace { distribution: string; desktop: string; browser: string; revision?: number | null; id: string; name: string; machine_id: string; directory: string; development_tools?: string[]; recovery_available?: boolean; recovery_backup?: string | null; state?: 'recovering' | 'checking' | 'preparing' | 'running' | 'stopped' | 'stopping' | 'failed' | 'unavailable'; error?: string | null; message?: string | null; resources?: { cpus: number; memory_gib: number; disk_gib: number } | null; }
+/** A machine's workspace catalog: what each distribution can run. `desktop: "none"` is always allowed. */
+export interface WorkspaceCatalog {
+  os: string;
+  workspaces_available: boolean;
+  distributions: { id: string; name: string; detail: string | null; features: string[]; minimum: WorkspaceMinimum }[];
+  desktops: { id: string; name: string; distributions: string[] }[];
+  tools: WorkspaceTool[];
+  stacks: { id: string; name: string; description: string; tools: string[] }[];
+}
+/** The smallest allocation sentineld accepts for a distribution. */
+export interface WorkspaceMinimum { cpus?: number; memory_gib?: number; disk_gib?: number }
+export interface WorkspaceTool { id: string; name: string; detail: string; category: string; distributions: string[]; requires?: string[] }
 
 export interface Session {
   workspace_id?: string | null;
@@ -23,15 +33,15 @@ export interface SessionListResponse {
   total: number;
 }
 
-export interface SessionRuntimeAction {
+export interface SessionWorkspaceAction {
   timestamp: string | null;
   action: string;
   details: Record<string, unknown>;
 }
 
-export interface SessionRuntimeStatus {
+export interface SessionWorkspaceStatus {
   session_id: string;
-  runtime_exists: boolean;
+  session_root_exists: boolean;
   workspace_exists: boolean;
   active: boolean;
   active_pid: number | null;
@@ -39,10 +49,10 @@ export interface SessionRuntimeStatus {
   created_at: string | null;
   last_used_at: string | null;
   last_active_at: string | null;
-  actions: SessionRuntimeAction[];
+  actions: SessionWorkspaceAction[];
 }
 
-export interface SessionRuntimeFileEntry {
+export interface SessionWorkspaceFileEntry {
   name: string;
   path: string;
   kind: 'file' | 'directory';
@@ -53,19 +63,19 @@ export interface SessionRuntimeFileEntry {
   git_detached_head?: boolean;
 }
 
-export interface SessionRuntimeFilesResponse {
+export interface SessionWorkspaceFilesResponse {
   session_id: string;
-  runtime_exists: boolean;
+  session_root_exists: boolean;
   workspace_exists: boolean;
   path: string;
   parent_path: string | null;
-  entries: SessionRuntimeFileEntry[];
+  entries: SessionWorkspaceFileEntry[];
   truncated: boolean;
 }
 
-export interface SessionRuntimeFilePreviewResponse {
+export interface SessionWorkspaceFilePreviewResponse {
   session_id: string;
-  runtime_exists: boolean;
+  session_root_exists: boolean;
   workspace_exists: boolean;
   path: string;
   name: string;
@@ -76,24 +86,24 @@ export interface SessionRuntimeFilePreviewResponse {
   max_bytes: number;
 }
 
-export interface SessionRuntimeGitRoot {
+export interface SessionWorkspaceGitRoot {
   refs?: string[];
   root_path: string;
   branch: string | null;
   detached_head: boolean;
 }
 
-export interface SessionRuntimeGitRootsResponse {
+export interface SessionWorkspaceGitRootsResponse {
   session_id: string;
-  runtime_exists: boolean;
+  session_root_exists: boolean;
   workspace_exists: boolean;
   path: string;
-  roots: SessionRuntimeGitRoot[];
+  roots: SessionWorkspaceGitRoot[];
 }
 
-export interface SessionRuntimeGitDiffResponse {
+export interface SessionWorkspaceGitDiffResponse {
   session_id: string;
-  runtime_exists: boolean;
+  session_root_exists: boolean;
   workspace_exists: boolean;
   path: string;
   git_root: string;
@@ -107,7 +117,7 @@ export interface SessionRuntimeGitDiffResponse {
   max_bytes: number;
 }
 
-export interface SessionRuntimeGitChangedFile {
+export interface SessionWorkspaceGitChangedFile {
   path: string;
   status: string;
   staged: boolean;
@@ -115,21 +125,16 @@ export interface SessionRuntimeGitChangedFile {
   untracked: boolean;
 }
 
-export interface SessionRuntimeGitChangedFilesResponse {
+export interface SessionWorkspaceGitChangedFilesResponse {
   session_id: string;
-  runtime_exists: boolean;
+  session_root_exists: boolean;
   workspace_exists: boolean;
   path: string;
   git_root: string;
   branch: string | null;
   detached_head: boolean;
-  entries: SessionRuntimeGitChangedFile[];
+  entries: SessionWorkspaceGitChangedFile[];
   truncated: boolean;
-}
-
-export interface SessionRuntimeCleanupResponse {
-  session_id: string;
-  runtime_removed: boolean;
 }
 
 export interface SessionContextUsage {
@@ -385,16 +390,16 @@ export interface ApprovalListResponse {
   total: number;
 }
 
-export interface RuntimeLiveView {
+export interface WorkspaceDesktopStatus {
   state: string;
   enabled: boolean;
   available: boolean;
   mode?: string;
-  url: string | null;
-  ws_url: string | null;
   display: string | null;
   geometry: string | null;
   reason: string | null;
+  /** The machine's screen can be watched while it starts (firmware, boot, setup), before `running`. */
+  viewable?: boolean;
   provider: {
     id: string;
     label: string;
@@ -408,7 +413,7 @@ export interface RuntimeLiveView {
   };
 }
 
-export interface RuntimeActionResponse {
+export interface WorkspaceActionResponse {
   ok: boolean;
   action: string;
   session_id: string;
@@ -416,7 +421,7 @@ export interface RuntimeActionResponse {
   result: Record<string, unknown>;
 }
 
-export interface RuntimeStatusCheck {
+export interface WorkspaceStatusCheck {
   id: string;
   label: string;
   status: 'pass' | 'fail' | 'warn' | 'skip';
@@ -426,20 +431,20 @@ export interface RuntimeStatusCheck {
   duration_ms: number | null;
 }
 
-export interface RuntimeStatusResponse {
+export interface WorkspaceStatusResponse {
   status: 'ready' | 'degraded' | 'not_configured' | 'unreachable' | 'failed';
   summary: string;
   checked_at: string;
   os: 'linux' | 'darwin' | 'unsupported' | 'unknown';
-  sandbox: 'bubblewrap' | 'seatbelt' | 'unavailable' | 'unknown';
-  runtime: {
+  sandbox: 'vm' | 'unavailable' | 'unknown';
+  machine: {
     name?: string | null;
     provider?: MachineProvider | null;
     host: string | null;
     port: number | null;
     username: string | null;
   };
-  checks: RuntimeStatusCheck[];
+  checks: WorkspaceStatusCheck[];
   capabilities: Record<string, string>;
 }
 

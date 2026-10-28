@@ -1,0 +1,63 @@
+# Windows guests' POSIX userland (DESIGN.md §9): MSYS2's base system, then what Sentinel's shell
+# commands and agents need beyond it, as Linux workspaces' base tool has it (tmux, Python, Git, jq,
+# unzip; ripgrep and GitHub's CLI as native ARM64 builds), with their dependencies, each pinned by
+# SHA-256. make share puts them in share/windows/msys2; distributions/windows-11/userland.cmd installs
+# them with pacman. MSYS2's own programs are x86_64: Windows on Arm runs them under its x64 emulation.
+# <sha256>  <url>
+ea2f31a0b6ade63914ce441ffb022f0f6aa96982bfefa2326460a26d5fb01322  https://repo.msys2.org/distrib/x86_64/msys2-base-x86_64-20260927.tar.xz
+ce967e0bbeb4cf396a42e6cd7516b6bbcef23237bf0a55099adbdfe1e9b3fce3  https://repo.msys2.org/msys/x86_64/libevent-2.1.13-1-x86_64.pkg.tar.zst
+d8294c959d340ded4c5edcfd597a1ab30e345633031f8ed07a6cfe3600113158  https://repo.msys2.org/msys/x86_64/tmux-3.7.c-1-x86_64.pkg.tar.zst
+01ae3016641af4d499329c68e00a34664b7c7d9095dc6a859317441507132d41  https://repo.msys2.org/msys/x86_64/mpdecimal-4.0.1-1-x86_64.pkg.tar.zst
+b7ddaca6e8b63774cdb1f5ac2720963cd76f8f62ca7e2667b1b0f008ed7ecba2  https://repo.msys2.org/msys/x86_64/binutils-2.47-1-x86_64.pkg.tar.zst
+5672cd7d84b1415adce1cfc1555e2fc12e489c8cb0c0f787cf2ed6f1ecdf73f8  https://repo.msys2.org/msys/x86_64/python-3.12.15-1-x86_64.pkg.tar.zst
+27a35786f3aab14e625c02df7bcd8a9dda0da782ce4f0549a427a21316b4d179  https://repo.msys2.org/msys/x86_64/libdb-6.2.32-6-x86_64.pkg.tar.zst
+aada8ba7dfe41fdcac28d3706c0dc7c621b7667035a5e629cb5f3af7fb3f7de0  https://repo.msys2.org/msys/x86_64/libedit-20240808_3.1-1-x86_64.pkg.tar.zst
+badbf9d464fe8498668451b8d53cf84c7ec3bd0e7bcc0ea158bf6339a30a2416  https://repo.msys2.org/msys/x86_64/heimdal-libs-7.8.0-7-x86_64.pkg.tar.zst
+c1e9dc49b6eaffd145abd73c8b516acca89eac64fa90031e116ac93c3b493a1e  https://repo.msys2.org/msys/x86_64/heimdal-7.8.0-7-x86_64.pkg.tar.zst
+a661826edc2d452f8d74bae2cd5974dfbcd84e23bfbfa7ea3db38ee010d7b004  https://repo.msys2.org/msys/x86_64/libcbor-0.14.0-2-x86_64.pkg.tar.zst
+30794db36fa21af67c7126a221e2cb95b177be08845bb38720a8c9f28c39cdbb  https://repo.msys2.org/msys/x86_64/libfido2-1.17.0-1-x86_64.pkg.tar.zst
+40694d9506e733f55262c4123cf6107dd28d27457a2b320f2866cdbde454c448  https://repo.msys2.org/msys/x86_64/openssh-10.6p1-1-x86_64.pkg.tar.zst
+41bc94acad3b53eaa92227ec34412305f648848ffbc963bcad88274517e13e8d  https://repo.msys2.org/msys/x86_64/db-6.2.32-6-x86_64.pkg.tar.zst
+bb4b08b720dd3194db010589812e9c63bec3d29b32545e7cbd07b6443e51c5ed  https://repo.msys2.org/msys/x86_64/libgdbm-1.26-1-x86_64.pkg.tar.zst
+1f8e949be2bbe488c5644132db78ecda288c9945922e7ed2447384734e2adba2  https://repo.msys2.org/msys/x86_64/gdbm-1.26-1-x86_64.pkg.tar.zst
+6a4dbc38cdcc53d16239904b5c87d2277cffc49ed92c6a7796f8bf6b49517d5b  https://repo.msys2.org/msys/x86_64/perl-5.42.3-3-x86_64.pkg.tar.zst
+c5c183196a4803c0b427fc174e446cc530e80833fce7405719bc46a33d3c61fd  https://repo.msys2.org/msys/x86_64/perl-error-0.17030-3-any.pkg.tar.zst
+98cdd396f65df318ca777de7f4166485ad7815c5000399e4aa6843f59e00e55b  https://repo.msys2.org/msys/x86_64/perl-authen-sasl-2.2100-2-any.pkg.tar.zst
+e02957a3468521d6a35fec39327ee9ecf024b00261fb4c496339cb5428decd8f  https://repo.msys2.org/msys/x86_64/perl-encode-locale-1.05-3-any.pkg.tar.zst
+c26c4e9655557e7c9ec8b74c39d32e31ec5640552f5371b221d59bc22bfa520a  https://repo.msys2.org/msys/x86_64/perl-http-date-6.08-2-any.pkg.tar.zst
+15e00cd7923ec76c8127576bb64e0cb159a48ea87efefc35f64493bcd1e8a95e  https://repo.msys2.org/msys/x86_64/perl-file-listing-6.16-2-any.pkg.tar.zst
+cf9adccdaaa6b5b1307365afed083daa126d4230ef812f35ec65eb5f6e472c92  https://repo.msys2.org/msys/x86_64/perl-html-tagset-3.24-2-any.pkg.tar.zst
+39ee27b8a2ff4062e0aa1d3cdf334e59a1a726916daaa0c4bc13d31d1788a49a  https://repo.msys2.org/msys/x86_64/perl-clone-0.51-1-x86_64.pkg.tar.zst
+3d42f5fe05b06fda5cbe94c79f98c9a1f32d0b0361b93839f9244af3676620f0  https://repo.msys2.org/msys/x86_64/perl-io-html-1.004-3-any.pkg.tar.zst
+4afde66f5a53366fbed27779345b3f7fd782feffa00613a5d5482b5d207f6358  https://repo.msys2.org/msys/x86_64/perl-lwp-mediatypes-6.05-2-any.pkg.tar.zst
+80c66674e48c53b56561fe76d39a739a80fd0796644d535a70a3117bba52add2  https://repo.msys2.org/msys/x86_64/perl-uri-5.37-2-any.pkg.tar.zst
+526c89268f0489c37d950fbd8fdbdbb745dbe61ec2d2bd2871c6c8646d01792d  https://repo.msys2.org/msys/x86_64/perl-http-message-7.04-2-any.pkg.tar.zst
+18a6097593b08689f3923bfe948356c645e486929af5fee6e9d661a1285c060c  https://repo.msys2.org/msys/x86_64/perl-html-parser-3.86-2-x86_64.pkg.tar.zst
+902e3d2ac5564536bafd113f42d49df7ecf8c4808c793369ba7bb413a12546d1  https://repo.msys2.org/msys/x86_64/perl-http-cookies-6.12-2-any.pkg.tar.zst
+77d6fd31b6e1a1db66237a97da8a99c7a0eff8297ca1d5b75acfcb38a86251ca  https://repo.msys2.org/msys/x86_64/perl-http-daemon-6.17-2-any.pkg.tar.zst
+70fdf1d4bdbab078765e7200436f614cf995007f2329f487baafc1841e8d66a9  https://repo.msys2.org/msys/x86_64/perl-http-cookiejar-0.014-2-any.pkg.tar.zst
+0cb00eb507d51b5fb9446827acc7d7f0629381f7d7bf8548fa3e0ba64704dd5e  https://repo.msys2.org/msys/x86_64/perl-http-negotiate-6.01-4-any.pkg.tar.zst
+8f45b20264525e3c5788f2b12a1c15ae8a27ef2904030bd598aa7fc9d10fda36  https://repo.msys2.org/msys/x86_64/perl-net-http-6.24-2-any.pkg.tar.zst
+c4b720d8a7e5973d524de6b53d798db49e6f3697252da1ea68a680ca0861c4d5  https://repo.msys2.org/msys/x86_64/perl-www-robotrules-6.03-2-any.pkg.tar.zst
+3d36d2b776c6aa8d4313b3b08eea81ad58002783c5f95c4ad8ca718cd84b9c8c  https://repo.msys2.org/msys/x86_64/perl-try-tiny-0.32-2-any.pkg.tar.zst
+adbc8538af75c6d9d37ec3c05cbda27843ad35c6b9fc6de8de64e016bb4c27b1  https://repo.msys2.org/msys/x86_64/perl-libwww-6.83-3-any.pkg.tar.zst
+96d9418550129e569a69b17682654f71754c92bbe97515f2f255d6aa9ad4d1bc  https://repo.msys2.org/msys/x86_64/perl-convert-binhex-1.125-3-any.pkg.tar.zst
+35664d5b4b6e6c569984f4901d7d57b56869b5a41b9ab35674f938186a50b7e2  https://repo.msys2.org/msys/x86_64/perl-io-stringy-2.113-4-any.pkg.tar.zst
+ddd3cd5bb07f6c1cc2a6315233e48002d904a492901134d6f1f4139d21f31625  https://repo.msys2.org/msys/x86_64/perl-timedate-2.35-2-any.pkg.tar.zst
+53cba8b2bc2042518d83a88d562a9ee0d1ceae3d581ac4896baec0ac25bfc91c  https://repo.msys2.org/msys/x86_64/perl-mailtools-2.22-2-any.pkg.tar.zst
+05d3cb6d53c943ce4481f67a04e7b9272e383577ea84672f2ff390d7dab95766  https://repo.msys2.org/msys/x86_64/perl-mime-tools-5.518-2-any.pkg.tar.zst
+63b534ee973831d01b9c9e64fd8891925e9cf0c8923326b63f3c9d4582fee820  https://repo.msys2.org/msys/x86_64/perl-net-ssleay-1.96-2-x86_64.pkg.tar.zst
+d9d0adc2c9435a50d573869031f893babbceef8ddbc8039efe01a7ee598ac35f  https://repo.msys2.org/msys/x86_64/perl-io-socket-ssl-2.099-2-any.pkg.tar.zst
+d553221db395c227c93643800af42d39049b055f2630e39b1c4cd78a7d3745c1  https://repo.msys2.org/msys/x86_64/perl-net-smtp-ssl-1.04-3-any.pkg.tar.zst
+584029cb544e78f46d7cc2040d22d144bc26657d0584452d2119dc67f1cf747d  https://repo.msys2.org/msys/x86_64/perl-termreadkey-2.38-9-x86_64.pkg.tar.zst
+051fc526cba4a5c732acde867cddec9dbd54653d781be3009546c611bfd82638  https://repo.msys2.org/msys/x86_64/git-2.56.0-1-x86_64.pkg.tar.zst
+989f2b0a616948fe16d85b322f7ca415f66f85fce05b53f5ff85d65d3eb9fd31  https://repo.msys2.org/msys/x86_64/oniguruma-6.9.10-1-x86_64.pkg.tar.zst
+7098e1aaad9e714af62e0db9ffdd835d039a172c5759f879f19e2eb4d4f5b3ba  https://repo.msys2.org/msys/x86_64/jq-1.8.2-1-x86_64.pkg.tar.zst
+c98ebac31ea92a63cf61c6190ed3e8284ccc0c29c43973f1b2c0de2874e5acfe  https://repo.msys2.org/msys/x86_64/unzip-6.0-3-x86_64.pkg.tar.zst
+319e4648b7d576c79ce8a0ed35df6bf169e1c072d62505b5bb6ae852ca5b5315  https://repo.msys2.org/msys/x86_64/winpty-0.4.3-3-x86_64.pkg.tar.zst
+0e684014d7ad49bffe845b33e5bd34944497bbfbed411fe485174b823379d664  https://repo.msys2.org/mingw/clangarm64/mingw-w64-clang-aarch64-bzip2-1.0.8-4-any.pkg.tar.zst
+5c3716e113766072758855f9a2f74f18165dce036e949e8a0e04c2766125fa5a  https://repo.msys2.org/mingw/clangarm64/mingw-w64-clang-aarch64-wineditline-2.208-1-any.pkg.tar.zst
+28c111cc05d923ac56faa33aa5d7618c9dc16ac2d7c9e43a87f875403517894a  https://repo.msys2.org/mingw/clangarm64/mingw-w64-clang-aarch64-zlib-1.3.2-2-any.pkg.tar.zst
+ef4d0222966b68d0c1e2fbc345ad00f1cec73235006ee29983225584d0cb69b8  https://repo.msys2.org/mingw/clangarm64/mingw-w64-clang-aarch64-pcre2-10.49-1-any.pkg.tar.zst
+845b47afd6cb6a4a605f5f2741ed83b92377b36024d71485f07a3e485b610d1c  https://repo.msys2.org/mingw/clangarm64/mingw-w64-clang-aarch64-ripgrep-15.2.0-1-any.pkg.tar.zst
+d7594950f774a4ead3a47337832171348a4ccbded48d5d8c0a4ee7380c562df3  https://repo.msys2.org/mingw/clangarm64/mingw-w64-clang-aarch64-github-cli-2.102.0-1-any.pkg.tar.zst

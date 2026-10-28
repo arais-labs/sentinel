@@ -31,7 +31,7 @@ def _run_parameters_schema() -> dict:
             },
             "cwd": {
                 "type": "string",
-                "description": "Working directory anywhere inside the workspace container. Relative paths start at the attached project root; absolute paths such as /tmp/repo work.",
+                "description": "Working directory anywhere inside the workspace. Relative paths start at the attached project root; absolute paths such as /tmp/repo work.",
             },
             "timeout_seconds": {
                 "type": "integer",
@@ -85,7 +85,7 @@ MODULE = ModuleDefinition(
     name="git",
     label="Git",
     description=(
-        "Execute git and selected GitHub CLI commands inside the attached workspace container "
+        "Execute git and selected GitHub CLI commands inside the attached workspace "
         "with externally brokered authentication. Prefer this tool; local terminal Git is also allowed. Use repos to discover accessible personal and organization repositories before asking the user for a URL."
     ),
     icon="git-branch",

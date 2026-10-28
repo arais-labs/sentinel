@@ -30,12 +30,12 @@ from app.dependencies import (
     get_request_session_service as _resolve_session_service,
 )
 from app.models import Message, Session
-from app.schemas.runtime import (
-    SessionRuntimeFilePreviewResponse,
-    SessionRuntimeFilesResponse,
-    SessionRuntimeGitChangedFilesResponse,
-    SessionRuntimeGitDiffResponse,
-    SessionRuntimeGitRootsResponse,
+from app.schemas.session_workspace import (
+    SessionWorkspaceFilePreviewResponse,
+    SessionWorkspaceFilesResponse,
+    SessionWorkspaceGitChangedFilesResponse,
+    SessionWorkspaceGitDiffResponse,
+    SessionWorkspaceGitRootsResponse,
 )
 from app.schemas.sessions import (
     ChatRequest,
@@ -60,19 +60,19 @@ from sentral.llm.generic.types import AssistantMessage, ImageContent, TextConten
 from sentral.llm.ids import TierName, parse_tier_name
 from app.services.llm.session_selection import selection_model
 from app.services.modules.builtins.form.contract import pending_form_sessions
-from app.services.runtime.file_stream import stream_response
-from app.services.runtime.files import (
-    RuntimePathInvalidError,
-    RuntimePathIsDirectoryError,
-    RuntimePathNotFoundError,
+from app.services.workspaces.files.stream import stream_response
+from app.services.workspaces.files.manager import (
+    PathInvalidError,
+    PathIsDirectoryError,
+    PathNotFoundError,
 )
-from app.services.runtime.machines import InstanceRuntimeNotConfigured
-from app.services.runtime.panes import TmuxPanes
-from app.services.runtime.port_forwards import RuntimeForwardNotFound
-from app.services.runtime.ssh_runtime import (
-    get_runtime_port_forward_manager,
-    get_runtime_terminal_manager,
-    get_runtime_workspace_files,
+from app.services.workspaces.machines.registry import InstanceRuntimeNotConfigured
+from app.services.workspaces.terminals.panes import TmuxPanes
+from app.services.workspaces.forwards import ForwardNotFound
+from app.services.workspaces.managers import (
+    get_forward_manager,
+    get_terminal_manager,
+    get_workspace_files,
 )
 from app.services.sessions.agent_run_registry import AgentRunRegistry
 from app.services.sessions.attention import pending_approval_sessions
@@ -145,13 +145,13 @@ def _raise_http_for_session_error(exc: Exception) -> None:
     raise exc
 
 
-def _raise_http_for_runtime_path_error(exc: Exception) -> None:
-    if isinstance(exc, RuntimePathNotFoundError):
+def _raise_http_for_path_error(exc: Exception) -> None:
+    if isinstance(exc, PathNotFoundError):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(exc) or "Machine path not found",
         ) from exc
-    if isinstance(exc, (RuntimePathInvalidError, RuntimePathIsDirectoryError)):
+    if isinstance(exc, (PathInvalidError, PathIsDirectoryError)):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc) or "Invalid runtime path",
@@ -159,19 +159,19 @@ def _raise_http_for_runtime_path_error(exc: Exception) -> None:
     raise exc
 
 
-def _raise_http_for_session_or_runtime_error(exc: Exception) -> None:
+def _raise_http_for_session_or_workspace_error(exc: Exception) -> None:
 
     if isinstance(exc, InstanceRuntimeNotConfigured):
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     if isinstance(
         exc,
         (
-            RuntimePathNotFoundError,
-            RuntimePathInvalidError,
-            RuntimePathIsDirectoryError,
+            PathNotFoundError,
+            PathInvalidError,
+            PathIsDirectoryError,
         ),
     ):
-        _raise_http_for_runtime_path_error(exc)
+        _raise_http_for_path_error(exc)
         return
     _raise_http_for_session_error(exc)
 
@@ -514,41 +514,41 @@ async def check_model_context(
     }
 
 
-@router.get("/{id:uuid}/runtime/files", response_model=SessionRuntimeFilesResponse)
-async def list_session_runtime_files(
+@router.get("/{id:uuid}/workspace/files", response_model=SessionWorkspaceFilesResponse)
+async def list_session_workspace_files(
     id: UUID,
     request: Request,
     path: str = Query(default=""),
     limit: int = Query(default=400, ge=1, le=2000),
     db: AsyncSession = Depends(get_db),
-) -> SessionRuntimeFilesResponse:
+) -> SessionWorkspaceFilesResponse:
     service = _resolve_session_service(request)
     try:
         await service.get_session(db, session_id=id, user_id="local")
         await db.close()
-        files = await get_runtime_workspace_files(
+        files = await get_workspace_files(
             session_id=id, instance_name=_request_instance_name(request)
         )
         payload = await files.list_files(str(id), path=path, limit=limit)
     except Exception as exc:  # noqa: BLE001
-        _raise_http_for_session_or_runtime_error(exc)
+        _raise_http_for_session_or_workspace_error(exc)
         raise
-    return SessionRuntimeFilesResponse(**payload)
+    return SessionWorkspaceFilesResponse(**payload)
 
 
-@router.get("/{id:uuid}/runtime/file", response_model=SessionRuntimeFilePreviewResponse)
-async def get_session_runtime_file(
+@router.get("/{id:uuid}/workspace/file", response_model=SessionWorkspaceFilePreviewResponse)
+async def get_session_workspace_file(
     id: UUID,
     request: Request,
     path: str = Query(..., min_length=1),
     max_bytes: int = Query(default=32000, ge=256, le=200000),
     db: AsyncSession = Depends(get_db),
-) -> SessionRuntimeFilePreviewResponse:
+) -> SessionWorkspaceFilePreviewResponse:
     service = _resolve_session_service(request)
     try:
         await service.get_session(db, session_id=id, user_id="local")
         await db.close()
-        files = await get_runtime_workspace_files(
+        files = await get_workspace_files(
             session_id=id, instance_name=_request_instance_name(request)
         )
         payload = await files.preview_file(
@@ -557,14 +557,14 @@ async def get_session_runtime_file(
             max_bytes=max_bytes,
         )
     except Exception as exc:  # noqa: BLE001
-        _raise_http_for_session_or_runtime_error(exc)
+        _raise_http_for_session_or_workspace_error(exc)
         raise
-    return SessionRuntimeFilePreviewResponse(**payload)
+    return SessionWorkspaceFilePreviewResponse(**payload)
 
 
-@router.get("/{id:uuid}/runtime/download")
-@router.head("/{id:uuid}/runtime/download", include_in_schema=False)
-async def download_session_runtime_path(
+@router.get("/{id:uuid}/workspace/download")
+@router.head("/{id:uuid}/workspace/download", include_in_schema=False)
+async def download_session_workspace_path(
     id: UUID,
     request: Request,
     path: str = Query(..., min_length=1),
@@ -574,7 +574,7 @@ async def download_session_runtime_path(
     try:
         await service.get_session(db, session_id=id, user_id="local")
         await db.close()
-        files = await get_runtime_workspace_files(
+        files = await get_workspace_files(
             session_id=id, instance_name=_request_instance_name(request)
         )
         payload = await files.download(
@@ -585,13 +585,13 @@ async def download_session_runtime_path(
             head=request.method == "HEAD",
         )
     except Exception as exc:  # noqa: BLE001
-        _raise_http_for_session_or_runtime_error(exc)
+        _raise_http_for_session_or_workspace_error(exc)
         raise
     return await stream_response(payload, head=request.method == "HEAD", download=True)
 
 
-@router.get("/{id:uuid}/runtime/forward-target/{forward_id}")
-async def get_runtime_forward_target(
+@router.get("/{id:uuid}/workspace/forward-target/{forward_id}")
+async def get_forward_target(
     id: UUID,
     forward_id: str,
     request: Request,
@@ -605,12 +605,12 @@ async def get_runtime_forward_target(
     except Exception as exc:
         _raise_http_for_session_error(exc)
         raise
-    forwards = await get_runtime_port_forward_manager(
+    forwards = await get_forward_manager(
         session_id=id, instance_name=_request_instance_name(request)
     )
     try:
         forward = await forwards.get_forward(session_id=str(id), forward_id=forward_id)
-    except RuntimeForwardNotFound as exc:
+    except ForwardNotFound as exc:
         raise HTTPException(status_code=404, detail="Workspace port forward not found") from exc
     return {
         "url": f"http://127.0.0.1:{forward.local_port}/",
@@ -619,14 +619,14 @@ async def get_runtime_forward_target(
 
 
 @router.api_route(
-    "/{id:uuid}/runtime/forwards/{forward_id}",
+    "/{id:uuid}/workspace/forwards/{forward_id}",
     methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
 )
 @router.api_route(
-    "/{id:uuid}/runtime/forwards/{forward_id}/{path:path}",
+    "/{id:uuid}/workspace/forwards/{forward_id}/{path:path}",
     methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
 )
-async def proxy_runtime_forward_http(
+async def proxy_forward_http(
     id: UUID,
     forward_id: str,
     request: Request,
@@ -637,14 +637,14 @@ async def proxy_runtime_forward_http(
     try:
         await service.get_session(db, session_id=id, user_id="local")
         await db.close()
-        forwards = await get_runtime_port_forward_manager(
+        forwards = await get_forward_manager(
             session_id=id, instance_name=_request_instance_name(request)
         )
         forward = await forwards.get_forward(
             session_id=str(id),
             forward_id=forward_id,
         )
-    except RuntimeForwardNotFound as exc:
+    except ForwardNotFound as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Workspace port forward not found",
@@ -675,9 +675,9 @@ async def proxy_runtime_forward_http(
     )
 
 
-@router.websocket("/{id:uuid}/runtime/forwards/{forward_id}")
-@router.websocket("/{id:uuid}/runtime/forwards/{forward_id}/{path:path}")
-async def proxy_runtime_forward_websocket(
+@router.websocket("/{id:uuid}/workspace/forwards/{forward_id}")
+@router.websocket("/{id:uuid}/workspace/forwards/{forward_id}/{path:path}")
+async def proxy_forward_websocket(
     websocket: WebSocket,
     id: UUID,
     forward_id: str,
@@ -691,14 +691,14 @@ async def proxy_runtime_forward_websocket(
         await websocket.close(code=4004, reason="Session not found")
         return
     try:
-        forwards = await get_runtime_port_forward_manager(
+        forwards = await get_forward_manager(
             session_id=id, instance_name=str(websocket.path_params["instance_name"])
         )
         forward = await forwards.get_forward(
             session_id=str(id),
             forward_id=forward_id,
         )
-    except RuntimeForwardNotFound:
+    except ForwardNotFound:
         await websocket.close(code=4004, reason="Workspace port forward not found")
         return
 
@@ -751,55 +751,55 @@ async def proxy_runtime_forward_websocket(
             return
 
 
-@router.get("/{id:uuid}/runtime/git/roots", response_model=SessionRuntimeGitRootsResponse)
-async def list_session_runtime_git_roots(
+@router.get("/{id:uuid}/workspace/git/roots", response_model=SessionWorkspaceGitRootsResponse)
+async def list_session_workspace_git_roots(
     id: UUID,
     request: Request,
     path: str = Query(default=""),
     limit: int = Query(default=200, ge=1, le=1000),
     db: AsyncSession = Depends(get_db),
-) -> SessionRuntimeGitRootsResponse:
+) -> SessionWorkspaceGitRootsResponse:
     service = _resolve_session_service(request)
     try:
         await service.get_session(db, session_id=id, user_id="local")
         await db.close()
-        files = await get_runtime_workspace_files(
+        files = await get_workspace_files(
             session_id=id, instance_name=_request_instance_name(request)
         )
         payload = await files.git_roots(str(id), path=path, limit=limit)
     except Exception as exc:  # noqa: BLE001
-        _raise_http_for_session_or_runtime_error(exc)
+        _raise_http_for_session_or_workspace_error(exc)
         raise
-    return SessionRuntimeGitRootsResponse(**payload)
+    return SessionWorkspaceGitRootsResponse(**payload)
 
 
 @router.get(
-    "/{id:uuid}/runtime/git/changed",
-    response_model=SessionRuntimeGitChangedFilesResponse,
+    "/{id:uuid}/workspace/git/changed",
+    response_model=SessionWorkspaceGitChangedFilesResponse,
 )
-async def list_session_runtime_git_changed_files(
+async def list_session_workspace_git_changed_files(
     id: UUID,
     request: Request,
     path: str = Query(default=""),
     limit: int = Query(default=200, ge=1, le=1000),
     db: AsyncSession = Depends(get_db),
-) -> SessionRuntimeGitChangedFilesResponse:
+) -> SessionWorkspaceGitChangedFilesResponse:
     service = _resolve_session_service(request)
     try:
         await service.get_session(db, session_id=id, user_id="local")
         await db.close()
-        files = await get_runtime_workspace_files(
+        files = await get_workspace_files(
             session_id=id, instance_name=_request_instance_name(request)
         )
         payload = await files.git_changed(str(id), path=path, limit=limit)
     except Exception as exc:  # noqa: BLE001
-        _raise_http_for_session_or_runtime_error(exc)
+        _raise_http_for_session_or_workspace_error(exc)
         raise
-    return SessionRuntimeGitChangedFilesResponse(**payload)
+    return SessionWorkspaceGitChangedFilesResponse(**payload)
 
 
-@router.get("/{id:uuid}/runtime/git/diff", response_model=SessionRuntimeGitDiffResponse)
-async def get_session_runtime_git_diff(
+@router.get("/{id:uuid}/workspace/git/diff", response_model=SessionWorkspaceGitDiffResponse)
+async def get_session_workspace_git_diff(
     id: UUID,
     request: Request,
     path: str = Query(..., min_length=1),
@@ -808,12 +808,12 @@ async def get_session_runtime_git_diff(
     context_lines: int = Query(default=3, ge=0, le=20),
     max_bytes: int = Query(default=120000, ge=1024, le=500000),
     db: AsyncSession = Depends(get_db),
-) -> SessionRuntimeGitDiffResponse:
+) -> SessionWorkspaceGitDiffResponse:
     service = _resolve_session_service(request)
     try:
         await service.get_session(db, session_id=id, user_id="local")
         await db.close()
-        files = await get_runtime_workspace_files(
+        files = await get_workspace_files(
             session_id=id, instance_name=_request_instance_name(request)
         )
         payload = await files.git_diff(
@@ -825,9 +825,9 @@ async def get_session_runtime_git_diff(
             max_bytes=max_bytes,
         )
     except Exception as exc:  # noqa: BLE001
-        _raise_http_for_session_or_runtime_error(exc)
+        _raise_http_for_session_or_workspace_error(exc)
         raise
-    return SessionRuntimeGitDiffResponse(**payload)
+    return SessionWorkspaceGitDiffResponse(**payload)
 
 
 @router.delete("/{id:uuid}/panes/{pane_id}")
@@ -838,7 +838,7 @@ async def close_pane(
     service = _resolve_session_service(request)
     await service.get_session(db, session_id=id, user_id="local")
     await db.close()
-    terminal = await get_runtime_terminal_manager(
+    terminal = await get_terminal_manager(
         session_id=id, instance_name=_request_instance_name(request)
     )
     bridge = TmuxPanes(terminal)

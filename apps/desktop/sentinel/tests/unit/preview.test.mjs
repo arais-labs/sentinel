@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { previewOrigin, previewTargetPath } from '../../.test-dist/shared/preview.js';
-const link = '/api/v1/instances/demo/sessions/97394c11-0f16-465e-953f-8a1b6640d981/runtime/forwards/pf-bebf36e56cff/';
+const link = '/api/v1/instances/demo/sessions/97394c11-0f16-465e-953f-8a1b6640d981/workspace/forwards/pf-bebf36e56cff/';
 test('forward links resolve to the desktop target endpoint for their instance', () => {
   const target = link.replace('/forwards/', '/forward-target/').replace(/\/$/, '');
   assert.equal(previewTargetPath(link), target);

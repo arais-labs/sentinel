@@ -3,7 +3,7 @@ from uuid import uuid4
 
 import pytest
 
-from app.services.runtime import workspace_containers as containers
+from app.services.workspaces import lifecycle
 
 
 @pytest.mark.asyncio
@@ -16,9 +16,9 @@ async def test_explicit_reconnect_retries_failed_setup_once(monkeypatch):
         ]
     )
     start = AsyncMock()
-    monkeypatch.setattr(containers, "statuses", snapshots)
-    monkeypatch.setattr(containers, "start", start)
-    await containers.ensure_ready(workspace, "/project", ["node"], retry=True)
+    monkeypatch.setattr(lifecycle, "statuses", snapshots)
+    monkeypatch.setattr(lifecycle, "start", start)
+    await lifecycle.ensure_ready(workspace, "/project", ["node"], retry=True)
     start.assert_awaited_once_with(workspace, "/project", ["node"])
 
 
@@ -27,11 +27,11 @@ async def test_failed_setup_does_not_retry_during_ordinary_tool_calls(monkeypatc
     workspace = uuid4()
     start = AsyncMock()
     monkeypatch.setattr(
-        containers,
+        lifecycle,
         "statuses",
         AsyncMock(return_value={str(workspace): {"state": "failed", "error": "Startup failed"}}),
     )
-    monkeypatch.setattr(containers, "start", start)
-    with pytest.raises(containers.WorkspaceContainerError, match="Startup failed"):
-        await containers.ensure_ready(workspace, "/project", [])
+    monkeypatch.setattr(lifecycle, "start", start)
+    with pytest.raises(lifecycle.WorkspaceLifecycleError, match="Startup failed"):
+        await lifecycle.ensure_ready(workspace, "/project", [])
     start.assert_not_awaited()

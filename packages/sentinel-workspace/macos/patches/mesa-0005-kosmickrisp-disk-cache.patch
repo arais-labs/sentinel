@@ -1,0 +1,34 @@
+From: Sentinel graphics maintainers
+Subject: [PATCH] kosmickrisp: create the shader disk cache
+
+The physical device frees vk.disk_cache but never creates one, so the runtime
+pipeline cache cannot persist compiled shaders (kk_shader_serialize exists):
+every process recompiles every shader, stalling first draws for 100+ ms.
+Create it as other Mesa Vulkan drivers do, keyed by the driver build.
+---
+--- a/src/kosmickrisp/vulkan/kk_physical_device.c
++++ b/src/kosmickrisp/vulkan/kk_physical_device.c
+@@ -19,6 +19,7 @@
+ #include "kosmickrisp/bridge/ns_process_info.h"
+ 
+ #include "util/disk_cache.h"
++#include "util/hex.h"
+ #include "util/mesa-blake3.h"
+ #include "git_sha1.h"
+ 
+@@ -979,6 +980,15 @@
+    STATIC_ASSERT(BLAKE3_KEY_LEN >= VK_UUID_SIZE);
+    memcpy(pdev->vk.properties.pipelineCacheUUID, blake3, VK_UUID_SIZE);
+    memcpy(pdev->vk.properties.shaderBinaryUUID, blake3, VK_UUID_SIZE);
++
++#ifdef ENABLE_SHADER_CACHE
++   /* Compiled shaders persist across processes (the runtime's pipeline cache
++    * stores them through kk_shader_serialize). Without a disk cache every
++    * process compiles every shader again, stalling the first draws. */
++   char timestamp[2 * VK_UUID_SIZE + 1];
++   mesa_bytes_to_hex(timestamp, instance->driver_build_sha, VK_UUID_SIZE);
++   pdev->vk.disk_cache = disk_cache_create("kosmickrisp", timestamp, 0);
++#endif
+ }
+ 
+ static void

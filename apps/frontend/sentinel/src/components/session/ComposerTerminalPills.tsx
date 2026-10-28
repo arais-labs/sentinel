@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import { Terminal } from 'lucide-react';
-import type { ActivePane } from '../../hooks/useSessionRuntimeStream';
+import type { ActivePane } from '../../hooks/useSessionWorkspaceStream';
 import { ComposerActivityPills } from './ComposerActivityPills';
 
 export function ComposerTerminalPills({ panes, focusedPaneId, onOpen, onClose }: {

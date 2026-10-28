@@ -1,6 +1,6 @@
 import type { SocketEvent } from '../../../../desktop/sentinel/src/shared/ipc';
 
-// WebSocket-shaped local channel for sessions, terminals, and desktop video.
+// WebSocket-shaped local channel for sessions and terminals.
 export class DesktopSocket extends EventTarget implements WebSocket {
   readonly CONNECTING = 0;
   readonly OPEN = 1;

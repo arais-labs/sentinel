@@ -56,6 +56,13 @@ export interface LogEntry {
 
 // A newer payload available on a release channel, discovered by comparing the
 // installed manifest against the channel's release index.
+// The workspace runtime a release offers (src/main/app/components.ts): tarballs by sha256.
+export interface RuntimeComponentFile { file: string; sha256: string; url?: string }
+export interface RuntimeComponents {
+  sentineld: RuntimeComponentFile;
+  'sentinel-workspace': RuntimeComponentFile;
+}
+
 export interface PayloadUpdate {
   channel: ReleaseChannel;
   version: string;
@@ -64,6 +71,7 @@ export interface PayloadUpdate {
   sha256: string;
   hasNewMigrations: boolean;
   shellUpdate: ShellUpdate | null;
+  components?: RuntimeComponents;
 }
 
 export type PayloadPhase =

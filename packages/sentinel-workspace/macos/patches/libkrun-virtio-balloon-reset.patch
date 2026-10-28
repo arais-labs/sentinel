@@ -1,0 +1,48 @@
+--- a/src/devices/src/virtio/balloon/device.rs
++++ b/src/devices/src/virtio/balloon/device.rs
+@@ -222,6 +222,14 @@
+             return Err(ActivateError::BadActivate);
+         }
+ 
++        // Activated again after a reset: the queue events are the ones the event manager
++        // already watches (the transport keeps them), so only the rings change.
++        if self.queues.is_some() {
++            self.queues = Some(queues);
++            self.device_state = DeviceState::Activated(mem, interrupt);
++            return Ok(());
++        }
++
+         if self.activate_evt.write(1).is_err() {
+             error!("Cannot write to activate_evt",);
+             return Err(ActivateError::BadActivate);
+@@ -235,5 +243,14 @@
+ 
+     fn is_activated(&self) -> bool {
+         self.device_state.is_activated()
++    }
++
++    // A driver resets the device before letting it go, and waits for the reset to complete
++    // (Linux resets every virtio device at power-off: without it, virtio_balloon's shutdown
++    // spins forever and the VM never powers down). Inactive, the device leaves the
++    // queues and guest memory alone; the queues stay for their events until the next activation.
++    fn reset(&mut self) -> bool {
++        self.device_state = DeviceState::Inactive;
++        true
+     }
+ }
+--- a/src/devices/src/virtio/balloon/event_handler.rs
++++ b/src/devices/src/virtio/balloon/event_handler.rs
+@@ -180,6 +180,13 @@
+             }
+         } else {
+             warn!("balloon: The device is not yet activated. Spurious event received: {source:?}");
++            // A kick racing a reset: consume it, or the event fires again and again.
++            if source != activate_evt {
++                let mut queues = self.queues.iter().flatten();
++                if let Some(queue) = queues.find(|q| q.event.as_raw_fd() == source) {
++                    _ = queue.event.read();
++                }
++            }
+         }
+     }
+ 

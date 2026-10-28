@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import subprocess
 
-from app.services.runtime.tmux import SENTINEL_BASHRC
+from app.services.workspaces.terminals.tmux import SENTINEL_BASHRC
 
 
 def _ctype(tmp_path, variable, **overrides):

@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "platforms": {
+    "macos-arm64": {
+      "python": {
+        "version": "3.12.14",
+        "buildTag": "20260901",
+        "sourceUrl": "https://github.com/astral-sh/python-build-standalone/releases/download/20260901/cpython-3.12.14%2B20260901-aarch64-apple-darwin-install_only.tar.gz",
+        "sourceSha256": "3ee3ee547cedfeb7c2b16b2b7156039f7b470bb8f857e226fd3d2eb11db83c76"
+      },
+      "git": {
+        "source": "system-vendored",
+        "systemBinPath": "/Library/Developer/CommandLineTools/usr/bin/git",
+        "systemLibexecPath": "/Library/Developer/CommandLineTools/usr/libexec/git-core",
+        "systemSharePath": "/Library/Developer/CommandLineTools/usr/share/git-core",
+        "expectedVersionPrefix": "git version 2."
+      },
+      "gh": {
+        "version": "2.100.0",
+        "sourceUrl": "https://github.com/cli/cli/releases/download/v2.100.0/gh_2.100.0_macOS_arm64.zip",
+        "sourceSha256": "45f9a62da2f6e641a7fad57e2ce39656dfd7ef331372d80a2a2aed65abb01642"
+      }
+    }
+  }
+}

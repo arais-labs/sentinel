@@ -7,7 +7,7 @@ from uuid import UUID
 import pytest
 
 from app.models import Session, SubAgentTask, Workspace
-from app.services.runtime import workspace_containers as containers
+from app.services.workspaces import lifecycle
 from app.services.sessions.agent_run_registry import AgentRunRegistry
 from tests import test_workspaces
 
@@ -45,7 +45,7 @@ async def test_remove_detaches_all_sessions_and_broadcasts(workspace_app, monkey
 
     invalidate = AsyncMock()
     pool = type("Pool", (), {"remove": AsyncMock()})()
-    monkeypatch.setattr(workspaces, "invalidate_runtime_for_session", invalidate)
+    monkeypatch.setattr(workspaces, "invalidate_session_managers", invalidate)
     monkeypatch.setattr(runtime_services, "get_browser_pool", lambda: pool)
     manager = type("Manager", (), {"broadcast": AsyncMock()})()
     client._transport.app.state.ws_manager = manager
@@ -56,16 +56,16 @@ async def test_remove_detaches_all_sessions_and_broadcasts(workspace_app, monkey
     }
     assert not any(s["running"] for s in preview.json()["sessions"])
     assert (await client.delete(f"workspaces/{workspace_id}")).status_code == 409
-    containers.stop.assert_not_awaited()
+    lifecycle.stop.assert_not_awaited()
     response = await client.delete(f"workspaces/{workspace_id}?detach_sessions=true")
     assert response.status_code == 204, response.text
-    containers.stop.assert_awaited_once_with(workspace_id, delete=True)
+    lifecycle.stop.assert_awaited_once_with(workspace_id, delete=True)
     async with factory() as db:
         assert await db.get(Workspace, workspace_id) is None
         for original in (first, second, child):
             session = await db.get(Session, original.id)
             assert session is not None and session.workspace_id is None
-            invalidate.assert_any_await("main", original.id, stop_remote=False)
+            invalidate.assert_any_await("main", original.id)
             manager.broadcast.assert_any_await(
                 str(original.id),
                 {
@@ -101,7 +101,7 @@ async def test_remove_blocks_any_active_agent(workspace_app, active):
         assert any(s["running"] for s in preview.json()["sessions"])
         response = await client.delete(f"workspaces/{workspace_id}?detach_sessions=true")
         assert response.status_code == 409, response.text
-        containers.stop.assert_not_awaited()
+        lifecycle.stop.assert_not_awaited()
         async with factory() as db:
             assert (await db.get(Session, first.id)).workspace_id == workspace_id
             assert await db.get(Workspace, workspace_id)
@@ -115,13 +115,13 @@ async def test_remove_blocks_any_active_agent(workspace_app, active):
 async def test_failed_cleanup_keeps_bindings_and_can_retry(workspace_app):
     client, factory, _, first, _, _ = workspace_app
     workspace_id, _ = await linked_workspace(workspace_app)
-    containers.stop.side_effect = containers.WorkspaceContainerError("Cleanup failed")
+    lifecycle.stop.side_effect = lifecycle.WorkspaceLifecycleError("Cleanup failed")
     response = await client.delete(f"workspaces/{workspace_id}?detach_sessions=true")
     assert response.status_code == 502
     async with factory() as db:
         assert await db.get(Workspace, workspace_id)
         assert (await db.get(Session, first.id)).workspace_id == workspace_id
-    containers.stop.side_effect = None
+    lifecycle.stop.side_effect = None
     assert (
         await client.delete(f"workspaces/{workspace_id}?detach_sessions=true")
     ).status_code == 204
@@ -142,7 +142,7 @@ async def test_start_waits_for_removal_and_observes_detached_session(workspace_a
         async with factory() as db:
             assert (await db.get(Session, first.id)).workspace_id is None
 
-    containers.stop.side_effect = stop
+    lifecycle.stop.side_effect = stop
     removal = asyncio.create_task(client.delete(f"workspaces/{workspace_id}?detach_sessions=true"))
     await asyncio.wait_for(deleting.wait(), 2)
     starting = asyncio.create_task(registry.start(str(first.id), agent()))

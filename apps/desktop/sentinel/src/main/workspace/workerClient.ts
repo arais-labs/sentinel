@@ -1,9 +1,5 @@
-import { workspaceSetupSteps } from './workspaceTools.js';
-import type { WorkspaceDistribution } from './workspaceDistributions.js';
 import type { WorkspaceRuntime } from './workspaceRuntime.js';
-import { validateDesktop } from './workspaceDesktop.js';
 import { requireRuntimeCapability } from './runtimeCompatibility.js';
-import { validateBrowser } from './workspaceBrowsers.js';
 
 /** Stateless protocol adapter. A client never owns a remote lifecycle or catalog. */
 export class WorkerClient {
@@ -22,23 +18,14 @@ export class WorkerClient {
           resources: record.spec.resources, recovery_backup: record.recovery_backup,
           revision: record.revision,
           recovery_available: Boolean(health.errors?.[id]),
+          screen: Boolean(record.screen),
         }])),
       };
     }
     if (action === 'configure') {
-      const distribution = (values.distribution ?? 'alpine') as WorkspaceDistribution;
-      const desktop = values.desktop ?? 'none';
-      validateDesktop(desktop);
-      const browser = values.browser ?? 'chromium';
-      validateBrowser(browser, distribution);
-      const status = await this.runtime.request('status');
-      requireRuntimeCapability(status.capabilities, 'workspace-browser-v1', true);
-      return this.runtime.request('workspace_configure', { workspace: values.workspace,
-        revision: values.revision,
-        spec: { name: values.name, project: values.project, tools: values.tools,
-          distribution, desktop, browser, resources: values.resources ?? { cpus: 2, memory_gib: 2, disk_gib: 32 },
-          steps: workspaceSetupSteps(values.tools, { distribution, browser }),
-        },
+      return this.runtime.request('workspace_configure', { workspace: values.workspace, revision: values.revision,
+        spec: await this.runtime.spec({ name: values.name, project: values.project, distribution: values.distribution, desktop: values.desktop,
+          tools: values.tools, browser: values.browser, resources: values.resources ?? { cpus: 2, memory_gib: 2, disk_gib: 32 } }),
       });
     }
     if (action === 'reinstall') {
@@ -50,12 +37,8 @@ export class WorkerClient {
       const record = inventory.workspaces?.[values.workspace];
       if (!record) throw new Error('Workspace not found on this worker');
       if (values.revision != null && values.revision !== record.revision) throw new Error('Workspace settings changed. Refresh before reinstalling.');
-      const spec = values.spec ? { ...record.spec, ...values.spec } : record.spec;
-      validateDesktop(spec.desktop);
-      validateBrowser(spec.browser ?? 'chromium', spec.distribution);
       return this.runtime.request('workspace_reinstall', { workspace: values.workspace, revision: record.revision, confirmed: true,
-        ...(values.spec ? { spec: { ...spec, steps: workspaceSetupSteps(spec.tools, { distribution: spec.distribution as WorkspaceDistribution, browser: spec.browser ?? 'chromium' }) } }
-          : { steps: workspaceSetupSteps(spec.tools, { distribution: spec.distribution as WorkspaceDistribution, browser: spec.browser ?? 'chromium' }) }),
+        ...(values.spec ? { spec: await this.runtime.spec({ ...record.spec, ...values.spec }) } : {}),
       });
     }
     const lifecycle: Record<string, string> = {

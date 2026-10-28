@@ -4,7 +4,7 @@ from uuid import uuid4
 
 import pytest
 
-from app.services.runtime import workspace_metrics as module
+from app.services.workspaces import metrics as module
 from tests.test_workspaces import workspace_app as workspace_app
 from tests.test_workspace_removal import linked_workspace
 
@@ -42,6 +42,39 @@ def test_guest_counters_exclude_double_counting_and_reclaimable_memory():
     assert module.metrics(sample, None)["cpu_percent"] is None
 
 
+# Windows' MSYS2 /proc: four CPU counters, no MemAvailable, no boot id, routes or network counters.
+MSYS2_SAMPLE = """BOOT
+btime 1791964633
+UPTIME
+49.54 30.13
+CPU
+cpu 33108 0 44295 120420
+MEMORY
+MemTotal:        8373360 kB
+MemFree:         5148604 kB
+SwapTotal:       1966080 kB
+SwapFree:        1966080 kB
+ROUTES
+NETWORK
+DISK
+Filesystem     1024-blocks     Used Available Capacity Mounted on
+C:/msys64         33269756 24086008   9183748      73% /
+"""
+
+
+def test_a_proc_without_routes_or_available_memory_reports_what_it_has():
+    sample = module.parse_sample(MSYS2_SAMPLE)
+    assert sample["boot"] == "btime 1791964633"
+    assert sample["cpu_total"] == 33108 + 44295 + 120420 and sample["cpu_idle"] == 120420
+    assert sample["memory_used_bytes"] == (8373360 - 5148604) * 1024
+    assert sample["network_interface"] is None and sample["network_received_bytes"] is None
+    assert sample["disk_used_bytes"] == 24086008 * 1024
+    later = {**sample, "uptime": 51.54, "cpu_total": sample["cpu_total"] + 100}
+    later["cpu_idle"] = sample["cpu_idle"] + 75
+    result = module.metrics(later, sample)
+    assert result["cpu_percent"] == 25.0 and result["network_receive_bytes_per_second"] is None
+
+
 def test_rates_and_restart_counter_resets():
     before = module.parse_sample(SAMPLE)
     after = {
@@ -67,10 +100,10 @@ def test_rates_and_restart_counter_resets():
 @pytest.mark.asyncio
 async def test_concurrent_viewers_share_probe_and_cache(monkeypatch):
     monkeypatch.setattr(
-        module.containers, "statuses", AsyncMock(return_value={"workspace": {"state": "running"}})
+        module.lifecycle, "statuses", AsyncMock(return_value={"workspace": {"state": "running"}})
     )
     probe = AsyncMock(return_value={"exitCode": 0, "stdout": SAMPLE})
-    monkeypatch.setattr(module.containers, "request", probe)
+    monkeypatch.setattr(module.lifecycle, "request", probe)
     service = module.WorkspaceMetrics()
     results = await asyncio.gather(*(service.get("workspace") for _ in range(10)))
     assert all(item == results[0] for item in results)
@@ -81,10 +114,10 @@ async def test_concurrent_viewers_share_probe_and_cache(monkeypatch):
 @pytest.mark.asyncio
 async def test_stopped_workspace_is_not_started_or_probed(monkeypatch):
     monkeypatch.setattr(
-        module.containers, "statuses", AsyncMock(return_value={"workspace": {"state": "stopped"}})
+        module.lifecycle, "statuses", AsyncMock(return_value={"workspace": {"state": "stopped"}})
     )
     probe = AsyncMock()
-    monkeypatch.setattr(module.containers, "request", probe)
+    monkeypatch.setattr(module.lifecycle, "request", probe)
     assert (await module.WorkspaceMetrics().get("workspace"))["state"] == "stopped"
     probe.assert_not_awaited()
 
@@ -92,9 +125,9 @@ async def test_stopped_workspace_is_not_started_or_probed(monkeypatch):
 @pytest.mark.asyncio
 async def test_failed_probe_returns_unavailable_without_fake_usage(monkeypatch):
     monkeypatch.setattr(
-        module.containers, "statuses", AsyncMock(return_value={"workspace": {"state": "running"}})
+        module.lifecycle, "statuses", AsyncMock(return_value={"workspace": {"state": "running"}})
     )
-    monkeypatch.setattr(module.containers, "request", AsyncMock(side_effect=TimeoutError))
+    monkeypatch.setattr(module.lifecycle, "request", AsyncMock(side_effect=TimeoutError))
     assert await module.WorkspaceMetrics().get("workspace") == {"state": "unavailable"}
 
 

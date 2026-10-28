@@ -1,0 +1,63 @@
+name: sentineld
+# The workspace runtime daemon (packages/sentineld): builds its release tarball (make release), the
+# component the desktop app downloads. The candidate build (ci.yml) calls this; unchanged sources
+# reuse the cached tarball, so nothing rebuilds. Output: the `sentineld-release` artifact.
+on:
+  workflow_call:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  key:
+    name: Look up the sentineld release
+    runs-on: ubuntu-24.04
+    outputs:
+      hit: ${{ steps.cache.outputs.cache-hit }}
+      key: ${{ steps.key.outputs.key }}
+    steps:
+      - uses: actions/checkout@v6
+      - id: key
+        run: echo "key=sentineld-release-v1-${{ hashFiles('packages/sentineld/core/**', 'packages/sentineld/macos/**', 'packages/sentineld/media/**', 'packages/sentineld/guest/**', 'packages/sentineld/Makefile', 'VERSION') }}" >> "$GITHUB_OUTPUT"
+      - id: cache
+        uses: actions/cache/restore@v5
+        with:
+          path: packages/sentineld/build/release
+          key: ${{ steps.key.outputs.key }}
+          lookup-only: true
+          enableCrossOsArchive: true
+
+  macos:
+    name: Build sentineld and pack the release (macOS arm64)
+    needs: key
+    if: needs.key.outputs.hit != 'true'
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - name: Build the daemon, the media server, the tools and the guest share; pack the release
+        working-directory: packages/sentineld
+        run: make share release
+      - uses: actions/cache/save@v5
+        with:
+          path: packages/sentineld/build/release
+          key: ${{ needs.key.outputs.key }}
+          enableCrossOsArchive: true
+
+  release:
+    name: Publish the sentineld release artifact
+    needs: [key, macos]
+    if: always() && (needs.key.outputs.hit == 'true' || needs.macos.result == 'success')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/cache/restore@v5
+        with:
+          path: packages/sentineld/build/release
+          key: ${{ needs.key.outputs.key }}
+          fail-on-cache-miss: true
+          enableCrossOsArchive: true
+      - uses: actions/upload-artifact@v7
+        with:
+          name: sentineld-release
+          path: packages/sentineld/build/release/
+          compression-level: 0
+          retention-days: 14

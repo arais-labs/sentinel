@@ -4,7 +4,7 @@ from uuid import uuid4
 
 import pytest
 
-from app.services.runtime.port_forwards import RuntimePortForwardManager
+from app.services.workspaces.forwards import ForwardManager
 from sentral.errors import ToolValidationError
 from app.services.tools.executor import ToolExecutor
 from app.services.tools.registry import ToolRuntimeContext
@@ -51,7 +51,7 @@ class _TransportStub:
 @pytest.mark.asyncio
 async def test_port_forward_manager_reuses_same_session_target() -> None:
     transport = _TransportStub()
-    manager = RuntimePortForwardManager(transport)  # type: ignore[arg-type]
+    manager = ForwardManager(transport)  # type: ignore[arg-type]
 
     first = await manager.open_forward(
         session_id="session-1",
@@ -68,14 +68,14 @@ async def test_port_forward_manager_reuses_same_session_target() -> None:
 
     assert first.forward_id == second.forward_id
     assert first.target_host == "127.0.0.1"
-    assert first.proxy_path == f"/sessions/session-1/runtime/forwards/{first.forward_id}/"
+    assert first.proxy_path == f"/sessions/session-1/workspace/forwards/{first.forward_id}/"
     assert len(transport.calls) == 1
 
 
 @pytest.mark.asyncio
 async def test_port_forward_manager_closes_session_forwards() -> None:
     transport = _TransportStub()
-    manager = RuntimePortForwardManager(transport)  # type: ignore[arg-type]
+    manager = ForwardManager(transport)  # type: ignore[arg-type]
 
     await manager.open_forward(
         session_id="session-1",
@@ -101,16 +101,16 @@ async def test_port_forward_manager_closes_session_forwards() -> None:
 async def test_port_forward_tool_open_list_close(monkeypatch) -> None:
     from app.services.modules.builtins.port_forward import handlers
 
-    manager = RuntimePortForwardManager(_TransportStub())  # type: ignore[arg-type]
+    manager = ForwardManager(_TransportStub())  # type: ignore[arg-type]
 
     async def _runtime_configured(**_kwargs: object) -> bool:
         return True
 
-    async def _get_manager(**_kwargs: object) -> RuntimePortForwardManager:
+    async def _get_manager(**_kwargs: object) -> ForwardManager:
         return manager
 
-    monkeypatch.setattr(handlers, "runtime_configured", _runtime_configured)
-    monkeypatch.setattr(handlers, "get_runtime_port_forward_manager", _get_manager)
+    monkeypatch.setattr(handlers, "workspace_attached", _runtime_configured)
+    monkeypatch.setattr(handlers, "get_forward_manager", _get_manager)
 
     executor = ToolExecutor(build_default_registry())
     session_id = uuid4()
@@ -130,7 +130,7 @@ async def test_port_forward_tool_open_list_close(monkeypatch) -> None:
     assert opened["target_host"] == "127.0.0.1"
     assert opened["target_port"] == 4173
     assert opened["protocol"] == "websocket"
-    assert opened["proxy_path"].endswith(f"/runtime/forwards/{opened['forward_id']}/")
+    assert opened["proxy_path"].endswith(f"/workspace/forwards/{opened['forward_id']}/")
     assert opened["url"].startswith("/api/v1/instances/main/sessions/")
 
     listed, _duration_ms = await executor.execute(
@@ -152,26 +152,26 @@ async def test_port_forward_tool_open_list_close(monkeypatch) -> None:
 async def test_port_forward_tool_rejects_non_loopback_target(monkeypatch) -> None:
     from app.services.modules.builtins.port_forward import handlers
 
-    manager = RuntimePortForwardManager(_TransportStub())  # type: ignore[arg-type]
+    manager = ForwardManager(_TransportStub())  # type: ignore[arg-type]
 
     async def _runtime_configured(**_kwargs: object) -> bool:
         return True
 
-    async def _get_manager(**_kwargs: object) -> RuntimePortForwardManager:
+    async def _get_manager(**_kwargs: object) -> ForwardManager:
         return manager
 
-    monkeypatch.setattr(handlers, "runtime_configured", _runtime_configured)
-    monkeypatch.setattr(handlers, "get_runtime_port_forward_manager", _get_manager)
+    monkeypatch.setattr(handlers, "workspace_attached", _runtime_configured)
+    monkeypatch.setattr(handlers, "get_forward_manager", _get_manager)
 
     executor = ToolExecutor(build_default_registry())
 
-    with pytest.raises(ToolValidationError, match="Host must be .* inside the workspace container"):
+    with pytest.raises(ToolValidationError, match="Host must be .* inside the workspace"):
         await executor.execute(
             "port_forward",
             {
                 "action": "open",
                 "port": 3000,
-                "host": "10.0.0.5",
+                "host": "192.0.2.5",
             },
             runtime=ToolRuntimeContext(session_id=uuid4()),
         )

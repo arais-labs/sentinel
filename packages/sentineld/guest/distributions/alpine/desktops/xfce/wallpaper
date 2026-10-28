@@ -1,0 +1,11 @@
+#!/bin/sh
+# Alpine's Xfce wallpaper: `wallpaper IMAGE`, run by the agent as the desktop user. Every output's
+# backdrop (xfce4-desktop's last-image properties), zoomed.
+set -eu
+found=
+for property in $(xfconf-query -c xfce4-desktop -l | grep '/last-image$'); do
+	xfconf-query -c xfce4-desktop -p "$property" -s "$1"
+	xfconf-query -c xfce4-desktop -p "${property%/*}/image-style" -s 5
+	found=1
+done
+[ -n "$found" ] || { echo "Xfce has no active wallpaper output" >&2; exit 1; }

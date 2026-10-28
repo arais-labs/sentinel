@@ -1,0 +1,168 @@
+--- a/src/devices/src/virtio/net/device.rs
++++ b/src/devices/src/virtio/net/device.rs
+@@ -15,6 +15,8 @@
+ 
+ use super::backend::{ReadError, WriteError};
+ use super::worker::NetWorker;
++#[cfg(unix)]
++use super::worker::{Control, WorkerControl};
+ 
+ #[cfg(unix)]
+ use std::os::fd::RawFd;
+@@ -89,6 +91,9 @@
+     pub(crate) device_state: DeviceState,
+ 
+     config: VirtioNetConfig,
++
++    #[cfg(unix)]
++    worker: Option<WorkerControl>,
+ }
+ 
+ impl Net {
+@@ -119,6 +124,9 @@
+ 
+             device_state: DeviceState::Inactive,
+             config,
++
++            #[cfg(unix)]
++            worker: None,
+         })
+     }
+ 
+@@ -195,6 +203,16 @@
+             ActivateError::BadActivate
+         })?;
+ 
++        // Activated again after a reset: the parked worker carries on with the new queues.
++        #[cfg(unix)]
++        if let Some(control) = &self.worker {
++            let wake = rx_q.event.clone();
++            *control.lock().unwrap() = Control::Resume(rx_q, tx_q);
++            _ = wake.write(1);
++            self.device_state = DeviceState::Activated(mem, interrupt);
++            return Ok(());
++        }
++
+         match NetWorker::new(
+             rx_q,
+             tx_q,
+@@ -204,6 +222,10 @@
+             self.cfg_backend.clone(),
+         ) {
+             Ok(worker) => {
++                #[cfg(unix)]
++                {
++                    self.worker = Some(worker.control());
++                }
+                 worker.run();
+                 self.device_state = DeviceState::Activated(mem, interrupt);
+                 Ok(())
+@@ -221,4 +243,17 @@
+     fn is_activated(&self) -> bool {
+         self.device_state.is_activated()
+     }
++
++    // A driver resets the device before letting it go, and waits for the reset to complete
++    // (Windows' netkvm on every power-down: without it, shutdown hangs until the power watchdog
++    // stops the system).
++    #[cfg(unix)]
++    fn reset(&mut self) -> bool {
++        let Some(control) = &self.worker else {
++            return false;
++        };
++        *control.lock().unwrap() = Control::Park;
++        self.device_state = DeviceState::Inactive;
++        true
++    }
+ }
+--- a/src/devices/src/virtio/net/worker/mod.rs
++++ b/src/devices/src/virtio/net/worker/mod.rs
+@@ -1,7 +1,7 @@
+ #[cfg(unix)]
+ mod unix;
+ #[cfg(unix)]
+-pub use unix::NetWorker;
++pub use unix::{Control, NetWorker, WorkerControl};
+ 
+ #[cfg(windows)]
+ mod windows;
+--- a/src/devices/src/virtio/net/worker/unix.rs
++++ b/src/devices/src/virtio/net/worker/unix.rs
+@@ -1,6 +1,8 @@
+ use std::cmp;
++use std::mem;
+ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+ use std::result;
++use std::sync::{Arc, Mutex};
+ use std::thread;
+ 
+ use utils::epoll::{ControlOperation, Epoll, EpollEvent, EventSet};
+@@ -19,7 +21,19 @@
+ #[cfg(target_os = "macos")]
+ use std::os::fd::RawFd;
+ 
++/// What the device asks of its worker. A driver's reset parks it: the rings are no longer the
++/// driver's, so it must not touch them once the reset returns. A new activation resumes it on the
++/// new queues.
++pub enum Control {
++    Run,
++    Park,
++    Resume(DeviceQueue, DeviceQueue),
++}
++
++pub type WorkerControl = Arc<Mutex<Control>>;
++
+ pub struct NetWorker {
++    control: WorkerControl,
+     rx_q: DeviceQueue,
+     tx_q: DeviceQueue,
+     interrupt: InterruptTransport,
+@@ -72,6 +86,7 @@
+         };
+ 
+         Ok(Self {
++            control: Arc::new(Mutex::new(Control::Run)),
+             rx_q,
+             tx_q,
+ 
+@@ -90,6 +105,10 @@
+         })
+     }
+ 
++    pub fn control(&self) -> WorkerControl {
++        self.control.clone()
++    }
++
+     pub fn run(self) {
+         thread::Builder::new()
+             .name("virtio-net worker".into())
+@@ -130,6 +149,29 @@
+         loop {
+             match epoll.wait(epoll_events.len(), -1, epoll_events.as_mut_slice()) {
+                 Ok(ev_cnt) => {
++                    // Held while handling the events: a reset waits for them to be done.
++                    let control = self.control.clone();
++                    let mut control = control.lock().unwrap();
++                    match mem::replace(&mut *control, Control::Run) {
++                        Control::Run => {}
++                        Control::Park => {
++                            *control = Control::Park;
++                            for event in &epoll_events[0..ev_cnt] {
++                                if event.fd() == virtq_rx_ev_fd {
++                                    _ = self.rx_q.event.read();
++                                } else if event.fd() == virtq_tx_ev_fd {
++                                    _ = self.tx_q.event.read();
++                                }
++                            }
++                            continue;
++                        }
++                        Control::Resume(rx_q, tx_q) => {
++                            self.rx_q = rx_q;
++                            self.tx_q = tx_q;
++                            // Frames the backend sent while parked raise no new edge.
++                            self.process_backend_socket_readable();
++                        }
++                    }
+                     for event in &epoll_events[0..ev_cnt] {
+                         let source = event.fd();
+                         let event_set = event.event_set();

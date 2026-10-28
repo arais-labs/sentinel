@@ -27,15 +27,12 @@ Additional brand artwork distributed by [Devicon](https://github.com/devicons/de
 - clang: https://raw.githubusercontent.com/devicons/devicon/master/icons/llvm/llvm-original.svg
 - cmake: https://raw.githubusercontent.com/devicons/devicon/master/icons/cmake/cmake-original.svg
 - chromium: https://raw.githubusercontent.com/devicons/devicon/master/icons/chrome/chrome-original.svg
-- postgres: https://raw.githubusercontent.com/devicons/devicon/master/icons/postgresql/postgresql-original.svg
-- mysql: https://raw.githubusercontent.com/devicons/devicon/master/icons/mysql/mysql-original.svg
-- redis: https://raw.githubusercontent.com/devicons/devicon/master/icons/redis/redis-original.svg
 
 - uv: https://docs.astral.sh/uv/assets/logo-letter.svg
 - Ninja has no bundled brand asset; it uses the standard build-tools icon.
 
 Container tools:
-- Docker Builder: https://raw.githubusercontent.com/devicons/devicon/master/icons/docker/docker-original.svg (Devicon, MIT)
+- Docker: https://raw.githubusercontent.com/devicons/devicon/master/icons/docker/docker-original.svg (Devicon, MIT)
 - kubectl: https://raw.githubusercontent.com/devicons/devicon/master/icons/kubernetes/kubernetes-original.svg (Devicon, MIT)
 - Helm: https://raw.githubusercontent.com/devicons/devicon/master/icons/helm/helm-original.svg (Devicon, MIT)
 - K3s: https://github.com/cncf/artwork/blob/master/projects/k3s/icon/color/k3s-icon-color.svg

@@ -1,0 +1,6 @@
+# Debian's backports, for the packages etc/apt/preferences.d/sentinel-mesa takes from them.
+Types: deb
+URIs: http://deb.debian.org/debian
+Suites: trixie-backports
+Components: main
+Signed-By: /usr/share/keyrings/debian-archive-keyring.pgp

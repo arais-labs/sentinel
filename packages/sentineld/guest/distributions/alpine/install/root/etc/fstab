@@ -1,0 +1,2 @@
+LABEL=sentinel-root / ext4 rw 0 1
+LABEL=ESP /boot vfat rw 0 2

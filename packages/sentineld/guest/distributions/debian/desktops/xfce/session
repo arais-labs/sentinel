@@ -1,0 +1,3 @@
+#!/bin/sh
+# Debian's Xfce session, run by session.sh as the desktop user on the X server it started.
+exec startxfce4

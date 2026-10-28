@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
-from app.services.runtime.status import _config_checks, _summary
+from app.services.workspaces.machines.status import _config_checks, _summary
 
 
 def _runtime(provider: str, workspaces_dir: str, **overrides: object) -> SimpleNamespace:
@@ -28,7 +28,7 @@ def test_local_config_checks_skip_ssh_and_pass(tmp_path: Path) -> None:
     assert "config_ssh_username" not in checks
     assert "config_auth" not in checks
     assert checks["config_execution"].status == "pass"
-    assert checks["config_execution"].detail == "Private workspace container on this Mac"
+    assert checks["config_execution"].detail == "Private workspace VM on this Mac"
     assert all(c.status == "pass" for c in checks.values())
 
 

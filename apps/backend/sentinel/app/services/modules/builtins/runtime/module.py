@@ -36,7 +36,7 @@ MODULE = ModuleDefinition(
     icon="terminal",
     system=True,
     grouped_tool=True,
-    description="Run commands in the attached workspace's persistent Linux container. The shared project retains its absolute host path (shown in workspace context); /root, /tmp, installed packages, and Docker data stay inside this workspace. Install missing tools with the workspace package manager (apk on Alpine, apt-get on Ubuntu/Debian) or under $HOME/.local/bin (on PATH). Reuse setup across sessions. Selected database services and their connection details are in /etc/sentinel/services/README.md. Use exec for shell commands, pane_input for interactive input, and window/pane actions for terminal layout. Container root cannot modify the host outside the shared project.",
+    description="Run commands in the attached workspace's persistent Linux container. The shared project retains its absolute host path (shown in workspace context); /root, /tmp, installed packages, and Docker data stay inside this workspace. Install missing tools with the workspace's package manager or under $HOME/.local/bin (on PATH). Reuse setup across sessions. Use exec for shell commands, pane_input for interactive input, and window/pane actions for terminal layout. Container root cannot modify the host outside the shared project.",
     actions=[
         action(
             "workspace",
@@ -52,7 +52,7 @@ MODULE = ModuleDefinition(
                 "pane_id": PANE,
                 "cwd": {
                     "type": "string",
-                    "description": "Optional directory inside the container; omit to retain shell cwd.",
+                    "description": "Optional directory inside the workspace; omit to retain shell cwd.",
                 },
                 "env": {"type": "object", "additionalProperties": {"type": "string"}},
                 "timeout_seconds": {

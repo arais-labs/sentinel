@@ -8,9 +8,9 @@ from pathlib import Path
 from tests.test_terminal_view import Viewer as PaneViewer
 
 from app.config import settings
-from app.services.runtime.container_transport import ContainerTransport
-from app.services.runtime.terminal_manager import RuntimeTerminalManager
-from app.services.runtime.workspace import WorkspaceLocation
+from app.services.workspaces.transport.guest import GuestTransport
+from app.services.workspaces.terminals.manager import TerminalManager
+from app.services.workspaces.paths import WorkspaceLocation
 
 
 class Viewer(PaneViewer):
@@ -26,16 +26,14 @@ class Viewer(PaneViewer):
 async def main():
     settings.workspace_runtime_socket = os.environ["TEST_RUNTIME_SOCKET"]
     settings.sentinel_desktop_token = os.environ["TEST_RUNTIME_TOKEN"]
-    transport = ContainerTransport(
-        UUID(os.environ["TEST_WORKSPACE"]), os.environ["TEST_PROJECT"], []
-    )
-    terminal = RuntimeTerminalManager(
+    transport = GuestTransport(UUID(os.environ["TEST_WORKSPACE"]), os.environ["TEST_PROJECT"], [])
+    terminal = TerminalManager(
         transport,
         workspace_location=WorkspaceLocation(os.environ["TEST_PROJECT"], "/var/lib/sentinel"),
     )
     session = str(uuid4())
     tasks = []
-    from app.services.runtime.panes import TmuxPanes
+    from app.services.workspaces.terminals.panes import TmuxPanes
 
     pane_updates = asyncio.Event()
 

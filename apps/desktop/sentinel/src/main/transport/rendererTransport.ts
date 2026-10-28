@@ -33,7 +33,7 @@ export function installRendererTransport(getTransport: () => LocalTransport | un
       ...cors, 'access-control-allow-methods': 'GET, POST, PUT, PATCH, DELETE, HEAD',
       'access-control-allow-headers': 'content-type, range, if-range',
     } });
-    if (/^\/(api\/|health(?:$|\/)|vnc\/)/.test(url.pathname)) {
+    if (/^\/(api\/|health(?:$|\/))/.test(url.pathname)) {
       try {
         const transport = getTransport();
         if (!transport) throw new Error('Backend unavailable');

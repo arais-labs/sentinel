@@ -1,0 +1,462 @@
+libkrun: a 2D virtio GPU (no shared memory window): EDID only, no capsets, rutabaga's 2D component
+(fences complete at once), every resource in guest pages; for guests whose driver drives only dumb
+framebuffers and a cursor (Windows' viogpudo). It goes on virtio-pci (the PCI context gets the map
+sender too), and completes a driver's reset (Windows resets it on a driver restart and at
+power-down): its threads end and the next activation starts afresh.
+
+diff -ruN a/src/devices/src/virtio/gpu/device.rs b/src/devices/src/virtio/gpu/device.rs
+--- a/src/devices/src/virtio/gpu/device.rs	2026-10-13 19:26:11
++++ b/src/devices/src/virtio/gpu/device.rs	2026-10-13 19:26:11
+@@ -1,5 +1,7 @@
+ use std::io::Write;
++use std::sync::atomic::{AtomicBool, Ordering};
+ use std::sync::{Arc, Mutex};
++use std::thread::JoinHandle;
+ use std::os::fd::{AsRawFd, BorrowedFd};
+ 
+ use nix::fcntl::{FcntlArg, OFlag, fcntl};
+@@ -23,6 +25,7 @@
+ use crate::display::DisplayInfo;
+ use crate::virtio::InterruptTransport;
+ use krun_display::DisplayBackend;
++use utils::eventfd::EventFd;
+ #[cfg(target_os = "macos")]
+ use utils::worker_message::WorkerMessage;
+ 
+@@ -35,6 +38,9 @@
+     | (1u64 << uapi::VIRTIO_GPU_F_CONTEXT_INIT)
+     | (1u64 << uapi::VIRTIO_GPU_F_BLOB_ALIGNMENT);
+ 
++// A 2D GPU (no shared memory region: no blobs, no 3D contexts) offers only these.
++const AVAIL_FEATURES_2D: u64 = (1u64 << uapi::VIRTIO_F_VERSION_1) | (1u64 << uapi::VIRTIO_GPU_F_EDID);
++
+ const QUEUE_SIZE: u16 = 256;
+ static QUEUE_CONFIG: [QueueConfig; defs::NUM_QUEUES] =
+     [QueueConfig::new(QUEUE_SIZE); defs::NUM_QUEUES];
+@@ -51,8 +57,16 @@
+     displays: Box<[DisplayInfo]>,
+     display_backend: DisplayBackend<'static>,
+     blob_alignment: u32,
++    // The active device's threads (the worker, the cursor queue) and how to end them.
++    threads: Option<Threads>,
+ }
+ 
++struct Threads {
++    stop: Arc<AtomicBool>,
++    wake: Vec<Arc<EventFd>>,
++    handles: Vec<JoinHandle<()>>,
++}
++
+ impl Gpu {
+     pub fn new(
+         virgl_flags: u32,
+@@ -78,6 +92,7 @@
+             blob_alignment: 4096,
+             #[cfg(not(target_os = "macos"))]
+             blob_alignment: unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as u32,
++            threads: None,
+         })
+     }
+ 
+@@ -152,7 +167,11 @@
+ 
+ impl VirtioDevice for Gpu {
+     fn avail_features(&self) -> u64 {
+-        self.avail_features
++        if self.shm_region.is_some() {
++            self.avail_features
++        } else {
++            self.avail_features & AVAIL_FEATURES_2D
++        }
+     }
+ 
+     fn acked_features(&self) -> u64 {
+@@ -184,7 +203,11 @@
+             events_read: 0,
+             events_clear: 0,
+             num_scanouts: self.displays.len() as u32,
+-            num_capsets: virgl_flags_to_capsets(self.virgl_flags).count_ones(),
++            num_capsets: if self.shm_region.is_some() {
++                virgl_flags_to_capsets(self.virgl_flags).count_ones()
++            } else {
++                0
++            },
+             blob_alignment: self.blob_alignment,
+         };
+ 
+@@ -223,16 +246,16 @@
+             ActivateError::BadActivate
+         })?;
+ 
+-        let shm_region = match self.shm_region.as_ref() {
+-            Some(s) => s.clone(),
+-            None => panic!("virtio_gpu: missing SHM region"),
+-        };
++        // None: a 2D GPU.
++        let shm_region = self.shm_region.clone();
+ 
+         // The cursor queue: requests complete at once (a full queue blocks the guest's display
+         // updates); the newest cursor image is handed to the worker, which owns the resources, and
+         // the worker is woken through the control queue's event.
+         let cursor = Arc::new(Mutex::new(None));
+-        {
++        let stop = Arc::new(AtomicBool::new(false));
++        let wake = vec![control_q.event.clone(), cursor_q.event.clone()];
++        let cursor_thread = {
+             let evt = cursor_q.event.try_clone().unwrap();
+             let wake = control_q.event.try_clone().unwrap();
+             // SAFETY: evt is valid for the duration of the fcntl calls.
+@@ -244,6 +267,7 @@
+             let mem = mem.clone();
+             let interrupt = interrupt.clone();
+             let cursor = cursor.clone();
++            let stop = stop.clone();
+             std::thread::Builder::new()
+                 .name("gpu cursor".into())
+                 .spawn(move || {
+@@ -251,6 +275,9 @@
+                         if evt.read().is_err() {
+                             continue;
+                         }
++                        if stop.load(Ordering::Acquire) {
++                            return;
++                        }
+                         let mut used = false;
+                         let mut update = None;
+                         while let Some(head) = queue.pop(&mem) {
+@@ -276,8 +303,8 @@
+                         }
+                     }
+                 })
+-                .unwrap();
+-        }
++                .unwrap()
++        };
+ 
+         let worker = Worker::new(
+             control_q,
+@@ -291,8 +318,14 @@
+             self.displays.clone(),
+             self.display_backend,
+             cursor,
++            stop.clone(),
+         );
+-        worker.run();
++        let worker_thread = worker.run();
++        self.threads = Some(Threads {
++            stop,
++            wake,
++            handles: vec![worker_thread, cursor_thread],
++        });
+ 
+         self.device_state = DeviceState::Activated(mem, interrupt);
+ 
+@@ -303,6 +336,31 @@
+         self.device_state.is_activated()
+     }
+ 
++    // A driver resets the device before letting it go and waits for it (Windows' viogpudo, on a
++    // driver restart or power-down). A 2D GPU ends its threads and resources and starts afresh on
++    // the next activation; a 3D one does not reset: its blobs stay mapped into the guest.
++    fn reset(&mut self) -> bool {
++        if self.shm_region.is_some() {
++            return false;
++        }
++        let Some(threads) = self.threads.take() else {
++            return false;
++        };
++        threads.stop.store(true, Ordering::Release);
++        for evt in &threads.wake {
++            if let Err(e) = evt.write(1) {
++                error!("gpu: cannot wake a thread to stop: {e:?}");
++            }
++        }
++        for handle in threads.handles {
++            if handle.join().is_err() {
++                error!("gpu: a thread panicked");
++            }
++        }
++        self.device_state = DeviceState::Inactive;
++        true
++    }
++
+     fn shm_region(&self) -> Option<&VirtioShmRegion> {
+         debug!("virtio_gpu: GET_shm_region");
+         self.shm_region.as_ref()
+@@ -326,9 +384,11 @@
+         )
+         .unwrap();
+         assert_ne!(
+-            gpu.avail_features() & (1 << uapi::VIRTIO_GPU_F_BLOB_ALIGNMENT),
++            gpu.avail_features & (1 << uapi::VIRTIO_GPU_F_BLOB_ALIGNMENT),
+             0
+         );
++        // Without a shared memory region it is a 2D GPU: no blobs, no 3D.
++        assert_eq!(gpu.avail_features(), AVAIL_FEATURES_2D);
+         let mut data = [0u8; 4];
+         gpu.read_config(16, &mut data);
+         let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as u32;
+diff -ruN a/src/devices/src/virtio/gpu/virtio_gpu.rs b/src/devices/src/virtio/gpu/virtio_gpu.rs
+--- a/src/devices/src/virtio/gpu/virtio_gpu.rs	2026-10-13 19:26:11
++++ b/src/devices/src/virtio/gpu/virtio_gpu.rs	2026-10-13 19:26:11
+@@ -209,6 +209,8 @@
+     // guest's backing pages and are copied to the display on flush.
+     guest_2d: BTreeMap<u32, Vec<(GuestAddress, usize)>>,
+     guest_mem: Option<GuestMemoryMmap>,
++    // false: a 2D GPU, whose rutabaga is the 2D component only; every resource is a guest_2d one.
++    accelerated: bool,
+ }
+ 
+ impl VirtioGpu {
+@@ -340,6 +342,20 @@
+         builder.build().ok()
+     }
+ 
++    /// A 2D GPU's: no renderer (fences complete at once); its resources live in guest memory.
++    pub fn create_2d_rutabaga(
++        mem: GuestMemoryMmap,
++        queue_ctl: Arc<Mutex<VirtQueue>>,
++        interrupt: InterruptTransport,
++        fence_state: Arc<Mutex<FenceState>>,
++    ) -> Option<Rutabaga> {
++        let fence = Self::create_fence_handler(mem, queue_ctl, fence_state, interrupt);
++        RutabagaBuilder::new(0, fence)
++            .set_default_component(rutabaga_gfx::RutabagaComponentType::Rutabaga2D)
++            .build()
++            .ok()
++    }
++
+     pub fn create_fallback_rutabaga(
+         mem: GuestMemoryMmap,
+         queue_ctl: Arc<Mutex<VirtQueue>>,
+@@ -364,6 +380,7 @@
+         queue_ctl: Arc<Mutex<VirtQueue>>,
+         interrupt: InterruptTransport,
+         virgl_flags: u32,
++        accelerated: bool,
+         #[cfg(target_os = "macos")] map_sender: Sender<WorkerMessage>,
+         export_table: Option<ExportTable>,
+         displays: Box<[DisplayInfo]>,
+@@ -371,14 +388,24 @@
+     ) -> Self {
+         let fence_state = Arc::new(Mutex::new(Default::default()));
+ 
+-        let rutabaga = match Self::create_rutabaga(
+-            mem.clone(),
+-            queue_ctl.clone(),
+-            interrupt.clone(),
+-            fence_state.clone(),
+-            virgl_flags,
+-            export_table.clone(),
+-        ) {
++        let created = if accelerated {
++            Self::create_rutabaga(
++                mem.clone(),
++                queue_ctl.clone(),
++                interrupt.clone(),
++                fence_state.clone(),
++                virgl_flags,
++                export_table.clone(),
++            )
++        } else {
++            Self::create_2d_rutabaga(
++                mem.clone(),
++                queue_ctl.clone(),
++                interrupt.clone(),
++                fence_state.clone(),
++            )
++        };
++        let rutabaga = match created {
+             Some(rutabaga) => rutabaga,
+             None => {
+                 warn!(
+@@ -407,6 +434,7 @@
+             display_backend,
+             guest_2d: BTreeMap::new(),
+             guest_mem: None,
++            accelerated,
+             #[cfg(target_os = "macos")]
+             map_sender,
+         }
+@@ -443,10 +471,13 @@
+         resource_id: u32,
+         resource_create_3d: ResourceCreate3D,
+     ) -> VirtioGpuResult {
+-        if let Err(e) = self
+-            .rutabaga
+-            .resource_create_3d(resource_id, resource_create_3d)
+-        {
++        let created = if self.accelerated {
++            self.rutabaga
++                .resource_create_3d(resource_id, resource_create_3d)
++        } else {
++            Err(rutabaga_gfx::RutabagaError::InvalidComponent) // no renderer: guest memory
++        };
++        if let Err(e) = created {
+             if resource_create_3d.target != RUTABAGA_PIPE_TEXTURE_2D
+                 || ResourceFormat::try_from(resource_create_3d.format).is_err()
+             {
+diff -ruN a/src/devices/src/virtio/gpu/worker.rs b/src/devices/src/virtio/gpu/worker.rs
+--- a/src/devices/src/virtio/gpu/worker.rs	2026-10-13 19:26:11
++++ b/src/devices/src/virtio/gpu/worker.rs	2026-10-13 19:26:11
+@@ -1,5 +1,6 @@
+ use std::io::Read;
+ use std::os::fd::{AsRawFd, BorrowedFd};
++use std::sync::atomic::{AtomicBool, Ordering};
+ use std::sync::{Arc, Mutex};
+ use std::thread;
+ 
+@@ -36,7 +37,7 @@
+     control_queue: Arc<Mutex<VirtQueue>>,
+     mem: GuestMemoryMmap,
+     interrupt: InterruptTransport,
+-    shm_region: VirtioShmRegion,
++    shm_region: Option<VirtioShmRegion>,
+     virgl_flags: u32,
+     #[cfg(target_os = "macos")]
+     map_sender: Sender<WorkerMessage>,
+@@ -45,6 +46,8 @@
+     display_backend: DisplayBackend<'static>,
+     // The newest cursor update from the cursor queue (device.rs), applied here.
+     cursor: Arc<Mutex<Option<virtio_gpu_update_cursor>>>,
++    // Set on a device reset: the worker ends (and its resources with it) at its next wake-up.
++    stop: Arc<AtomicBool>,
+ }
+ 
+ impl Worker {
+@@ -53,13 +56,14 @@
+         control_q: DeviceQueue,
+         mem: GuestMemoryMmap,
+         interrupt: InterruptTransport,
+-        shm_region: VirtioShmRegion,
++        shm_region: Option<VirtioShmRegion>,
+         virgl_flags: u32,
+         #[cfg(target_os = "macos")] map_sender: Sender<WorkerMessage>,
+         export_table: Option<ExportTable>,
+         displays: Box<[DisplayInfo]>,
+         display_backend: DisplayBackend<'static>,
+         cursor: Arc<Mutex<Option<virtio_gpu_update_cursor>>>,
++        stop: Arc<AtomicBool>,
+     ) -> Self {
+         // Clone the eventfd so we have our own file description, then set it to blocking mode.
+         let control_evt = control_q.event.try_clone().unwrap();
+@@ -82,14 +86,15 @@
+             displays,
+             display_backend,
+             cursor,
++            stop,
+         }
+     }
+ 
+-    pub fn run(self) {
++    pub fn run(self) -> thread::JoinHandle<()> {
+         thread::Builder::new()
+             .name("gpu worker".into())
+             .spawn(|| self.work())
+-            .unwrap();
++            .unwrap()
+     }
+ 
+     fn work(mut self) {
+@@ -98,6 +103,7 @@
+             self.control_queue.clone(),
+             self.interrupt.clone(),
+             self.virgl_flags,
++            self.shm_region.is_some(),
+             #[cfg(target_os = "macos")]
+             self.map_sender.clone(),
+             self.export_table.take(),
+@@ -110,6 +116,9 @@
+                 error!("Failed to read control_evt: {e:?}");
+                 continue;
+             }
++            if self.stop.load(Ordering::Acquire) {
++                return;
++            }
+             if let Some(info) = self.cursor.lock().unwrap().take() {
+                 virtio_gpu.update_cursor(
+                     info.pos.scanout_id,
+@@ -355,15 +364,16 @@
+                 info.strides[0],
+                 info.offsets[0],
+             ),
+-            GpuCommand::ResourceMapBlob(info) => {
+-                let resource_id = info.resource_id;
+-                let offset = info.offset;
+-                virtio_gpu.resource_map_blob(resource_id, &self.shm_region, offset)
+-            }
+-            GpuCommand::ResourceUnmapBlob(info) => {
+-                let resource_id = info.resource_id;
+-                virtio_gpu.resource_unmap_blob(resource_id, &self.shm_region)
+-            }
++            GpuCommand::ResourceMapBlob(info) => match &self.shm_region {
++                Some(shm_region) => {
++                    virtio_gpu.resource_map_blob(info.resource_id, shm_region, info.offset)
++                }
++                None => Err(GpuResponse::ErrUnspec),
++            },
++            GpuCommand::ResourceUnmapBlob(info) => match &self.shm_region {
++                Some(shm_region) => virtio_gpu.resource_unmap_blob(info.resource_id, shm_region),
++                None => Err(GpuResponse::ErrUnspec),
++            },
+         }
+     }
+ 
+diff -ruN a/src/libkrun/src/api/device_builders.rs b/src/libkrun/src/api/device_builders.rs
+--- a/src/libkrun/src/api/device_builders.rs	2026-10-13 19:26:11
++++ b/src/libkrun/src/api/device_builders.rs	2026-10-13 19:26:11
+@@ -113,6 +113,9 @@
+         shm_manager: &'a ShmManager,
+         intc: IrqChip,
+         device_index: usize,
++        #[cfg(target_os = "macos")] map_sender: Option<
++            crossbeam_channel::Sender<utils::worker_message::WorkerMessage>,
++        >,
+     ) -> Self {
+         Self {
+             vmm,
+@@ -126,7 +129,7 @@
+                 Ok(())
+             }),
+             #[cfg(target_os = "macos")]
+-            map_sender: None,
++            map_sender,
+         }
+     }
+ 
+@@ -468,7 +471,7 @@
+         shm_manager: &ShmManager,
+         intc: IrqChip,
+         first_index: usize,
+-        #[cfg(target_os = "macos")] _map_sender: Option<
++        #[cfg(target_os = "macos")] map_sender: Option<
+             crossbeam_channel::Sender<utils::worker_message::WorkerMessage>,
+         >,
+     ) -> Result<(), VmmError> {
+@@ -479,6 +482,8 @@
+                 shm_manager,
+                 intc.clone(),
+                 first_index + index,
++                #[cfg(target_os = "macos")]
++                map_sender.clone(),
+             );
+             device.attach(&mut ctx)?;
+         }
+@@ -1898,6 +1903,8 @@
+         }
+     }
+ 
++    /// The guest's window onto host-visible GPU memory (blobs); 0: none, a 2D-only GPU (dumb
++    /// framebuffers and cursors in guest memory, no 3D context), which works on virtio-pci.
+     pub fn shm_size(mut self, size: usize) -> Self {
+         self.shm_size = size;
+         self
+@@ -1910,7 +1917,7 @@
+     #[cfg_attr(feature = "ffi", ffier(skip))]
+     fn requirements(&self) -> DeviceRequirements {
+         DeviceRequirements {
+-            gpu_shm: Some(self.shm_size),
++            gpu_shm: (self.shm_size > 0).then_some(self.shm_size),
+             ..Default::default()
+         }
+     }

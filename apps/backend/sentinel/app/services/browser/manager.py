@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from app.services.runtime.playwright_runtime import (
+from app.services.browser.launch_options import (
     apply_stealth_init_script,
     build_browser_context_options,
     build_chromium_launch_options,

@@ -11,7 +11,7 @@ import { WorkspaceRuntime } from '../workspace/workspaceRuntime.js';
 import { WorkspaceLifecycle } from '../workspace/workspaceLifecycle.js';
 import { RuntimeCompatibilityError } from '../workspace/runtimeCompatibility.js';
 
-const actions = new Set(['status', 'recover', 'prepare', 'reinstall', 'exec', 'stop', 'delete', 'display_start', 'port_forward', 'deployment', 'remote_register', 'configure', 'workspaces', 'workspace_resume', 'runtime_migration_inputs']);
+const actions = new Set(['status', 'recover', 'prepare', 'reinstall', 'exec', 'stop', 'delete', 'display', 'keyboard', 'clipboard', 'wallpaper', 'computer', 'computer_cancel', 'port_forward', 'deployment', 'remote_register', 'configure', 'workspaces', 'workspace_resume', 'runtime_migration_inputs', 'catalog']);
 
 export async function openWorkspaceRuntimeBridge(runtime: WorkspaceRuntime, socketPath: string, token: string, lifecycle: WorkspaceLifecycle, notifications?: NotificationCenter, worker?: WorkerClient) {
   const remotes = new Map<string, { socket: string; bridge: Awaited<ReturnType<typeof openWorkspaceRuntimeBridge>>; runtime: WorkspaceRuntime }>();
@@ -58,7 +58,9 @@ export async function openWorkspaceRuntimeBridge(runtime: WorkspaceRuntime, sock
           reply = { socket: existing.bridge.socketPath };
         } else {
           if (existing) { await existing.bridge.close(); await existing.runtime.stop(); remotes.delete(values.machine); }
-          const remoteRuntime = new WorkspaceRuntime({ remote: true, command: '/usr/bin/nc', args: ['-U', values.socket], onProgress: () => {}, onFailure: () => {}, log: () => {} });
+          // The tunnel reaches the remote Mac's sentineld socket; it installs each distribution itself.
+          const remoteRuntime = new WorkspaceRuntime({ remote: true, socket: values.socket, root: '',
+            onProgress: () => {}, onFailure: () => {}, log: () => {} });
           try {
             await remoteRuntime.start();
             const bridge = await openWorkspaceRuntimeBridge(remoteRuntime, values.bridge, token, lifecycle, notifications, new WorkerClient(remoteRuntime));
@@ -72,10 +74,6 @@ export async function openWorkspaceRuntimeBridge(runtime: WorkspaceRuntime, sock
       else if (action === 'deployment') reply = await runtime.deployment(values.prepare !== false);
       else if (action === 'status') reply = await lifecycle.overview();
       else if (action === 'recover') { await lifecycle.recover(values.workspace); reply = { state: 'recovering' }; }
-      else if (action === 'display_start') {
-        if (lifecycle.status().states[values.workspace]?.state !== 'running') throw new Error('Start the workspace before its desktop');
-        reply = await runtime.request(action, values);
-      }
       else if (action === 'prepare' || action === 'reinstall') {
         if (action === 'reinstall' && values.confirmed !== true) throw new Error('Confirm erasing the workspace Linux disk before reinstalling');
         await lifecycle.prepare(values.workspace, values.project, values.tools || [], action === 'reinstall', values.resources, values.notificationContext, values.distribution, values.desktop, values.browser);

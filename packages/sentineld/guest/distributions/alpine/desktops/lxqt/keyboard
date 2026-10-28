@@ -1,0 +1,13 @@
+#!/bin/sh
+# Alpine's LXQt: labwc takes the XKB defaults from its environment file, reread on SIGHUP. Run by
+# the agent as the desktop user with XKB_LAYOUT, XKB_VARIANT, XKB_MODEL and XKB_OPTIONS.
+set -eu
+file=$HOME/.config/labwc/environment
+mkdir -p "${file%/*}"
+{
+	grep -v '^XKB_DEFAULT_' "$file" 2>/dev/null || :
+	printf 'XKB_DEFAULT_LAYOUT=%s\nXKB_DEFAULT_VARIANT=%s\nXKB_DEFAULT_MODEL=%s\nXKB_DEFAULT_OPTIONS=%s\n' \
+		"$XKB_LAYOUT" "$XKB_VARIANT" "$XKB_MODEL" "$XKB_OPTIONS"
+} >"$file.next"
+mv "$file.next" "$file"
+pkill -HUP -u "$(id -u)" -x labwc || :

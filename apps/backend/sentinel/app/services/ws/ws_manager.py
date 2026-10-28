@@ -164,7 +164,7 @@ class ConnectionManager:
         await self.broadcast(
             session_id,
             {
-                "type": "runtime_ready",
+                "type": "workspace_ready",
                 "session_id": session_id,
             },
         )

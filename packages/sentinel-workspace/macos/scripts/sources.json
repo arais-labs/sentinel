@@ -1,0 +1,146 @@
+{
+  "libkrun": {
+    "url": "https://codeload.github.com/containers/libkrun/tar.gz/713866b80514097967b1f4a7d6908a11b2c0a104",
+    "revision": "713866b80514097967b1f4a7d6908a11b2c0a104"
+  },
+  "virglrenderer": {
+    "url": "https://gitlab.freedesktop.org/virgl/virglrenderer/-/archive/c8e3fc3bd2f367d92fb1027061fe51afeec5136e/virglrenderer.tar.gz",
+    "revision": "c8e3fc3bd2f367d92fb1027061fe51afeec5136e"
+  },
+  "angle": {
+    "url": "https://chromium.googlesource.com/angle/angle/+archive/25078a7740fdebf86b5396ec971aaebf418ce01d.tar.gz",
+    "revision": "25078a7740fdebf86b5396ec971aaebf418ce01d",
+    "gn": {
+      "url": "https://chrome-infra-packages.appspot.com/dl/gn/gn/mac-arm64/+/git_revision:0035961837fbcfe875d855744b3eda4fd2eefb43",
+      "revision": "0035961837fbcfe875d855744b3eda4fd2eefb43"
+    },
+    "deps": {
+      "build": {
+        "url": "https://chromium.googlesource.com/chromium/src/build.git/+archive/b6d3bf1cb558bd41aa171d518b0ee60c3eb1b10e.tar.gz",
+        "revision": "b6d3bf1cb558bd41aa171d518b0ee60c3eb1b10e"
+      },
+      "buildtools": {
+        "url": "https://chromium.googlesource.com/chromium/src/buildtools.git/+archive/8790f824690e131a78f36e80ecc05a9272f061c8.tar.gz",
+        "revision": "8790f824690e131a78f36e80ecc05a9272f061c8"
+      },
+      "testing": {
+        "url": "https://chromium.googlesource.com/chromium/src/testing/+archive/ac3dba73bfe38df61c280905447d2a87dce5c327.tar.gz",
+        "revision": "ac3dba73bfe38df61c280905447d2a87dce5c327"
+      },
+      "tools/clang": {
+        "url": "https://chromium.googlesource.com/chromium/src/tools/clang.git/+archive/5d74b9a37cb53eb7b941f86670be1e906e75b742.tar.gz",
+        "revision": "5d74b9a37cb53eb7b941f86670be1e906e75b742"
+      },
+      "third_party/abseil-cpp": {
+        "url": "https://chromium.googlesource.com/chromium/src/third_party/abseil-cpp/+archive/9aa0c314d9bd021e48f0193f0af3316a7e8bec63.tar.gz",
+        "revision": "9aa0c314d9bd021e48f0193f0af3316a7e8bec63"
+      },
+      "third_party/zlib": {
+        "url": "https://chromium.googlesource.com/chromium/src/third_party/zlib/+archive/456ae730017b9b4bd3371927abc82627fd51feef.tar.gz",
+        "revision": "456ae730017b9b4bd3371927abc82627fd51feef"
+      },
+      "third_party/jsoncpp": {
+        "url": "https://chromium.googlesource.com/chromium/src/third_party/jsoncpp/+archive/f62d44704b4da6014aa231cfc116e7fd29617d2a.tar.gz",
+        "revision": "f62d44704b4da6014aa231cfc116e7fd29617d2a"
+      },
+      "third_party/spirv-headers/src": {
+        "url": "https://chromium.googlesource.com/external/github.com/KhronosGroup/SPIRV-Headers/+archive/86f980c731e62ae4eaf383d320449d71687936bf.tar.gz",
+        "revision": "86f980c731e62ae4eaf383d320449d71687936bf"
+      },
+      "third_party/spirv-tools/src": {
+        "url": "https://chromium.googlesource.com/external/github.com/KhronosGroup/SPIRV-Tools/+archive/2a7f2309a662a70dcd46a3e30ec013b300e7fab8.tar.gz",
+        "revision": "2a7f2309a662a70dcd46a3e30ec013b300e7fab8"
+      },
+      "third_party/rust/cxx/chromium_integration": {
+        "url": "https://chromium.googlesource.com/chromium/src/third_party/rust/+archive/98ef22e4e02f422db2bbb66d334adf010e716bbd/cxx/chromium_integration.tar.gz",
+        "revision": "98ef22e4e02f422db2bbb66d334adf010e716bbd"
+      }
+    }
+  },
+  "neptune-protocol": {
+    "url": "https://codeload.github.com/utmapp/virglrenderer/tar.gz/5d26f605f50f8e22002ec6db5fb775e1992d4e96",
+    "revision": "5d26f605f50f8e22002ec6db5fb775e1992d4e96"
+  },
+  "libepoxy": {
+    "url": "https://codeload.github.com/anholt/libepoxy/tar.gz/d1f952c4565c389d82fd1657153e84e050f35b27",
+    "revision": "d1f952c4565c389d82fd1657153e84e050f35b27"
+  },
+  "dxmt": {
+    "url": "https://codeload.github.com/utmapp/dxmt/tar.gz/917b721c0f915c6524b416169fdce4427a39524f",
+    "revision": "917b721c0f915c6524b416169fdce4427a39524f"
+  },
+  "mingw-directx-headers": {
+    "url": "https://codeload.github.com/misyltoad/mingw-directx-headers/tar.gz/9df86f2341616ef1888ae59919feaa6d4fad693d",
+    "revision": "9df86f2341616ef1888ae59919feaa6d4fad693d"
+  },
+  "llvm-project": {
+    "url": "https://github.com/llvm/llvm-project/releases/download/llvmorg-15.0.7/llvm-project-15.0.7.src.tar.xz",
+    "revision": "llvmorg-15.0.7"
+  },
+  "cmake": {
+    "url": "https://github.com/Kitware/CMake/releases/download/v3.31.6/cmake-3.31.6-macos-universal.tar.gz",
+    "revision": "v3.31.6"
+  },
+  "mesa": {
+    "url": "https://gitlab.freedesktop.org/mesa/mesa/-/archive/e46ee71b43b1693a2baf22740b0157e7d31b79cc/mesa.tar.gz",
+    "revision": "e46ee71b43b1693a2baf22740b0157e7d31b79cc"
+  },
+  "venus-protocol": {
+    "url": "https://gitlab.freedesktop.org/virgl/venus-protocol/-/archive/ca19b6358d7cc491bc3e4de76f04c6700876a8fa/venus-protocol.tar.gz",
+    "revision": "ca19b6358d7cc491bc3e4de76f04c6700876a8fa"
+  },
+  "ffier": {
+    "url": "https://codeload.github.com/mtjhrc/ffier/tar.gz/4609b7a4e3c826b64e961569dc9403d45ebc0dad",
+    "revision": "4609b7a4e3c826b64e961569dc9403d45ebc0dad"
+  },
+  "rutabaga_gfx": {
+    "url": "https://static.crates.io/crates/rutabaga_gfx/rutabaga_gfx-0.1.85.crate",
+    "revision": "0.1.85"
+  },
+  "edk2": {
+    "url": "https://codeload.github.com/tianocore/edk2/tar.gz/2970e5699ba6267f3384ffab20f96647578aebc8",
+    "revision": "2970e5699ba6267f3384ffab20f96647578aebc8",
+    "submodules": {
+      "BaseTools/Source/C/BrotliCompress/brotli": {
+        "url": "https://codeload.github.com/google/brotli/tar.gz/e230f474b87134e8c6c85b630084c612057f253e",
+        "revision": "e230f474b87134e8c6c85b630084c612057f253e"
+      },
+      "MdeModulePkg/Library/BrotliCustomDecompressLib/brotli": {
+        "url": "https://codeload.github.com/google/brotli/tar.gz/e230f474b87134e8c6c85b630084c612057f253e",
+        "revision": "e230f474b87134e8c6c85b630084c612057f253e"
+      },
+      "MdeModulePkg/Universal/RegularExpressionDxe/oniguruma": {
+        "url": "https://codeload.github.com/kkos/oniguruma/tar.gz/4ef89209a239c1aea328cf13c05a2807e5c146d1",
+        "revision": "4ef89209a239c1aea328cf13c05a2807e5c146d1"
+      },
+      "MdePkg/Library/BaseFdtLib/libfdt": {
+        "url": "https://codeload.github.com/devicetree-org/pylibfdt/tar.gz/cfff805481bdea27f900c32698171286542b8d3c",
+        "revision": "cfff805481bdea27f900c32698171286542b8d3c"
+      },
+      "MdePkg/Library/MipiSysTLib/mipisyst": {
+        "url": "https://codeload.github.com/MIPI-Alliance/public-mipi-sys-t/tar.gz/370b5944c046bab043dd8b133727b2135af7747a",
+        "revision": "370b5944c046bab043dd8b133727b2135af7747a"
+      },
+      "CryptoPkg/Library/OpensslLib/openssl": {
+        "url": "https://codeload.github.com/openssl/openssl/tar.gz/8cf17aaeb4599f8af87fefd810b5b5fee90fe69e",
+        "revision": "8cf17aaeb4599f8af87fefd810b5b5fee90fe69e"
+      },
+      "CryptoPkg/Library/MbedTlsLib/mbedtls": {
+        "url": "https://codeload.github.com/ARMmbed/mbedtls/tar.gz/0bebf8b8c7f07abe3571ded48a11aa907a1ffb20",
+        "revision": "0bebf8b8c7f07abe3571ded48a11aa907a1ffb20"
+      },
+      "SecurityPkg/DeviceSecurity/SpdmLib/libspdm": {
+        "url": "https://codeload.github.com/DMTF/libspdm/tar.gz/f55cf6d48ec69b4ac60a63903e9c6a2cb0fd155d",
+        "revision": "f55cf6d48ec69b4ac60a63903e9c6a2cb0fd155d"
+      },
+      "TcgTpmPkg/Library/TpmLib/TPM": {
+        "url": "https://codeload.github.com/TrustedComputingGroup/TPM/tar.gz/bc29a21d44b01396223c152a4834e52318591770",
+        "revision": "bc29a21d44b01396223c152a4834e52318591770"
+      }
+    }
+  },
+  "acpica": {
+    "url": "https://github.com/open-acpica/acpica/releases/download/20260930/acpica-unix-20260930.tar.gz",
+    "sha256": "aa18901b92e30749be0edc3081c8d550c61fce4fa37546fc6a65d367a4ae71a5"
+  }
+}

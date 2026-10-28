@@ -1,0 +1,78 @@
+#!/bin/sh
+# Runs once, as the first boot's init: installs the system with Debian's own tools (apt; the kernel
+# boots through Debian's systemd-boot and kernel-install), reports to sentineld on the EFI system
+# partition (sentinel/result: "ok" or why it failed), and powers off.
+export PATH=/usr/sbin:/usr/bin HOME=/root LANG=C.UTF-8 DEBIAN_FRONTEND=noninteractive
+b=/run/busybox  # the first boot's initramfs put it there
+esp=/boot/efi
+finish() {
+	sync
+	# A clean root, or workspaces cannot grow it: report ok only once it is read-only.
+	mount -o remount,ro / || set -- "failed: the root file system stays busy"
+	echo "$1" > $esp/sentinel/result
+	umount $esp
+	$b poweroff -f
+}
+step() {
+	echo "sentinel-build: $*"
+	"$@" || finish "failed: $*"
+}
+mount -t proc proc /proc
+mount -t sysfs sys /sys
+mount -t devtmpfs dev /dev
+mkdir -p /dev/pts && mount -t devpts devpts /dev/pts
+mount -t efivarfs efivarfs /sys/firmware/efi/efivars
+mkdir -p $esp
+mount -t vfat -o umask=0077 /dev/vda1 $esp || { echo "sentinel-build: cannot mount the EFI system partition"; $b poweroff -f; }
+# The network, for apt: DHCP with busybox until systemd-networkd takes over on the next boot.
+cat > /run/dhcp <<'END'
+#!/run/busybox sh
+[ "$1" = bound ] || exit 0
+/run/busybox ifconfig "$interface" "$ip" netmask "$subnet"
+/run/busybox route add default gw "${router%% *}" dev "$interface"
+for d in $dns; do echo "nameserver $d"; done > /etc/resolv.conf
+END
+chmod +x /run/dhcp
+step $b ip link set lo up
+step $b ip link set eth0 up
+step $b udhcpc -q -n -f -i eth0 -s /run/dhcp
+# What only containers want: services that may not start, apt caches dropped after each install.
+rm -f /usr/sbin/policy-rc.d /etc/apt/apt.conf.d/docker-*
+# The archive as it was on the recipe's date (its pinned sources' snapshot), so the same recipe
+# installs the same packages; workspaces then use Debian's own mirrors. Plain HTTP: apt checks the
+# signatures, and the root has no CA certificates yet. (Backports too go aside: nothing here is from them.)
+snapshot=20261005T000000Z
+mv /etc/apt/sources.list.d/debian.sources /etc/apt/sources.list.d/backports.sources /run/
+cat > /etc/apt/sources.list.d/snapshot.sources <<END
+Types: deb
+URIs: http://snapshot.debian.org/archive/debian/$snapshot
+Suites: trixie trixie-updates
+Components: main
+Check-Valid-Until: no
+Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
+
+Types: deb
+URIs: http://snapshot.debian.org/archive/debian-security/$snapshot
+Suites: trixie-security
+Components: main
+Check-Valid-Until: no
+Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
+END
+step apt-get -o Acquire::Retries=5 update
+step apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
+	linux-image-arm64 systemd systemd-sysv systemd-resolved udev dbus kmod e2fsprogs systemd-boot
+rm /etc/apt/sources.list.d/snapshot.sources
+mv /run/debian.sources /run/backports.sources /etc/apt/sources.list.d/
+rm -rf /var/lib/apt/lists/*
+step systemctl enable systemd-networkd systemd-resolved sentineld-agent
+ln -sf ../run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
+apt-get clean
+# From now on Debian's kernel and initramfs boot the disk (kernel-install's debian-<version>
+# entries); the first boot's kernel, initramfs and entry go. This script stays, the record of
+# how the disk was made.
+ls $esp/loader/entries/debian-*.conf >/dev/null || finish "failed: no boot entry for Debian's kernel"
+rm -f $esp/sentinel/linux $esp/sentinel/initramfs $esp/loader/entries/sentinel.conf
+# Each workspace gets its own machine ID on its first boot, and its name from sentineld.
+: > /etc/machine-id
+echo sentinel > /etc/hostname
+finish ok

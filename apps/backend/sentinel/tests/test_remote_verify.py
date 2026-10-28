@@ -9,28 +9,29 @@ import pytest
 from fastapi import HTTPException
 
 from app.routers import machines
-from app.services.runtime import remote_verify as verify
-from app.services.runtime.remote_mac import RuntimeUnavailable, runtime_assets
+from app.services.workspaces.machines.remote import verify
+from app.services.workspaces.machines.remote.worker import RuntimeUnavailable
 from tests.test_remote_mac import machine
-from tests.workspace_image_assets import image_names
-from app.services.runtime.workspace_image_assets import runtime_version
+from app.services.workspaces.machines.remote.release import SIGNED, runtime_version
+from tests.runtime_release_assets import release_names
+
+ROOT = "/Users/test/.sentinel/sentineld"
+RELEASE = ROOT + "/releases/test"
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("inventory", [None, [], ["workspace-images/../../escape"]])
-async def test_invalid_image_inventory_is_rejected_before_remote_execution(installation, inventory):
-    installation.documents["manifest.json"]["workspaceImageFiles"] = inventory
+@pytest.mark.parametrize("inventory", [None, [], ["sentineld/../../escape"]])
+async def test_invalid_inventory_is_rejected_before_remote_execution(installation, inventory):
+    installation.documents["manifest.json"]["files"] = inventory
     report = await verify.verify_installation(installation.machine)
     assert report["checks"][0]["status"] == "failed"
     installation.conn.run.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_image_inventory_tampering_changes_release_hash(installation):
+async def test_inventory_tampering_changes_release_hash(installation):
     manifest = installation.documents["manifest.json"]
-    manifest["workspaceImageFiles"] = [
-        name.replace("a" * 64, "b" * 64) for name in manifest["workspaceImageFiles"]
-    ]
+    manifest["files"] = sorted([*manifest["files"], "sentineld/share/extra.sh"])
     report = await verify.verify_installation(installation.machine)
     assert (
         next(check for check in report["checks"] if check["name"] == "Runtime files")["status"]
@@ -41,23 +42,14 @@ async def test_image_inventory_tampering_changes_release_hash(installation):
 
 @pytest.fixture
 def installation(monkeypatch):
-    root = "/Users/test/.sentinel/runtime"
-    files = runtime_assets(
-        {
-            "executable": root + "/releases/test/sentinel-workspace-runtime",
-            "kernel": root + "/releases/test/kernel",
-            "workspaceImageFiles": image_names(),
-        },
-        installed=True,
-    )
-    count = len(files)
-    hashes = [hashlib.sha256(str(i).encode()).hexdigest() for i in range(count)]
+    root = ROOT
+    names = release_names()
+    hashes = [hashlib.sha256(str(i).encode()).hexdigest() for i in range(len(names))]
     manifest = {
-        "executable": root + "/releases/test/sentinel-workspace-runtime",
-        "kernel": root + "/releases/test/kernel",
-        "initImage": "init",
-        "workspaceImageFiles": image_names(),
-        "version": runtime_version([name for _, name in files], hashes, "init"),
+        "executable": RELEASE + "/sentineld/bin/sentineld",
+        "workspace": RELEASE + "/sentinel-workspace",
+        "files": names,
+        "version": runtime_version(names, hashes),
     }
     documents = {"manifest.json": manifest, "update.json": {"phase": "complete"}}
 
@@ -79,8 +71,7 @@ def installation(monkeypatch):
                     stdout="\n".join(f"{digest}  file" for digest in hashes),
                     exit_status=0,
                 ),
-                SimpleNamespace(exit_status=0),
-                SimpleNamespace(exit_status=0),
+                *(SimpleNamespace(exit_status=0) for _ in SIGNED),
             ]
         ),
     )
@@ -102,16 +93,10 @@ async def test_verification_checks_all_assets_and_only_requests_status(installat
     report = await verify.verify_installation(installation.machine)
     assert all(check["status"] == "passed" for check in report["checks"])
     commands = [call.args[0] for call in installation.conn.run.call_args_list]
-    assert "graphics/icd.json" in commands[0]
-    assert "graphics/libvulkan_kosmickrisp.dylib" in commands[0]
-    assert "graphics/gpu-bridge.py" not in commands[0]
-    assert "graphics/kernel-linux-arm64.tar.xz" in commands[0]
-    assert "graphics/desktop-runtime.tar.xz" in commands[0]
-    assert "graphics/libEGL.dylib" in commands[0]
-    assert "workspace-images/manifest.json" in commands[0]
-    assert all(name in commands[0] for name in image_names())
-    assert "codesign --verify --strict" in commands[1]
-    assert "codesign --verify --strict" in commands[2]
+    assert all(f"{RELEASE}/{name}" in commands[0] for name in release_names())
+    assert len(commands) == 1 + len(SIGNED)
+    for command, name in zip(commands[1:], SIGNED):
+        assert "codesign --verify --strict" in command and f"{RELEASE}/{name}" in command
     installation.status.assert_awaited_once_with(
         installation.conn,
         installation.documents["manifest.json"],
@@ -130,18 +115,18 @@ async def test_missing_or_changed_files_never_execute_installed_helper(
     installation, bad_output, exit_status
 ):
     installation.conn.run.side_effect = [
-        SimpleNamespace(stdout=bad_output, exit_status=exit_status)
+        SimpleNamespace(stdout=bad_output, exit_status=exit_status),
     ]
     report = await verify.verify_installation(installation.machine)
     assert report["checks"][-1]["status"] == "failed"
     installation.status.assert_not_called()
-    assert installation.conn.run.await_count == 1
+    assert installation.conn.run.await_count == 1  # checksums only; no signature checks
 
 
 @pytest.mark.asyncio
 async def test_invalid_signature_does_not_probe_service(installation):
     results = list(installation.conn.run.side_effect)
-    results[1] = SimpleNamespace(exit_status=1)
+    results[2] = SimpleNamespace(exit_status=1)
     installation.conn.run.side_effect = results
     report = await verify.verify_installation(installation.machine)
     assert any(check["status"] == "failed" for check in report["checks"])
@@ -153,7 +138,8 @@ async def test_invalid_signature_does_not_probe_service(installation):
     "executable",
     [
         "/tmp/other",
-        "/Users/test/.sentinel/runtime/releases/../../sentinel-workspace-runtime",
+        "/Users/test/.sentinel/sentineld/releases/../../sentineld/bin/sentineld",
+        "/Users/test/.sentinel/sentineld/releases/test/sentinel-workspace-runtime",
     ],
 )
 async def test_invalid_manifest_paths_are_not_executed(installation, executable):
@@ -207,7 +193,7 @@ async def test_concurrent_remote_update_invalidates_verification(installation):
 async def test_verify_endpoint_requires_enrolled_identity_before_connection(
     monkeypatch,
 ):
-    from app.services.runtime import machines as service
+    from app.services.workspaces.machines import registry as service
 
     monkeypatch.setattr(machines.machines_module, "get_machine", AsyncMock(return_value=object()))
     monkeypatch.setattr(
@@ -223,7 +209,7 @@ async def test_verify_endpoint_requires_enrolled_identity_before_connection(
 
 @pytest.mark.asyncio
 async def test_verify_endpoint_returns_results_without_installation(monkeypatch, installation):
-    from app.services.runtime import machines as service
+    from app.services.workspaces.machines import registry as service
 
     monkeypatch.setattr(machines.machines_module, "get_machine", AsyncMock(return_value=object()))
     monkeypatch.setattr(service, "resolve_machine_secret", lambda row: installation.machine)
@@ -237,24 +223,20 @@ async def test_verify_endpoint_returns_results_without_installation(monkeypatch,
 
 @pytest.mark.asyncio
 async def test_reinstall_endpoint_preserves_running_workspace_approval(monkeypatch, installation):
-    from app.services.runtime import (
-        machines as service,
-    )
-    from app.services.runtime import (
-        remote_mac,
-        workspace_containers,
-    )
-    from app.services.runtime.remote_mac import UpdateApprovalRequired
+    from app.services.workspaces.machines import registry as service
+    from app.services.workspaces.machines.remote import worker
+    from app.services.workspaces import lifecycle
+    from app.services.workspaces.machines.remote.worker import UpdateApprovalRequired
 
     monkeypatch.setattr(machines.machines_module, "get_machine", AsyncMock(return_value=object()))
     monkeypatch.setattr(service, "resolve_machine_secret", lambda row: installation.machine)
     assets = {"executable": "shipped-helper"}
-    monkeypatch.setattr(workspace_containers, "local_request", AsyncMock(return_value=assets))
-    monkeypatch.setattr(remote_mac, "plan_installation", AsyncMock(return_value=[]))
+    monkeypatch.setattr(lifecycle, "local_request", AsyncMock(return_value=assets))
+    monkeypatch.setattr(worker, "plan_installation", AsyncMock(return_value=[]))
     details = [{"id": "workspace", "name": "Started during upload"}]
     monkeypatch.setattr(service, "runtime_workspace_labels", AsyncMock(return_value=details))
     install = AsyncMock(side_effect=UpdateApprovalRequired(["workspace"]))
-    monkeypatch.setattr(remote_mac, "install", install)
+    monkeypatch.setattr(worker, "install", install)
     result = await machines.install_remote_runtime(
         installation.machine.id,
         machines.RuntimeInstallRequest(approved=True, reinstall=True, host_key="pinned-key"),

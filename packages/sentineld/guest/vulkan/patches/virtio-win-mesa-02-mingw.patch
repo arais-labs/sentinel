@@ -1,0 +1,29 @@
+mesa: build with clang and mingw-w64 (zig's aarch64-windows-gnu) as well as MSVC: os_misc.h uses
+NULL without <stddef.h>, and mingw's <sys/types.h> already has pid_t.
+
+diff --git a/src/util/os_misc.h b/src/util/os_misc.h
+index 03cd59c3683..9b411ac7126 100644
+--- a/src/util/os_misc.h
++++ b/src/util/os_misc.h
+@@ -36,6 +36,7 @@
+ 
+ #include <stdint.h>
+ #include <stdbool.h>
++#include <stddef.h>
+ 
+ #include "util/detect.h"
+ 
+diff --git a/src/virtio/vulkan/vn_common.h b/src/virtio/vulkan/vn_common.h
+index 7566a9f723f..0622964d2c5 100644
+--- a/src/virtio/vulkan/vn_common.h
++++ b/src/virtio/vulkan/vn_common.h
+@@ -50,7 +50,9 @@
+ 
+ #if DETECT_OS_WINDOWS
+ #include <processthreadsapi.h>
++#ifndef __MINGW32__ /* mingw's sys/types.h has it */
+ typedef int pid_t;
++#endif
+ #else
+ #include <sys/syscall.h>
+ 

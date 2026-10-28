@@ -19,7 +19,7 @@ test('migration exports existing IDs, resources and manifest-only registrations 
     assert.deepEqual(Object.keys(records).sort(), [id, orphan].sort());
     assert.deepEqual(records[id].spec.resources, entry.resources);
     assert.equal(records[orphan].spec.name, 'Historical project');
-    assert.ok(records[id].spec.steps.length);
+    assert.deepEqual(records[id].spec, { name: 'Project', project: '/project', distribution: 'ubuntu', desktop: 'none', tools: ['git'], resources: entry.resources });
     assert.equal(await readFile(file, 'utf8'), source);
     await assert.rejects(runtimeMigrationInputs(root, machine, [{ ...reference, project: '/different' }]), /disagree/);
     await assert.rejects(runtimeMigrationInputs(root, machine, [reference, { ...reference, name: 'Conflict' }]), /disagree/);

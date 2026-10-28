@@ -5,8 +5,8 @@ from uuid import uuid4
 import pytest
 
 from app.models import GitAccount
-from app.schemas.runtime import RuntimeExecResult
-from app.services.runtime.environment import RuntimeEnvironment
+from app.schemas.session_workspace import ExecResult
+from app.services.workspaces.machines.environment import MachineEnvironment
 from sentral.errors import ToolValidationError
 from app.services.tools.executor import ToolExecutor
 from app.services.tools.registry import ToolRuntimeContext
@@ -36,7 +36,7 @@ class _SessionFactory:
 class _SSHStub:
     def __init__(self) -> None:
         self.calls: list[dict[str, object]] = []
-        self.next_result: RuntimeExecResult | None = None
+        self.next_result: ExecResult | None = None
 
     async def run(
         self,
@@ -45,31 +45,31 @@ class _SSHStub:
         timeout: int = 300,
         cwd: str | None = None,
         env: dict[str, str] | None = None,
-    ) -> RuntimeExecResult:
+    ) -> ExecResult:
         self.calls.append({"command": command, "timeout": timeout, "cwd": cwd, "env": env})
         if self.next_result is not None:
             result = self.next_result
             self.next_result = None
             return result
         if "remote get-url" in command:
-            return RuntimeExecResult(
+            return ExecResult(
                 exit_status=0,
                 stdout="https://github.com/example-org/sample-app.git\n",
                 stderr="",
             )
-        return RuntimeExecResult(exit_status=0, stdout="ok\n", stderr="")
+        return ExecResult(exit_status=0, stdout="ok\n", stderr="")
 
 
 class _TerminalManagerStub:
-    def __init__(self, *, environment: RuntimeEnvironment | None = None) -> None:
+    def __init__(self, *, environment: MachineEnvironment | None = None) -> None:
         self.ssh = _SSHStub()
         self.prepared: list[str] = []
-        from app.services.runtime.workspace import WorkspaceLocation
+        from app.services.workspaces.paths import WorkspaceLocation
 
         self.workspace_location = WorkspaceLocation("/Users/test/project", "/var/lib/sentinel")
-        self._environment = environment or RuntimeEnvironment(os="linux", sandbox="container")
+        self._environment = environment or MachineEnvironment(os="linux", sandbox="vm")
 
-    async def runtime_environment(self) -> RuntimeEnvironment:
+    async def runtime_environment(self) -> MachineEnvironment:
         return self._environment
 
     async def prepare_workspace(self, session_id: str) -> None:
@@ -131,8 +131,8 @@ async def test_git_read_runs_hidden_in_ssh_runtime(monkeypatch) -> None:
     db = _fake_db_with_account()
     manager = _TerminalManagerStub()
     monkeypatch.setattr(handlers, "AsyncSessionLocal", _SessionFactory(db))
-    monkeypatch.setattr(handlers, "runtime_configured", _runtime_configured_stub)
-    monkeypatch.setattr(handlers, "get_runtime_terminal_manager", _terminal_manager_stub(manager))
+    monkeypatch.setattr(handlers, "workspace_attached", _runtime_configured_stub)
+    monkeypatch.setattr(handlers, "get_terminal_manager", _terminal_manager_stub(manager))
 
     registry = build_default_registry()
     executor = ToolExecutor(registry)
@@ -209,8 +209,8 @@ async def test_git_gh_routes_authentication_through_broker(monkeypatch) -> None:
     db = _fake_db_with_account()
     manager = _TerminalManagerStub()
     monkeypatch.setattr(handlers, "AsyncSessionLocal", _SessionFactory(db))
-    monkeypatch.setattr(handlers, "runtime_configured", _runtime_configured_stub)
-    monkeypatch.setattr(handlers, "get_runtime_terminal_manager", _terminal_manager_stub(manager))
+    monkeypatch.setattr(handlers, "workspace_attached", _runtime_configured_stub)
+    monkeypatch.setattr(handlers, "get_terminal_manager", _terminal_manager_stub(manager))
 
     registry = build_default_registry()
     executor = ToolExecutor(registry)
@@ -241,8 +241,8 @@ async def test_git_gh_pr_view_infers_owner_from_origin(monkeypatch) -> None:
     db = _fake_db_with_account()
     manager = _TerminalManagerStub()
     monkeypatch.setattr(handlers, "AsyncSessionLocal", _SessionFactory(db))
-    monkeypatch.setattr(handlers, "runtime_configured", _runtime_configured_stub)
-    monkeypatch.setattr(handlers, "get_runtime_terminal_manager", _terminal_manager_stub(manager))
+    monkeypatch.setattr(handlers, "workspace_attached", _runtime_configured_stub)
+    monkeypatch.setattr(handlers, "get_terminal_manager", _terminal_manager_stub(manager))
 
     registry = build_default_registry()
     executor = ToolExecutor(registry)
@@ -270,12 +270,12 @@ async def test_git_reports_missing_runtime_executable(monkeypatch) -> None:
 
     db = _fake_db_with_account()
     manager = _TerminalManagerStub()
-    manager.ssh.next_result = RuntimeExecResult(
+    manager.ssh.next_result = ExecResult(
         exit_status=127, stdout="", stderr="bash: gh: command not found\n"
     )
     monkeypatch.setattr(handlers, "AsyncSessionLocal", _SessionFactory(db))
-    monkeypatch.setattr(handlers, "runtime_configured", _runtime_configured_stub)
-    monkeypatch.setattr(handlers, "get_runtime_terminal_manager", _terminal_manager_stub(manager))
+    monkeypatch.setattr(handlers, "workspace_attached", _runtime_configured_stub)
+    monkeypatch.setattr(handlers, "get_terminal_manager", _terminal_manager_stub(manager))
 
     registry = build_default_registry()
     executor = ToolExecutor(registry)
@@ -299,10 +299,10 @@ async def test_git_read_targets_project_subdirectory_in_container(monkeypatch) -
     from app.services.modules.builtins.git_tool import handlers
 
     db = _fake_db_with_account()
-    manager = _TerminalManagerStub(environment=RuntimeEnvironment(os="linux", sandbox="container"))
+    manager = _TerminalManagerStub(environment=MachineEnvironment(os="linux", sandbox="vm"))
     monkeypatch.setattr(handlers, "AsyncSessionLocal", _SessionFactory(db))
-    monkeypatch.setattr(handlers, "runtime_configured", _runtime_configured_stub)
-    monkeypatch.setattr(handlers, "get_runtime_terminal_manager", _terminal_manager_stub(manager))
+    monkeypatch.setattr(handlers, "workspace_attached", _runtime_configured_stub)
+    monkeypatch.setattr(handlers, "get_terminal_manager", _terminal_manager_stub(manager))
 
     registry = build_default_registry()
     executor = ToolExecutor(registry)
@@ -333,7 +333,7 @@ def test_project_paths_use_real_root_without_virtual_path_translation():
         _build_hidden_runtime_command,
         _project_cwd,
     )
-    from app.services.runtime.workspace import WorkspaceLocation, workspace_paths
+    from app.services.workspaces.paths import WorkspaceLocation, workspace_paths
 
     project = "/Users/test/My Projects/repo"
     assert _project_cwd(None, project) == project
@@ -345,7 +345,7 @@ def test_project_paths_use_real_root_without_virtual_path_translation():
     command = _build_hidden_runtime_command(
         paths,
         os_name="linux",
-        sandbox="container",
+        sandbox="vm",
         cwd=project,
         tokens=["git", "status"],
     )

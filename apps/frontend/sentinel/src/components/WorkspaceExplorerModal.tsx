@@ -1,0 +1,79 @@
+import { X } from 'lucide-react';
+
+import type { WorkspaceDesktopStatus, WorkspaceStatusResponse, Session } from '../types/api';
+
+interface WorkspaceExplorerModalProps {
+  open: boolean;
+  session: Session | null;
+  info: WorkspaceDesktopStatus | WorkspaceStatusResponse | null;
+  onClose: () => void;
+}
+
+export function WorkspaceExplorerModal({ open, session, info, onClose }: WorkspaceExplorerModalProps) {
+  if (!open) return null;
+  const provider = info && 'provider' in info ? info.provider : null;
+  const workspaceStatus = info && 'status' in info ? info : null;
+  const status = workspaceStatus?.status ?? provider?.status ?? null;
+  const targetItems = workspaceStatus
+    ? [
+        { key: 'machine', label: 'Machine', value: workspaceStatus.machine.name || workspaceStatus.machine.host || '-' },
+        { key: 'host', label: 'Host', value: workspaceStatus.machine.host || '-' },
+        { key: 'user', label: 'User', value: workspaceStatus.machine.username || '-' },
+        { key: 'os', label: 'OS', value: workspaceStatus.os },
+        { key: 'sandbox', label: 'Sandbox', value: workspaceStatus.sandbox },
+      ]
+    : [];
+  const items = provider?.items ?? targetItems;
+
+  return (
+    <div className="fixed inset-0 z-900 flex items-center justify-center bg-black/60 p-6">
+      <div className="w-full max-w-2xl overflow-hidden rounded-xl border border-(--border-subtle) bg-(--surface-0) shadow-2xl">
+        <div className="flex items-center justify-between border-b border-(--border-subtle) px-4 py-3">
+          <div>
+            <div className="text-xs font-bold uppercase tracking-widest text-(--text-muted)">
+              Machine
+            </div>
+            <div className="mt-1 text-sm font-semibold text-(--text-primary)">
+              {session?.title || session?.id || 'Session workspace'}
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-md p-2 text-(--text-muted) transition-colors hover:bg-(--surface-2) hover:text-(--text-primary)"
+            title="Close"
+          >
+            <X size={16} />
+          </button>
+        </div>
+        <div className="space-y-3 p-4">
+          <div className="rounded-lg border border-(--border-subtle) bg-(--surface-1) p-3">
+            <div className="text-[10px] font-bold uppercase tracking-widest text-(--text-muted)">
+              Provider
+            </div>
+            <div className="mt-2 text-sm font-semibold text-(--text-primary)">
+              {provider?.label || workspaceStatus?.machine.name || 'Machine'}
+            </div>
+            <div className="mt-1 text-xs leading-relaxed text-(--text-secondary)">
+              {provider?.summary || workspaceStatus?.summary || `Machine is ${status || 'available'}.`}
+            </div>
+          </div>
+          {items.length ? (
+            <div className="grid gap-2 sm:grid-cols-2">
+              {items.map((item) => (
+                <div key={item.key} className="rounded-lg border border-(--border-subtle) bg-(--surface-1) p-3">
+                  <div className="text-[9px] font-bold uppercase tracking-widest text-(--text-muted)">
+                    {item.label}
+                  </div>
+                  <div className="mt-1 truncate font-mono text-xs text-(--text-primary)">
+                    {item.value || '-'}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}

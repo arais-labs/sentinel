@@ -1,5 +1,8 @@
 name: CI
 # PRs test source and build candidates. Release only promotes tested artifacts.
+# A candidate is the app (installer + payload) and the workspace runtime components it downloads:
+# each component has its own workflow (sentineld.yml, sentinel-workspace.yml), which
+# reuses its last build when its sources are unchanged.
 on:
   pull_request:
     types: [opened, synchronize, reopened]
@@ -72,21 +75,6 @@ jobs:
         working-directory: apps/desktop/sentinel
         run: npm test
 
-      - name: Test graphics artifact handoff
-        working-directory: apps/desktop/sentinel
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y python3-pil
-          npm run test:graphics-build
-
-      - name: Test native workspace image packaging
-        working-directory: apps/desktop/sentinel
-        run: python3 -m unittest discover -s tests/unit -p 'test_workspace_image*.py'
-
-      - name: Test GPU credit transport
-        working-directory: apps/desktop/sentinel
-        run: SENTINEL_TRANSPORT_SANITIZERS=1 python3 -m unittest discover -s tests/graphics/transport -p 'test_*.py'
-
   frontend-build:
     name: Frontend Build
     runs-on: ubuntu-24.04
@@ -114,127 +102,22 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  guest-graphics:
-    name: Build Linux ARM guest graphics and workspace images
-    if: github.base_ref != 'main'
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v6
-      - name: Cache verified guest graphics
-        id: guest-cache
-        uses: actions/cache/restore@v5
-        with:
-          path: |
-            apps/desktop/sentinel/build/graphics-sources/guest/*.tar.xz
-            apps/desktop/sentinel/build/graphics-sources/guest/*.json
-            apps/desktop/sentinel/build/graphics-sources/guest/*.snap
-            apps/desktop/sentinel/build/graphics-sources/guest/klipper-*/
-          key: >-
-            guest-graphics-${{ runner.os }}-${{ runner.arch }}-v4-${{ hashFiles(
-              'apps/desktop/sentinel/runtime.lock.json',
-              'apps/desktop/sentinel/scripts/packaging/graphics/*.py',
-              'apps/desktop/sentinel/scripts/packaging/graphics/*.sh',
-              'apps/desktop/sentinel/scripts/packaging/graphics/kernel.config',
-              'apps/desktop/sentinel/native/graphics/sources.lock.json',
-              'apps/desktop/sentinel/native/graphics/display/**',
-              'apps/desktop/sentinel/native/graphics/patches/kernel-*.patch',
-              'apps/desktop/sentinel/native/graphics/patches/remote-proxy-fences.patch',
-              'apps/desktop/sentinel/native/graphics/patches/guest/**',
-              'apps/desktop/sentinel/native/graphics/patches/labwc/**',
-              'apps/desktop/sentinel/native/graphics/patches/localsearch/**',
-              'apps/desktop/sentinel/native/graphics/guest/driver/**',
-              'apps/desktop/sentinel/native/graphics/guest/gpu-bridge.c',
-              'apps/desktop/sentinel/native/graphics/transport/**',
-              'apps/desktop/sentinel/native/graphics/packaging/gpu-2404/**',
-              'apps/desktop/sentinel/native/graphics/packaging/klipper/**',
-              'apps/desktop/sentinel/native/graphics/patches/klipper/**',
-              'apps/desktop/sentinel/native/workspace-images/bases.json') }}
-          restore-keys: |
-            guest-graphics-${{ runner.os }}-${{ runner.arch }}-v4-
-            guest-graphics-${{ runner.os }}-${{ runner.arch }}-v3-
+  sentineld:
+    name: sentineld
+    uses: ./.github/workflows/sentineld.yml
 
-      # Run even on a cache hit: build-guest validates the archive checksum and inputs.
-      - name: Build kernel and guest graphics
-        working-directory: apps/desktop/sentinel
-        run: |
-          python3 scripts/packaging/graphics/build-guest.py build/guest-graphics kernel
-          python3 scripts/packaging/graphics/build-guest.py build/guest-graphics musl
-          python3 scripts/packaging/graphics/build-guest.py build/guest-graphics glibc
-          python3 scripts/packaging/graphics/build-guest.py build/guest-graphics gpu-2404
-          python3 scripts/packaging/graphics/build-guest.py build/guest-graphics klipper-alpine
-          python3 scripts/packaging/graphics/build-guest.py build/guest-graphics klipper-debian
-          python3 scripts/packaging/graphics/build-guest.py build/guest-graphics klipper-ubuntu
-      # Save compiled work before image packaging, which can fail independently.
-      - name: Save verified guest graphics
-        if: steps.guest-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v5
-        with:
-          key: ${{ steps.guest-cache.outputs.cache-primary-key }}
-          path: |
-            apps/desktop/sentinel/build/graphics-sources/guest/*.tar.xz
-            apps/desktop/sentinel/build/graphics-sources/guest/*.json
-            apps/desktop/sentinel/build/graphics-sources/guest/*.snap
-            apps/desktop/sentinel/build/graphics-sources/guest/klipper-*/
-      # PR caches cannot be restored by another PR. Preserve this verified cache
-      # for the beta promotion workflow to save in the shared base-branch scope.
-      - name: Prepare guest graphics cache handoff
-        working-directory: apps/desktop/sentinel/build/graphics-sources/guest
-        shell: bash
-        env:
-          GUEST_CACHE_KEY: ${{ steps.guest-cache.outputs.cache-primary-key }}
-        run: |
-          shopt -s nullglob
-          cache_files=(*.tar.xz *.json *.snap klipper-*/)
-          test "${#cache_files[@]}" -gt 0
-          tar -cf "$RUNNER_TEMP/guest-graphics-cache.tar" "${cache_files[@]}"
-          printf '%s\n' "$GUEST_CACHE_KEY" > "$RUNNER_TEMP/guest-graphics-cache-key"
-      - uses: actions/upload-artifact@v7
-        with:
-          name: guest-graphics-cache-arm64
-          path: |
-            ${{ runner.temp }}/guest-graphics-cache.tar
-            ${{ runner.temp }}/guest-graphics-cache-key
-          compression-level: 0
-          if-no-files-found: error
-          retention-days: 7
-      - uses: actions/upload-artifact@v7
-        with:
-          name: guest-graphics-arm64
-          path: apps/desktop/sentinel/build/guest-graphics/
-          if-no-files-found: error
-          retention-days: 7
+  sentinel-workspace:
+    name: sentinel-workspace
+    uses: ./.github/workflows/sentinel-workspace.yml
 
-      - name: Build native-init workspace OCI images
-        working-directory: apps/desktop/sentinel
-        run: |
-          test "$(uname -m)" = aarch64
-          workspace_buildkit_image="$(python3 -c 'import json; print(json.load(open("native/workspace-images/bases.json"))["buildkit_image"])')"
-          docker buildx create --name sentinel-workspace-images --driver docker-container --driver-opt "image=$workspace_buildkit_image"
-          trap 'docker buildx rm sentinel-workspace-images' EXIT
-          docker buildx inspect --bootstrap sentinel-workspace-images
-          python3 scripts/packaging/workspace-images/build.py build/workspace-images-ci --builder sentinel-workspace-images
-      - uses: actions/upload-artifact@v7
-        with:
-          name: workspace-images-arm64
-          path: apps/desktop/sentinel/build/workspace-images-ci/
-          if-no-files-found: error
-          retention-days: 7
-
-  desktop:
-    name: Build desktop ${{ matrix.artifact }}
-    needs: [version, guest-graphics, frontend-build]
-    if: github.base_ref != 'main'
+  desktop-installer:
+    name: Build desktop installer
+    # The app bundles no runtime component: it never waits for them.
+    needs: [version, frontend-build]
     runs-on: macos-26
     timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        artifact: [installer, payload]
     env:
       SENTINEL_BUILD_CHANNEL: beta
-      SENTINEL_GUEST_GRAPHICS_DIR: ${{ github.workspace }}/apps/desktop/sentinel/build/guest-graphics
-      SENTINEL_WORKSPACE_IMAGES_DIR: ${{ github.workspace }}/apps/desktop/sentinel/build/workspace-images-ci
       SENTINEL_FRONTEND_DIST: ${{ github.workspace }}/apps/frontend/sentinel/dist
       SENTINEL_INTERNAL_BUILD: '1'
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
@@ -250,10 +133,6 @@ jobs:
           sudo xcode-select --switch /Applications/Xcode_26.3.app/Contents/Developer
           test "$(uname -m)" = arm64
           echo "image=$ImageVersion" >> "$GITHUB_OUTPUT"
-      - name: Test macOS GPU credit transport
-        if: matrix.artifact == 'installer'
-        # Sanitizers run in the Linux job; retain native macOS socket coverage.
-        run: python3 -m unittest discover -s tests/graphics/transport -p 'test_*.py'
       - uses: actions/setup-node@v6
         with:
           node-version: '22'
@@ -261,22 +140,15 @@ jobs:
           cache-dependency-path: |
             apps/desktop/sentinel/package-lock.json
             apps/frontend/sentinel/package-lock.json
-      - uses: astral-sh/setup-uv@v7
-        if: matrix.artifact == 'payload'
-        with:
-          enable-cache: true
-          cache-dependency-glob: apps/backend/sentinel/uv.lock
-      - name: Cache native runtime
+      - name: Cache bundled tools
         uses: actions/cache@v5
         with:
           path: |
             apps/desktop/sentinel/build/macos-arm64/runtime
             apps/desktop/sentinel/build/macos-arm64/stamps
-          key: native-runtime-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.image }}-xcode26.3-v2-${{ hashFiles('apps/desktop/sentinel/runtime.lock.json', 'apps/desktop/sentinel/native/**', 'apps/desktop/sentinel/packaging/**', 'apps/desktop/sentinel/scripts/packaging/platforms/**', 'apps/desktop/sentinel/scripts/packaging/graphics/**', 'apps/desktop/sentinel/scripts/packaging/workspace-images/**') }}
+          key: bundled-tools-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.image }}-xcode26.3-v1-${{ hashFiles('apps/desktop/sentinel/bundled-tools.lock.json', 'apps/desktop/sentinel/scripts/packaging/platforms/**') }}
           restore-keys: |
-            native-runtime-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.image }}-xcode26.3-v2-
-            native-runtime-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.image }}-xcode26.3-v1-
-            native-runtime-${{ runner.os }}-${{ runner.arch }}-
+            bundled-tools-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.image }}-xcode26.3-v1-
 
       - name: Cache packaging downloads
         uses: actions/cache@v5
@@ -289,49 +161,105 @@ jobs:
           restore-keys: |
             packaging-downloads-${{ runner.os }}-${{ runner.arch }}-v1-
 
-
-      - uses: actions/download-artifact@v8
-        with:
-          name: guest-graphics-arm64
-          path: apps/desktop/sentinel/build/guest-graphics
-
-      - uses: actions/download-artifact@v8
-        with:
-          name: workspace-images-arm64
-          path: apps/desktop/sentinel/build/workspace-images-ci
-
       - uses: actions/download-artifact@v8
         with:
           name: frontend-dist
           path: apps/frontend/sentinel/dist
       - name: Prepare runtime
         run: npm run desktop:prepare
-      - name: Test native desktop transport
-        if: matrix.artifact == 'installer'
-        run: |
-          swift test --package-path native/macos --scratch-path build/macos-arm64/swift --force-resolved-versions --jobs 4
-          python3 scripts/packaging/graphics/host.py build/graphics-tests/libraries
-          python3 -m unittest discover -s tests/native -p 'test_*.py'
-          python3 -m unittest discover -s tests/graphics/host -p 'test_*.py'
-          python3 -m unittest discover -s tests/graphics/host/mesa -p 'test_*.py'
-          PATH="$PWD/build/graphics-sources/venv/bin:$PATH" sh tests/graphics/guest/run.sh
       - name: Build and verify installer
-        if: matrix.artifact == 'installer'
         run: |
           npm run desktop:package
           mount_dir="$(mktemp -d)"
           trap 'hdiutil detach "$mount_dir"; rmdir "$mount_dir"' EXIT
           hdiutil attach release/*.dmg -readonly -nobrowse -mountpoint "$mount_dir"
           codesign --verify --deep --strict "$mount_dir/Sentinel.app"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: desktop-installer
+          path: |
+            apps/desktop/sentinel/release/*.dmg
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 14
+
+  desktop-payload:
+    name: Build desktop payload
+    # Its release index lists the runtime components, so it waits for their workflows.
+    needs: [version, frontend-build, sentineld, sentinel-workspace]
+    runs-on: macos-26
+    timeout-minutes: 60
+    env:
+      SENTINEL_BUILD_CHANNEL: beta
+      SENTINEL_FRONTEND_DIST: ${{ github.workspace }}/apps/frontend/sentinel/dist
+      # The payload's release index lists the runtime components (payload-build.mjs).
+      SENTINEL_COMPONENTS_DIR: ${{ github.workspace }}/apps/desktop/sentinel/build/components
+      SENTINEL_INTERNAL_BUILD: '1'
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      CSC_FOR_PULL_REQUEST: 'true'
+    defaults:
+      run:
+        working-directory: apps/desktop/sentinel
+    steps:
+      - uses: actions/checkout@v6
+      - name: Select toolchain
+        id: toolchain
+        run: |
+          sudo xcode-select --switch /Applications/Xcode_26.3.app/Contents/Developer
+          test "$(uname -m)" = arm64
+          echo "image=$ImageVersion" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            apps/desktop/sentinel/package-lock.json
+            apps/frontend/sentinel/package-lock.json
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: apps/backend/sentinel/uv.lock
+      - name: Cache bundled tools
+        uses: actions/cache@v5
+        with:
+          path: |
+            apps/desktop/sentinel/build/macos-arm64/runtime
+            apps/desktop/sentinel/build/macos-arm64/stamps
+          key: bundled-tools-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.image }}-xcode26.3-v1-${{ hashFiles('apps/desktop/sentinel/bundled-tools.lock.json', 'apps/desktop/sentinel/scripts/packaging/platforms/**') }}
+          restore-keys: |
+            bundled-tools-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.image }}-xcode26.3-v1-
+
+      - name: Cache packaging downloads
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/Library/Caches/electron
+            ~/Library/Caches/electron-builder
+            ~/Library/Caches/pip
+          key: packaging-downloads-${{ runner.os }}-${{ runner.arch }}-v1-${{ hashFiles('apps/desktop/sentinel/package-lock.json', 'apps/backend/sentinel/uv.lock') }}
+          restore-keys: |
+            packaging-downloads-${{ runner.os }}-${{ runner.arch }}-v1-
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: frontend-dist
+          path: apps/frontend/sentinel/dist
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: '{sentineld-release,sentinel-workspace-release}'
+          merge-multiple: true
+          path: apps/desktop/sentinel/build/components
+      - name: Prepare runtime
+        run: npm run desktop:prepare
       - name: Build payload
-        if: matrix.artifact == 'payload'
         run: npm run payload:build
       - uses: actions/upload-artifact@v7
         with:
-          name: desktop-${{ matrix.artifact }}
+          name: desktop-payload
           path: |
-            apps/desktop/sentinel/release/*.dmg
             apps/desktop/sentinel/release/sentinel-payload-*.tar.gz
+            apps/desktop/sentinel/release/sentineld-*.tar.gz
+            apps/desktop/sentinel/release/sentinel-workspace-*.tar.gz
             apps/desktop/sentinel/release/latest-*.json
           compression-level: 0
           if-no-files-found: error
@@ -340,7 +268,7 @@ jobs:
   desktop-candidate:
     # This fixed name is required by branch protection.
     name: Build testable macOS installer and payload
-    needs: [version, desktop]
+    needs: [version, desktop-installer, desktop-payload]
     if: always()
     runs-on: ubuntu-24.04
     steps:
@@ -348,10 +276,12 @@ jobs:
         if: github.base_ref != 'main'
         env:
           VERSION_RESULT: ${{ needs.version.result }}
-          BUILD_RESULT: ${{ needs.desktop.result }}
+          INSTALLER_RESULT: ${{ needs.desktop-installer.result }}
+          PAYLOAD_RESULT: ${{ needs.desktop-payload.result }}
         run: |
           test "$VERSION_RESULT" = success
-          test "$BUILD_RESULT" = success
+          test "$INSTALLER_RESULT" = success
+          test "$PAYLOAD_RESULT" = success
       - uses: actions/checkout@v6
         if: github.base_ref == 'main'
         with:

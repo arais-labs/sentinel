@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from app.database.engine import create_database_engine
 from app.models import Base, Workspace
 from app.routers.workspaces import discover_worker_workspaces
-from app.services.runtime import worker_catalog
+from app.services.workspaces import catalog
 
 
 @pytest.mark.asyncio
@@ -30,7 +30,7 @@ async def test_new_clients_discover_identical_worker_ids_and_refresh_cache(tmp_p
         "workspaces": {str(workspace_id): record},
         "states": {str(workspace_id): {"state": "running"}},
     }
-    monkeypatch.setattr(worker_catalog, "snapshot", AsyncMock(return_value=snapshot))
+    monkeypatch.setattr(catalog, "snapshot", AsyncMock(return_value=snapshot))
     for client in ("first", "second"):
         engine = create_database_engine(f"sqlite+aiosqlite:///{tmp_path}/{client}.sqlite")
         try:
@@ -44,7 +44,7 @@ async def test_new_clients_discover_identical_worker_ids_and_refresh_cache(tmp_p
                 assert [(row.id, row.name, row.revision) for row in rows] == [
                     (workspace_id, record["spec"]["name"], record["revision"])
                 ]
-                assert rows[0].container_state == "running"
+                assert rows[0].state == "running"
                 row = await db.get(Workspace, workspace_id)
                 row.directory = "/stale-client-copy"
                 await db.commit()
@@ -88,7 +88,7 @@ async def test_unreachable_worker_does_not_delete_cached_references(tmp_path, mo
             manager = AsyncMock()
             manager.get.return_value = SimpleNamespace(provider="ssh")
             monkeypatch.setattr(
-                worker_catalog, "snapshot", AsyncMock(side_effect=ConnectionError("Disconnected"))
+                catalog, "snapshot", AsyncMock(side_effect=ConnectionError("Disconnected"))
             )
             with pytest.raises(HTTPException) as error:
                 await discover_worker_workspaces(machine_id, db, manager)

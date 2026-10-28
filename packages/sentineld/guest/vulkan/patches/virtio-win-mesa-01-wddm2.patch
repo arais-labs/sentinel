@@ -1,0 +1,570 @@
+venus (Win32 transport): run against a WDDM2 (GpuMmu) viogpu3d KMD (v0.3), as Neptune's transport
+does since its WDDM2 support. Under GpuMmu VidMm locks hand out system staging pages, never the BAR,
+so a blob's mapping is the KMD's: RES_INFO places a mappable blob in the shared memory BAR, maps it
+into the process and has the host map it behind it (UserVa), with no MAP_BLOB packet and no
+D3DKMTLock; creates carry a lookup cookie (VIOGPU_CREATE_ALLOCATION_EXCHANGE_EX) that the open,
+RES_INFO and RES_RELEASE_WINDOW resolve by, and RES_INFO is retried while the KMD's create is still
+queued. The KMD's cookie map is adapter-wide and Neptune's UMD mints pid << 32 | counter from 1 too,
+so this ICD's cookies set bit 31 of the counter: with equal values a process that has used D3D11
+got Neptune's allocations back for its own (Neptune's ring as the Venus ring) and vkCreateInstance
+hung. Commands go to a virtual context (D3DKMTCreateContextVirtual + D3DKMTSubmitCommand, the command in
+the DMA packet's private data); a monitored fence, signalled from the GPU and waited for
+asynchronously, sets the events the legacy EnqueueCpuEvent signal did. The WDDM 1.3 path and the
+D3D UMD (callbacks) path are unchanged. Without this the ring's shared memory never reaches the
+host and vkCreateInstance fails (VK_ERROR_OUT_OF_HOST_MEMORY, "failed to allocate/map ring shmem").
+
+diff --git a/src/virtio/vulkan/vn_renderer_virtgpu_win32.c b/src/virtio/vulkan/vn_renderer_virtgpu_win32.c
+index 0acb3495272..331e210e9a9 100644
+--- a/src/virtio/vulkan/vn_renderer_virtgpu_win32.c
++++ b/src/virtio/vulkan/vn_renderer_virtgpu_win32.c
+@@ -19,6 +19,11 @@
+ #define VIRTGPU_PCI_DEVICE_ID 0x1050
+ #define VIRTGPU_WIN_DEVICE_ID "PCI\\VEN_1AF4&DEV_1050"
+ 
++/* KMD SHMEM_GPU_BASE_VA: D3DKMTSubmitCommand wants a nonzero command GPU
++ * VA; the KMD takes the command from the submission's private data and
++ * never reads this address (same as Neptune's transport). */
++#define VIRTGPU_SHMEM_GPU_BASE_VA 0x700000000ull
++
+ struct virtgpu;
+ 
+ struct virtgpu_shmem {
+@@ -28,6 +33,10 @@ struct virtgpu_shmem {
+       D3DKMT_HANDLE kmt;
+       HANDLE h;
+    };
++   /* WDDM2: mmap_ptr is the KMD's BAR window (RES_INFO UserVa), not a
++    * D3DKMTLock mapping. */
++   bool kmd_mapped;
++   uint64_t cookie;
+ };
+ 
+ struct virtgpu_bo {
+@@ -42,6 +51,8 @@ struct virtgpu_bo {
+       HANDLE h;
+    } /* resource */;
+    uint32_t blob_flags;
++   bool kmd_mapped;
++   uint64_t cookie;
+ };
+ 
+ struct virtgpu_sync {
+@@ -93,9 +104,28 @@ struct virtgpu {
+          PFND3DKMT_DESTROYDEVICE destroyDevice;
+          PFND3DKMT_OPENADAPTERFROMHDC openAdapterFromHdc;
+          PFND3DKMT_CLOSEADAPTER closeAdapter;
++         /* WDDM2 native submission (virtual contexts) */
++         PFND3DKMT_CREATECONTEXTVIRTUAL createContextVirtual;
++         PFND3DKMT_SUBMITCOMMAND submitCommand;
++         PFND3DKMT_CREATESYNCHRONIZATIONOBJECT2 createSynchronizationObject2;
++         PFND3DKMT_DESTROYSYNCHRONIZATIONOBJECT destroySynchronizationObject;
++         PFND3DKMT_SIGNALSYNCHRONIZATIONOBJECTFROMGPU signalSynchronizationObjectFromGpu;
++         PFND3DKMT_WAITFORSYNCHRONIZATIONOBJECTFROMCPU waitForSynchronizationObjectFromCpu;
+       } cb;
+    } d3dkmt;
+ 
++   /* The KMD runs WDDM2 (GpuMmu, VIOGPU_ADAPTERINFO.Flags.Wddm2): VidMm
++    * locks hand out system staging pages, never the BAR, so the KMD owns
++    * blob placement and RES_INFO returns the mapping (UserVa); commands
++    * ride D3DKMTSubmitCommand private data on a virtual context, and a
++    * monitored fence replaces EnqueueCpuEvent signals. */
++   bool wddm2;
++   struct {
++      D3DKMT_HANDLE fence;
++      mtx_t lock;
++      uint64_t value;
++   } drain;
++
+    struct {
+       mtx_t lock;
+ 
+@@ -575,6 +605,33 @@ virtgpu_ioctl_create_context(struct virtgpu *gpu)
+       gpu->ctx.patch_list = context.pPatchLocationList;
+       gpu->ctx.patch_size = context.PatchLocationListSize;
+ 
++      return STATUS_SUCCESS;
++   } else if (gpu->wddm2) {
++      /* A virtual context has no kernel command buffer or allocation
++       * list; its DMA retires in order, which the drain fence observes. */
++      if (!gpu->d3dkmt.cb.createContextVirtual || !gpu->d3dkmt.cb.submitCommand ||
++          !gpu->d3dkmt.cb.createSynchronizationObject2 ||
++          !gpu->d3dkmt.cb.signalSynchronizationObjectFromGpu ||
++          !gpu->d3dkmt.cb.waitForSynchronizationObjectFromCpu)
++         return STATUS_NOT_SUPPORTED;
++
++      D3DKMT_CREATECONTEXTVIRTUAL context = {
++         .hDevice = gpu->d3dkmt.device,
++         .ClientHint = D3DKMT_CLIENTHINT_VULKAN,
++      };
++      NTSTATUS status = gpu->d3dkmt.cb.createContextVirtual(&context);
++      if (!NT_SUCCESS(status))
++         return status;
++      gpu->ctx.kmt = context.hContext;
++
++      D3DKMT_CREATESYNCHRONIZATIONOBJECT2 fence = {
++         .hDevice = gpu->d3dkmt.device,
++         .Info = { .Type = D3DDDI_MONITORED_FENCE },
++      };
++      status = gpu->d3dkmt.cb.createSynchronizationObject2(&fence);
++      if (!NT_SUCCESS(status))
++         return status;
++      gpu->drain.fence = fence.hSyncObject;
+       return STATUS_SUCCESS;
+    } else {
+       D3DKMT_CREATECONTEXT context = {
+@@ -660,10 +717,84 @@ virtgpu_ioctl_render(struct virtgpu *gpu,
+    }
+ }
+ 
++/* WDDM2: the command travels by value in the DMA packet's private data;
++ * the KMD runs a wrong-magic or oversized body as fence-only, dropping
++ * the command, hence the size check. */
++static NTSTATUS
++virtgpu_submit_virtual(struct virtgpu *gpu,
++                       UINT type,
++                       UINT flags,
++                       UINT ring_idx,
++                       const void *payload,
++                       size_t payload_size)
++{
++   const size_t total = sizeof(VIOGPU_COMMAND_HDR) + payload_size;
++   if (total > VIOGPU_DMA_PRIV_BODY_MAX) {
++      vn_log(gpu->instance, "command too large for a DMA packet (%zu > %u)",
++             total, VIOGPU_DMA_PRIV_BODY_MAX);
++      return STATUS_BUFFER_TOO_SMALL;
++   }
++
++   VIOGPU_DMA_PRIVATE priv;
++   priv.cmdRaw = 0;
++   priv.magic = VIOGPU_DMA_PRIV_MAGIC;
++   priv.bodySize = (ULONG)total;
++   VIOGPU_COMMAND_HDR *hdr = (VIOGPU_COMMAND_HDR *)priv.body;
++   hdr->type = type;
++   hdr->size = (UINT)payload_size;
++   hdr->flags = flags;
++   hdr->ring_idx = ring_idx;
++   if (payload_size)
++      memcpy(hdr + 1, payload, payload_size);
++
++   D3DKMT_SUBMITCOMMAND submit = {
++      .Commands = VIRTGPU_SHMEM_GPU_BASE_VA,
++      .CommandLength = (UINT)total,
++      .BroadcastContextCount = 1,
++      .BroadcastContext = { gpu->ctx.kmt },
++      .pPrivateDriverData = &priv,
++      .PrivateDriverDataSize = sizeof(priv),
++   };
++   return gpu->d3dkmt.cb.submitCommand(&submit);
++}
++
++/* WDDM2: sets the event once all DMA queued on the context so far has
++ * retired -- a queued monitored-fence signal retires after it, and an
++ * asynchronous CPU wait on that value sets the event.  Values are minted
++ * and queued under one lock: dxgkrnl refuses a GPU signal below one
++ * already queued on the context. */
++static NTSTATUS
++virtgpu_signal_virtual(struct virtgpu *gpu, HANDLE event)
++{
++   mtx_lock(&gpu->drain.lock);
++   const UINT64 value = ++gpu->drain.value;
++   D3DKMT_SIGNALSYNCHRONIZATIONOBJECTFROMGPU signal = {
++      .hContext = gpu->ctx.kmt,
++      .ObjectCount = 1,
++      .ObjectHandleArray = &gpu->drain.fence,
++      .MonitoredFenceValueArray = &value,
++   };
++   NTSTATUS status = gpu->d3dkmt.cb.signalSynchronizationObjectFromGpu(&signal);
++   mtx_unlock(&gpu->drain.lock);
++   if (!NT_SUCCESS(status))
++      return status;
++
++   D3DKMT_WAITFORSYNCHRONIZATIONOBJECTFROMCPU wait = {
++      .hDevice = gpu->d3dkmt.device,
++      .ObjectCount = 1,
++      .ObjectHandleArray = &gpu->drain.fence,
++      .FenceValueArray = &value,
++      .hAsyncEvent = event,
++   };
++   return gpu->d3dkmt.cb.waitForSynchronizationObjectFromCpu(&wait);
++}
++
+ static NTSTATUS
+ virtgpu_ioctl_signal(struct virtgpu *gpu, HANDLE fence)
+ {
+-   if (gpu->ddicb != NULL) {
++   if (gpu->wddm2) {
++      return virtgpu_signal_virtual(gpu, fence);
++   } else if (gpu->ddicb != NULL) {
+       D3DDDICB_SIGNALSYNCHRONIZATIONOBJECT2 signal = {
+            .hContext = gpu->ctx.h,
+            .ObjectCount = 0,
+@@ -694,7 +825,7 @@ virtgpu_ioctl_signal(struct virtgpu *gpu, HANDLE fence)
+ static VkResult
+ sim_submit(struct virtgpu *gpu, const struct vn_renderer_submit *submit)
+ {
+-   assert(submit->bo_count < gpu->ctx.alloc_size);
++   assert(gpu->wddm2 || submit->bo_count < gpu->ctx.alloc_size);
+    assert(submit->batch_count);
+ 
+    VkResult ret = VK_SUCCESS;
+@@ -702,6 +833,21 @@ sim_submit(struct virtgpu *gpu, const struct vn_renderer_submit *submit)
+       const struct vn_renderer_submit_batch *batch = &submit->batches[i];
+       mtx_lock(&gpu->ctx.lock);
+ 
++      if (gpu->wddm2) {
++         /* No allocation list on a virtual context: blobs are KMD-placed
++          * and resident, so the bos need no reference. */
++         NTSTATUS status = virtgpu_submit_virtual(
++            gpu, VIOGPU_CMD_SUBMIT, VIOGPU_EXECBUF_RING_IDX, batch->ring_idx,
++            batch->cs_data, batch->cs_size);
++         mtx_unlock(&gpu->ctx.lock);
++         if (!NT_SUCCESS(status)) {
++            vn_log(gpu->instance, "failed to submit: 0x%lx", status);
++            ret = VK_ERROR_DEVICE_LOST;
++            break;
++         }
++         goto signal;
++      }
++
+       for (uint32_t i = 0; i < submit->bo_count; i++) {
+          struct virtgpu_bo *bo = (struct virtgpu_bo *)submit->bos[i];
+          assert(bo->alloc != 0);
+@@ -726,6 +872,7 @@ sim_submit(struct virtgpu *gpu, const struct vn_renderer_submit *submit)
+          break;
+       }
+ 
++   signal:
+       if (batch->sync_count > 0) {
+          HANDLE fence = CreateEventA(NULL, TRUE, FALSE, NULL);
+          // vn_log(gpu->instance, "created handle %p", fence);
+@@ -924,6 +1071,26 @@ virtgpu_ioctl_wait(struct virtgpu *gpu)
+       } \
+    } while (0)
+ 
++static NTSTATUS
++virtgpu_ioctl_resource_destroy_blob(struct virtgpu *gpu,
++                                    D3DKMT_HANDLE alloc_handle,
++                                    D3DKMT_HANDLE res_kmt,
++                                    HANDLE res_h);
++
++/* Unique per live allocation in the KMD's one adapter-wide cookie map,
++ * whose lookups take the first match.  pid << 32 keeps processes apart and
++ * bits 62/63 clear (the KMD's own namespaces); bit 31 keeps this ICD apart
++ * from Neptune's D3D UMD in the same process, which mints pid << 32 | its
++ * own counter from 1: a shared value pairs our create's open, and RES_INFO,
++ * with Neptune's allocation, handing us its ring's shared memory. */
++static uint64_t
++virtgpu_mint_cookie(void)
++{
++   static volatile LONG counter;
++   return ((uint64_t)GetCurrentProcessId() << 32) | 0x80000000u |
++          ((uint32_t)InterlockedIncrement(&counter) & 0x7fffffffu);
++}
++
+ static NTSTATUS
+ virtgpu_ioctl_resource_create_blob(struct virtgpu *gpu,
+                                    uint32_t blob_mem,
+@@ -934,25 +1101,36 @@ virtgpu_ioctl_resource_create_blob(struct virtgpu *gpu,
+                                    D3DKMT_HANDLE *alloc_handle,
+                                    D3DKMT_HANDLE *res_kmt_local,
+                                    D3DKMT_HANDLE *res_kmt_global,
+-                                   HANDLE *res_h)
++                                   HANDLE *res_h,
++                                   void **user_va,
++                                   uint64_t *cookie)
+ {
+    blob_size = align64(blob_size, 4096);
+-
+-   VIOGPU_CREATE_ALLOCATION_EXCHANGE alloc_priv = {
+-       .Type = VIOGPU_RESOURCE_TYPE_BLOB,
+-       .OptionsBlob = {
+-           .blob_mem = blob_mem,
+-           .blob_flags = blob_flags,
+-           .blob_id = blob_id,
+-       },
+-       .Size = blob_size,
++   *user_va = NULL;
++
++   /* WDDM2: the lookup cookie makes the KMD's pairing of this create with
++    * its allocation, and RES_INFO's resolution, authoritative (handle
++    * resolution races handle reuse). */
++   VIOGPU_CREATE_ALLOCATION_EXCHANGE_EX alloc_priv = {
++      .Base = {
++         .Type = VIOGPU_RESOURCE_TYPE_BLOB,
++         .OptionsBlob = {
++            .blob_mem = blob_mem,
++            .blob_flags = blob_flags,
++            .blob_id = blob_id,
++         },
++         .Size = blob_size,
++      },
++      .LookupCookie = gpu->wddm2 ? virtgpu_mint_cookie() : 0,
+    };
++   *cookie = alloc_priv.LookupCookie;
+ 
+    VIOGPU_CREATE_RESOURCE_EXCHANGE res_priv = { 0 };
+ 
+    D3DDDI_ALLOCATIONINFO alloc_info = {
+       .pPrivateDriverData = &alloc_priv,
+-      .PrivateDriverDataSize = sizeof(alloc_priv),
++      .PrivateDriverDataSize =
++         gpu->wddm2 ? sizeof(alloc_priv) : sizeof(alloc_priv.Base),
+    };
+ 
+    bool is_shareable = !!(blob_flags & VIOGPU_BLOB_FLAG_USE_SHAREABLE);
+@@ -1008,22 +1186,62 @@ virtgpu_ioctl_resource_create_blob(struct virtgpu *gpu,
+       .DataLength = sizeof(res_info.ResourceInfo),
+       .ResourceInfo = {
+          .ResHandle = *alloc_handle,
++         .LookupCookie = alloc_priv.LookupCookie,
+       },
+    };
+ 
+-   NTSTATUS status = virtgpu_ioctl_escape(gpu, &res_info);
+-   if (!NT_SUCCESS(status)) {
+-      return status;
+-   }
+-
+-   if (!res_info.ResourceInfo.IsBlob || !res_info.ResourceInfo.IsCreated) {
+-      return STATUS_INVALID_PARAMETER;
++   /* The KMD queues RESOURCE_CREATE_BLOB from the create on its
++    * asynchronous control queue: under WDDM2 the blob may briefly not be
++    * created yet, and RES_INFO says so rather than failing. */
++   NTSTATUS status;
++   for (int attempt = 0;; attempt++) {
++      status = virtgpu_ioctl_escape(gpu, &res_info);
++      if (!NT_SUCCESS(status))
++         goto fail;
++      if (res_info.ResourceInfo.IsBlob && res_info.ResourceInfo.IsCreated)
++         break;
++      status = STATUS_INVALID_PARAMETER;
++      if (!gpu->wddm2 || attempt >= 100)
++         goto fail;
++      Sleep(1);
+    }
+ 
+    *res_id = res_info.ResourceInfo.Id;
+ 
++   /* WDDM2: a mappable blob's RES_INFO places it in the BAR, maps it into
++    * this process and has the host map its memory behind it -- no
++    * MAP_BLOB packet, and D3DKMTLock must not be used. */
++   if (gpu->wddm2) {
++      status = STATUS_NO_MEMORY;
++      if (is_mappable && !res_info.ResourceInfo.UserVa)
++         goto fail;
++      *user_va = (void *)(uintptr_t)res_info.ResourceInfo.UserVa;
++      return STATUS_SUCCESS;
++   }
++
+    return is_mappable ? virtgpu_ioctl_init_map(gpu, *alloc_handle)
+                       : STATUS_SUCCESS;
++
++fail:
++   virtgpu_ioctl_resource_destroy_blob(gpu, *alloc_handle, *res_kmt_local,
++                                       *res_h);
++   return status;
++}
++
++/* WDDM2: returns the blob's BAR window to the KMD before its allocation
++ * goes (the KMD would also drop it at destroy). */
++static void
++virtgpu_release_window(struct virtgpu *gpu, D3DKMT_HANDLE alloc, uint64_t cookie)
++{
++   VIOGPU_ESCAPE esc = {
++      .Type = VIOGPU_RES_RELEASE_WINDOW,
++      .DataLength = sizeof(esc.ResRelease),
++      .ResRelease = {
++         .ResHandle = alloc,
++         .LookupCookie = cookie,
++      },
++   };
++   virtgpu_ioctl_escape(gpu, &esc);
+ }
+ 
+ static NTSTATUS
+@@ -1236,6 +1454,14 @@ virtgpu_init_params(struct virtgpu *gpu)
+       return VK_ERROR_INITIALIZATION_FAILED;
+    }
+ 
++   /* Standalone ICD only: under a D3D UMD the runtime's callbacks own the
++    * context. */
++   gpu->wddm2 = gpu->ddicb == NULL && info.Flags.Wddm2;
++   if (VN_DEBUG(INIT)) {
++      vn_log(gpu->instance, "KMD mode %s",
++             gpu->wddm2 ? "WDDM2 (GpuMmu, virtual context)" : "WDDM 1.3");
++   }
++
+    /* Don't care for VIRTGPU_BLOB_MEM_GUEST_VRAM since this driver is mainly
+     * developed for QEMU, but whoever needs it may feel free to implement this */
+    if (info.Flags.HasShmem) {
+@@ -1379,6 +1605,18 @@ virtgpu_open(struct virtgpu *gpu, void *info)
+          (void *)GetProcAddress(gdi32lib, "D3DKMTOpenAdapterFromHdc");
+       gpu->d3dkmt.cb.closeAdapter =
+          (void *)GetProcAddress(gdi32lib, "D3DKMTCloseAdapter");
++      gpu->d3dkmt.cb.createContextVirtual =
++         (void *)GetProcAddress(gdi32lib, "D3DKMTCreateContextVirtual");
++      gpu->d3dkmt.cb.submitCommand =
++         (void *)GetProcAddress(gdi32lib, "D3DKMTSubmitCommand");
++      gpu->d3dkmt.cb.createSynchronizationObject2 = (void *)GetProcAddress(
++         gdi32lib, "D3DKMTCreateSynchronizationObject2");
++      gpu->d3dkmt.cb.destroySynchronizationObject = (void *)GetProcAddress(
++         gdi32lib, "D3DKMTDestroySynchronizationObject");
++      gpu->d3dkmt.cb.signalSynchronizationObjectFromGpu = (void *)GetProcAddress(
++         gdi32lib, "D3DKMTSignalSynchronizationObjectFromGpu");
++      gpu->d3dkmt.cb.waitForSynchronizationObjectFromCpu = (void *)GetProcAddress(
++         gdi32lib, "D3DKMTWaitForSynchronizationObjectFromCpu");
+ 
+       NTSTATUS status = virtgpu_find_adapter(gpu);
+       if (!NT_SUCCESS(status)) {
+@@ -1632,6 +1870,12 @@ virtgpu_bo_create_from_handle(struct vn_renderer *renderer,
+       bo->kmt.local = kmt_local;
+       bo->kmt.global = kmt_global;
+    }
++   /* WDDM2: RES_INFO mapped the blob's window into this process. */
++   if (gpu->wddm2 && res_info.UserVa && !bo->base.mmap_ptr &&
++       (bo->blob_flags & VIOGPU_BLOB_FLAG_USE_MAPPABLE)) {
++      bo->base.mmap_ptr = (void *)(uintptr_t)res_info.UserVa;
++      bo->kmd_mapped = true;
++   }
+ 
+    mtx_unlock(&gpu->win32_handle_import_mutex);
+ 
+@@ -1668,9 +1912,11 @@ virtgpu_bo_create_from_device_memory(
+    }
+ 
+    D3DKMT_HANDLE alloc, kmt_local, kmt_global;
++   void *user_va;
++   uint64_t cookie;
+    NTSTATUS status = virtgpu_ioctl_resource_create_blob(
+       gpu, gpu->bo_blob_mem, blob_flags, size, mem_id, &res_id, &alloc,
+-      &kmt_local, &kmt_global, &h);
++      &kmt_local, &kmt_global, &h, &user_va, &cookie);
+    if (!NT_SUCCESS(status)) {
+       vn_log(gpu->instance,
+              "RESOURCE_CREATE_BLOB failed: type=%u, flags=%u, size=%zu, "
+@@ -1692,6 +1938,7 @@ virtgpu_bo_create_from_device_memory(
+          .DataLength = sizeof(res_info.ResourceInfo),
+          .ResourceInfo = {
+             .ResHandle = alloc,
++            .LookupCookie = cookie,
+          },
+       };
+ 
+@@ -1722,9 +1969,12 @@ virtgpu_bo_create_from_device_memory(
+          .refcount = VN_REFCOUNT_INIT(1),
+          .res_id = res_id,
+          .mmap_size = size,
++         .mmap_ptr = user_va,
+       },
+       .alloc = alloc,
+       .blob_flags = blob_flags,
++      .kmd_mapped = user_va != NULL,
++      .cookie = cookie,
+    };
+ 
+    if (gpu->ddicb != NULL) {
+@@ -1769,8 +2019,9 @@ virtgpu_bo_map(struct vn_renderer *renderer,
+    struct virtgpu_bo *bo = (struct virtgpu_bo *)_bo;
+    const bool mappable = bo->blob_flags & VIOGPU_BLOB_FLAG_USE_MAPPABLE;
+ 
+-   /* not thread-safe but is fine */
+-   if (!bo->base.mmap_ptr && mappable) {
++   /* not thread-safe but is fine; under WDDM2 the KMD's window was set
++    * at create or import, and a lock would map staging pages */
++   if (!bo->base.mmap_ptr && mappable && !gpu->wddm2) {
+       NTSTATUS status =
+          virtgpu_ioctl_lock(gpu, bo->alloc, &bo->base.mmap_ptr);
+       if (!NT_SUCCESS(status)) {
+@@ -1817,10 +2068,14 @@ virtgpu_bo_destroy(struct vn_renderer *renderer, struct vn_renderer_bo *_bo)
+       return false;
+    }
+ 
+-   if (bo->base.mmap_ptr) {
++   if (bo->kmd_mapped) {
++      virtgpu_release_window(gpu, bo->alloc, bo->cookie);
++   } else if (bo->base.mmap_ptr) {
+       virtgpu_ioctl_unlock(gpu, bo->alloc);
+       virtgpu_ioctl_destroy_map(gpu, bo->alloc);
+    }
++   bo->base.mmap_ptr = NULL;
++   bo->kmd_mapped = false;
+ 
+    /* Set alloc and res to 0 to indicate that the bo is invalid. Must be set
+     * before closing the handles. Otherwise the same handles can be reused
+@@ -1981,8 +2236,12 @@ virtgpu_shmem_destroy_now(struct vn_renderer *renderer,
+    struct virtgpu *gpu = (struct virtgpu *)renderer;
+    struct virtgpu_shmem *shmem = (struct virtgpu_shmem *)_shmem;
+ 
+-   virtgpu_ioctl_unlock(gpu, shmem->alloc);
+-   virtgpu_ioctl_destroy_map(gpu, shmem->alloc);
++   if (shmem->kmd_mapped) {
++      virtgpu_release_window(gpu, shmem->alloc, shmem->cookie);
++   } else {
++      virtgpu_ioctl_unlock(gpu, shmem->alloc);
++      virtgpu_ioctl_destroy_map(gpu, shmem->alloc);
++   }
+    virtgpu_ioctl_resource_destroy_blob(gpu, shmem->alloc, shmem->kmt,
+                                        shmem->h);
+ }
+@@ -2015,14 +2274,19 @@ virtgpu_shmem_create(struct vn_renderer *renderer, size_t size)
+    HANDLE h = NULL; /* This is a device allocation */
+    D3DKMT_HANDLE alloc, kmt;
+ 
++   void *ptr = NULL;
++   uint64_t cookie;
+    NTSTATUS status = virtgpu_ioctl_resource_create_blob(
+       gpu, gpu->shmem_blob_mem, VIOGPU_BLOB_FLAG_USE_MAPPABLE, size, 0,
+-      &res_id, &alloc, &kmt, NULL, &h);
+-   if (!NT_SUCCESS(status))
++      &res_id, &alloc, &kmt, NULL, &h, &ptr, &cookie);
++   if (!NT_SUCCESS(status)) {
++      vn_log(gpu->instance, "failed to create shmem blob: 0x%lx", status);
+       return NULL;
++   }
+ 
+-   void *ptr = NULL;
+-   status = virtgpu_ioctl_lock(gpu, alloc, &ptr);
++   const bool kmd_mapped = ptr != NULL;
++   if (!kmd_mapped)
++      status = virtgpu_ioctl_lock(gpu, alloc, &ptr);
+    if (!NT_SUCCESS(status)) {
+       virtgpu_ioctl_resource_destroy_blob(gpu, alloc, kmt, h);
+       vn_log(gpu->instance, "failed to map blob resource: 0x%lx", status);
+@@ -2039,6 +2303,8 @@ virtgpu_shmem_create(struct vn_renderer *renderer, size_t size)
+          .mmap_ptr = ptr,
+       },
+       .alloc = alloc,
++      .kmd_mapped = kmd_mapped,
++      .cookie = cookie,
+    };
+ 
+    if (gpu->ddicb != NULL) {
+@@ -2170,6 +2436,12 @@ virtgpu_destroy(struct vn_renderer *renderer,
+ 
+    if (gpu->ctx.h)
+       virtgpu_ioctl_destroy_context(gpu);
++   if (gpu->drain.fence && gpu->d3dkmt.cb.destroySynchronizationObject) {
++      D3DKMT_DESTROYSYNCHRONIZATIONOBJECT destroy = {
++         .hSyncObject = gpu->drain.fence,
++      };
++      gpu->d3dkmt.cb.destroySynchronizationObject(&destroy);
++   }
+    if (gpu->d3dkmt.device)
+       virtgpu_ioctl_destroy_device(gpu);
+    if (gpu->d3dkmt.adapter)
+@@ -2179,6 +2451,7 @@ virtgpu_destroy(struct vn_renderer *renderer,
+ 
+    mtx_destroy(&gpu->win32_handle_import_mutex);
+    mtx_destroy(&gpu->ctx.lock);
++   mtx_destroy(&gpu->drain.lock);
+ 
+    util_sparse_array_finish(&gpu->shmem_array);
+    util_sparse_array_finish(&gpu->bo_array);
+@@ -2199,6 +2472,7 @@ virtgpu_init(struct virtgpu *gpu, void *info)
+    mtx_init(&gpu->win32_handle_import_mutex, mtx_plain);
+ 
+    mtx_init(&gpu->ctx.lock, mtx_plain);
++   mtx_init(&gpu->drain.lock, mtx_plain);
+ 
+    VkResult result = virtgpu_open(gpu, info);
+    if (result == VK_SUCCESS)

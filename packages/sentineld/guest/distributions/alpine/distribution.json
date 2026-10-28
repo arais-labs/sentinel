@@ -1,0 +1,268 @@
+{
+  "name": "Alpine Linux",
+  "detail": "Default · all tools and accelerated desktop",
+  "features": ["shell", "terminal", "files"],
+  "guide": "Workspace OS: Linux (alpine). Shell: Bash. The shared project keeps its absolute host path inside the workspace. Install missing packages with apk. Docker and Compose use the workspace's private engine.",
+  "hostname": ["sh", "/run/sentinel/hostname.sh", "{name}"],
+  "ready": ["grep", "-qx", "default", "/run/openrc/softlevel"],
+  "poweroff": ["poweroff"],
+  "packages": {
+    "cache": ["--cache-dir", "{cache}"],
+    "no_cache": ["--no-cache"],
+    "installed": ["apk", "info", "-e"],
+    "fetch": ["apk", "add", "{cache}"]
+  },
+  "service": [["rc-update", "add", "{name}", "default"], ["rc-service", "{name}", "start"]],
+  "desktop": {
+    "user": "sentinel",
+    "create_user": ["useradd", "-m", "-s", "/bin/sh", "{user}"],
+    "groups": ["video", "render", "input", "seat", "audio"],
+    "join_group": ["usermod", "-aG", "{group}", "{user}"],
+    "prepare": [["sysctl", "-q", "-w", "kernel.print-fatal-signals=1", "debug.exception-trace=1"], ["sh", "/run/sentinel/desktop/boot-screen.sh"]],
+    "environment": {
+      "x11": {
+        "DISPLAY": ":0",
+        "XDG_RUNTIME_DIR": "/run/user/{uid}",
+        "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/{uid}/bus",
+        "MESA_LOADER_DRIVER_OVERRIDE": "zink"
+      },
+      "wayland": {
+        "WAYLAND_DISPLAY": "wayland-0",
+        "DISPLAY": ":0",
+        "XDG_SESSION_TYPE": "wayland",
+        "XDG_RUNTIME_DIR": "/run/user/{uid}",
+        "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/{uid}/bus",
+        "MESA_LOADER_DRIVER_OVERRIDE": "zink"
+      }
+    },
+    "socket": {
+      "x11": "/tmp/.X11-unix/X0",
+      "wayland": "/run/user/{uid}/wayland-0"
+    },
+    "session": {
+      "x11": "sentinel-desktop-x11.openrc",
+      "wayland": "sentinel-desktop-wayland.openrc"
+    },
+    "install": "/etc/init.d/sentinel-desktop",
+    "stop": [["rc-service", "sentinel-desktop", "stop"]],
+    "restart": [["rc-service", "sentinel-desktop", "restart"]],
+    "failure": ["tail", "-n", "12", "/run/sentinel-desktop.log"]
+  },
+  "desktops": {
+    "xfce": {
+      "display": "x11",
+      "packages": ["vulkan-loader", "mesa-vulkan-virtio", "mesa-dri-gallium", "mesa-egl", "mesa-gbm", "pipewire", "pipewire-pulse", "wireplumber", "python3", "font-dejavu", "font-noto", "eudev", "shadow", "xorg-server", "xf86-input-libinput", "dbus-x11", "xfce4", "xfce4-terminal", "xfce4-whiskermenu-plugin", "greybird-themes", "greybird-themes-gtk3", "papirus-icon-theme", "xclip", "xdotool", "setxkbmap"]
+    },
+    "lxqt": {
+      "display": "wayland",
+      "paste": ["Control_L", "Shift_L", "v"],
+      "packages": ["vulkan-loader", "mesa-vulkan-virtio", "mesa-dri-gallium", "mesa-egl", "mesa-gbm", "pipewire", "pipewire-pulse", "wireplumber", "python3", "font-dejavu", "font-noto", "eudev", "shadow", "xwayland", "seatd", "dbus", "wl-clipboard", "labwc", "lxqt-session", "lxqt-panel", "lxqt-runner", "lxqt-config", "lxqt-qtplugin", "lxqt-notificationd", "lxqt-policykit", "lxqt-themes", "pcmanfm-qt", "qterminal", "breeze-icons", "qt6-qtwayland", "qt6-qtsvg"],
+      "service": "seatd"
+    },
+    "gnome": {
+      "display": "wayland",
+      "paste": ["Control_L", "Shift_L", "v"],
+      "packages": ["vulkan-loader", "mesa-vulkan-virtio", "mesa-dri-gallium", "mesa-egl", "mesa-gbm", "pipewire", "pipewire-pulse", "wireplumber", "python3", "font-dejavu", "font-noto", "eudev", "shadow", "xwayland", "seatd", "dbus", "wl-clipboard", "gnome-shell", "gnome-session", "gnome-shell-session", "gdm", "elogind", "polkit-elogind", "runuser", "kbd", "xclip", "gnome-settings-daemon", "gnome-control-center", "gnome-terminal", "nautilus", "gnome-backgrounds", "adwaita-icon-theme", "xdg-desktop-portal-gnome"],
+      "service": "elogind",
+      "files": {
+        "/etc/pam.d/runuser-l": "auth sufficient pam_rootok.so\naccount required pam_permit.so\nsession required pam_limits.so\nsession optional pam_elogind.so\n"
+      }
+    },
+    "plasma": {
+      "display": "wayland",
+      "paste": ["Control_L", "Shift_L", "v"],
+      "packages": ["vulkan-loader", "mesa-vulkan-virtio", "mesa-dri-gallium", "mesa-egl", "mesa-gbm", "pipewire", "pipewire-pulse", "wireplumber", "python3", "font-dejavu", "font-noto", "eudev", "shadow", "xwayland", "seatd", "dbus", "wl-clipboard", "plasma-desktop", "plasma-workspace", "kwin", "dolphin", "konsole", "systemsettings", "breeze", "breeze-icons", "qt6-qtwayland", "qt6-qtsvg", "xdg-desktop-portal-kde"],
+      "service": "seatd"
+    }
+  },
+  "tools": {
+    "base": {
+      "packages": ["bash", "tmux", "git", "curl", "python3", "ca-certificates", "coreutils", "findutils", "util-linux", "socat", "github-cli", "ripgrep", "jq"]
+    },
+    "browser": {
+      "requires": ["chromium"]
+    },
+    "git": {
+      "packages": ["git"]
+    },
+    "python": {
+      "packages": ["python3", "py3-pip", "py3-virtualenv"]
+    },
+    "poetry": {
+      "packages": ["python3", "poetry"]
+    },
+    "uv": {
+      "packages": ["python3", "uv"]
+    },
+    "node": {
+      "packages": ["nodejs", "npm"]
+    },
+    "pnpm": {
+      "packages": ["pnpm"]
+    },
+    "yarn": {
+      "packages": ["yarn"]
+    },
+    "typescript": {
+      "packages": ["typescript"]
+    },
+    "bun": {
+      "packages": ["unzip", "libstdc++"],
+      "release": {
+        "url": {
+          "aarch64": "https://github.com/oven-sh/bun/releases/download/bun-v1.4.2/bun-linux-aarch64-musl.zip",
+          "x86_64": "https://github.com/oven-sh/bun/releases/download/bun-v1.4.2/bun-linux-x64-musl.zip"
+        },
+        "sha256": {
+          "aarch64": "71760b6c8ea30623b81a4907cb815d48e2ea266f2e73e751534a44a0607950df",
+          "x86_64": "4835eca59d6da70f4674f5642f6e459dcadab773695b2ed9922d131057989742"
+        },
+        "version": {
+          "command": "bun --version",
+          "contains": "1.4.2"
+        },
+        "unpack": "zip",
+        "install": {
+          "*/bun": "/usr/local/bin/bun"
+        }
+      },
+      "links": {
+        "/usr/local/bin/bunx": "bun"
+      }
+    },
+    "deno": {
+      "packages": ["deno"]
+    },
+    "go": {
+      "packages": ["go"]
+    },
+    "rust": {
+      "packages": ["rust", "cargo", "build-base"]
+    },
+    "php": {
+      "packages": ["php85", "php85-phar", "php85-openssl", "php85-mbstring", "php85-curl", "php85-dom", "php85-tokenizer", "php85-xml", "php85-session", "php85-pdo", "php85-pdo_mysql", "php85-pdo_pgsql"]
+    },
+    "composer": {
+      "packages": ["composer"]
+    },
+    "ruby": {
+      "packages": ["ruby", "ruby-dev", "ruby-bundler", "build-base"]
+    },
+    "java": {
+      "packages": ["openjdk21-jdk"]
+    },
+    "dotnet": {
+      "packages": ["dotnet10-sdk"]
+    },
+    "maven": {
+      "packages": ["maven"]
+    },
+    "gradle": {
+      "packages": ["gradle"]
+    },
+    "cpp": {
+      "packages": ["build-base"]
+    },
+    "clang": {
+      "packages": ["clang21", "build-base"],
+      "links": {
+        "/usr/local/bin/clang": "/usr/lib/llvm21/bin/clang",
+        "/usr/local/bin/clang++": "/usr/lib/llvm21/bin/clang++"
+      }
+    },
+    "cmake": {
+      "packages": ["cmake"]
+    },
+    "ninja": {
+      "packages": ["ninja-is-really-ninja"]
+    },
+    "docker": {
+      "packages": ["docker", "docker-openrc", "docker-cli-compose", "docker-cli-buildx", "iptables", "iproute2"],
+      "service": "docker"
+    },
+    "kubectl": {
+      "packages": ["kubectl"]
+    },
+    "helm": {
+      "packages": ["helm"]
+    },
+    "kind": {
+      "release": {
+        "url": {
+          "aarch64": "https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-arm64",
+          "x86_64": "https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-amd64"
+        },
+        "sha256": {
+          "aarch64": "20022bee6cfcd5086cb7234d218e3454e6090022f2a8f55d1fa7fcf42c3867a2",
+          "x86_64": "aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d"
+        },
+        "version": {
+          "command": "kind version",
+          "contains": "v0.33.0"
+        },
+        "unpack": "binary",
+        "install": {
+          "*": "/usr/local/bin/kind"
+        }
+      }
+    },
+    "k3s": {
+      "release": {
+        "url": {
+          "aarch64": "https://github.com/k3d-io/k3d/releases/download/v5.9.0/k3d-linux-arm64",
+          "x86_64": "https://github.com/k3d-io/k3d/releases/download/v5.9.0/k3d-linux-amd64"
+        },
+        "sha256": {
+          "aarch64": "03cde5cf23e6e8e67de5a039ecf26e5b85aca82fba3e5d13dadf904cd218a250",
+          "x86_64": "06d8f25bc3a971c4eb29e0ff08429b180402db0f4dec838c9eac427e296800a0"
+        },
+        "version": {
+          "command": "k3d version",
+          "contains": "v5.9.0"
+        },
+        "unpack": "binary",
+        "install": {
+          "*": "/usr/local/bin/k3d"
+        }
+      }
+    },
+    "chromium": {
+      "packages": ["chromium"],
+      "files": {
+        "/etc/chromium/sentinel.conf": "CHROMIUM_FLAGS=\"$CHROMIUM_FLAGS --disable-features=GpuPersistentCache\"\n"
+      }
+    },
+    "firefox": {
+      "packages": ["firefox"]
+    }
+  },
+  "machine": {"transport": "pci"},
+  "install": {
+    "sources": {
+      "rootfs": {"url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/aarch64/alpine-minirootfs-3.24.2-aarch64.tar.gz",
+        "sha256": "9bf70a7f18ea44094cbb5f70c58f9af129c8214745743db0e68e5502cc2ce773"},
+      "kernel": {"url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/linux-virt-6.18.56-r0.apk",
+        "sha256": "e3839bfd751ff0a4421484f712b9b29efb514024523736a0ef62521521571b12"},
+      "loader": {"url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/systemd-boot-260.2-r0.apk",
+        "sha256": "6823071956a35c18fff465113bc45cff9797b3d03e7726c651d7930260043971"},
+      "busybox": {"url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/busybox-static-1.37.0-r31.apk",
+        "sha256": "965777e06b94bf11981d5f4ecdfcd577879f4b0dda544294d1dd3f72b217bc75"}
+    },
+    "disk": {"gib": 1, "partitions": [{"name": "esp", "type": "esp"}]},
+    "root": {"gib": 2},
+    "steps": [
+      {"extract": "{kernel}", "include": ["boot/vmlinuz-virt"], "to": "{work}/kernel"},
+      {"extract": "{loader}", "include": ["usr/lib/systemd/boot/efi/systemd-bootaa64.efi"], "to": "{work}/loader"},
+      {"copy": "{install}/esp", "to": "{work}/esp"},
+      {"copy": "{work}/kernel/boot/vmlinuz-virt", "to": "{work}/esp/vmlinuz-virt"},
+      {"copy": "{work}/loader/usr/lib/systemd/boot/efi/systemd-bootaa64.efi", "to": "{work}/esp/EFI/BOOT/BOOTAA64.EFI"},
+      {"archive": [{"from": "{busybox}", "include": ["bin/busybox.static"]}, {"from": "{kernel}", "include": ["lib/modules/*/kernel/lib/crc/crc16.ko.gz", "lib/modules/*/kernel/fs/mbcache.ko.gz", "lib/modules/*/kernel/fs/jbd2/jbd2.ko.gz", "lib/modules/*/kernel/fs/ext4/ext4.ko.gz", "lib/modules/*/kernel/drivers/block/virtio_blk.ko.gz"]}, {"from": "{install}/initramfs"}], "to": "{work}/esp/sentinel/initramfs", "format": "newc"},
+      {"fat32": "esp", "label": "ESP", "from": "{work}/esp"},
+      {"archive": [{"from": "{rootfs}"}, {"from": "{kernel}", "include": ["lib/*"]}, {"from": "{install}/root"}], "to": "{work}/root.tar", "format": "tar"},
+      {"run": ["mke2fs", "-q", "-t", "ext4", "-L", "sentinel-root", "-O", "64bit,extents,flex_bg,metadata_csum,resize_inode", "-E", "root_owner=0:0,lazy_itable_init=1,lazy_journal_init=1,nodiscard,resize=268435456", "-d", "{work}/root.tar", "{root}"], "env": {"MKE2FS_CONFIG": "/nonexistent"}}
+    ],
+    "cpus": 2,
+    "memory_gib": 2,
+    "timeout_min": 15
+  }
+}

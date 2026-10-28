@@ -7,9 +7,9 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.database.engine import create_database_engine
 from app.models import Base, Session, SessionRuntimeCleanup, Workspace
-from app.services.runtime import session_cleanup as cleanup
-from app.services.runtime.container_transport import RunningContainerTransport
-from app.services.runtime.terminal_manager import RuntimeTerminalManager
+from app.services.workspaces import session_cleanup as cleanup
+from app.services.workspaces.transport.guest import RunningGuestTransport
+from app.services.workspaces.terminals.manager import TerminalManager
 from app.services.sessions.agent_run_registry import AgentRunRegistry
 from app.services.sessions.service import SessionService
 
@@ -46,17 +46,17 @@ async def test_offline_delete_persists_cleanup_and_retries_after_restart(tmp_pat
     engine = create_database_engine(url)
     factory = async_sessionmaker(engine, expire_on_commit=False)
     from app.services.modules import runtime_services
-    from app.services.runtime import ssh_runtime
+    from app.services.workspaces import managers
 
     pool = type("Pool", (), {"remove": AsyncMock()})()
     monkeypatch.setattr(runtime_services, "get_browser_pool", lambda: pool)
-    monkeypatch.setattr(ssh_runtime, "invalidate_runtime_for_session", AsyncMock())
+    monkeypatch.setattr(managers, "invalidate_session_managers", AsyncMock())
     states = AsyncMock(return_value={str(workspace.id): {"state": "failed"}})
-    monkeypatch.setattr(cleanup.containers, "statuses", states)
+    monkeypatch.setattr(cleanup.lifecycle, "statuses", states)
     run = AsyncMock(return_value=type("Result", (), {"exit_status": 0})())
-    monkeypatch.setattr(RunningContainerTransport, "run", run)
+    monkeypatch.setattr(RunningGuestTransport, "run", run)
     delete = AsyncMock(side_effect=RuntimeError("runtime disconnected"))
-    monkeypatch.setattr(RuntimeTerminalManager, "delete_session_state", delete)
+    monkeypatch.setattr(TerminalManager, "delete_session_state", delete)
     await cleanup.drain_cleanup(factory, "main")
     delete.assert_not_awaited()
     async with factory() as db:
@@ -84,11 +84,11 @@ async def test_offline_delete_persists_cleanup_and_retries_after_restart(tmp_pat
 
 @pytest.mark.asyncio
 async def test_cleanup_transport_never_starts_offline_workspace(monkeypatch):
-    monkeypatch.setattr(RunningContainerTransport, "is_ready", AsyncMock(return_value=False))
+    monkeypatch.setattr(RunningGuestTransport, "is_ready", AsyncMock(return_value=False))
     start = AsyncMock()
-    monkeypatch.setattr(cleanup.containers, "start", start)
-    transport = RunningContainerTransport(uuid4(), "/project", [])
-    with pytest.raises(cleanup.containers.WorkspaceContainerError):
+    monkeypatch.setattr(cleanup.lifecycle, "start", start)
+    transport = RunningGuestTransport(uuid4(), "/project", [])
+    with pytest.raises(cleanup.lifecycle.WorkspaceLifecycleError):
         await transport.run("true")
     start.assert_not_awaited()
 

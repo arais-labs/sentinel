@@ -75,7 +75,7 @@ import { api, ApiError } from '../lib/api';
 import { useInstanceName, usePaneId } from '../lib/workspace-context';
 import { useAnchorRect } from '../lib/portal-menu';
 import { useActiveSessionId, useActiveSessionStore, useSetActiveSession } from '../store/active-session-store';
-import { useSessionRuntimeStream } from '../hooks/useSessionRuntimeStream';
+import { useSessionWorkspaceStream } from '../hooks/useSessionWorkspaceStream';
 import { useWorkspaceStore } from '../store/workspace-store';
 import { useSessionWorkbench } from '../hooks/useSessionWorkbench';
 import {
@@ -183,7 +183,7 @@ interface SessionDebugEvent {
 // sub-agent tasks, session history, and the debug panel.
 type RightRailTab = 'sub_agents' | 'debug';
 
-// ActivePane lives in useSessionRuntimeStream; the diff base-ref option
+// ActivePane lives in useSessionWorkspaceStream; the diff base-ref option
 // builder lives in useSessionWorkbench.
 
 function humanizeAgentError(raw: string): string {
@@ -425,7 +425,7 @@ export function SessionsPage() {
   // chat stream taps the same socket via `onEvent`. The standalone runtime tabs
   // subscribe to the same (instance, session) pair, so opening them reuses this
   // socket. Graphical desktop lifecycle is independent of this session stream.
-  const runtime = useSessionRuntimeStream(activeInstanceName, activeSessionId, {
+  const runtime = useSessionWorkspaceStream(activeInstanceName, activeSessionId, {
     onReconnectFailed: () => {
       notify.error('Realtime stream disconnected');
     },
@@ -434,7 +434,7 @@ export function SessionsPage() {
     },
   });
   const {
-    connection: runtimeConnection,
+    connection: workspaceConnection,
     runActive,
     isStreamOpen,
     sendMessage: sendStreamMessage,
@@ -442,7 +442,7 @@ export function SessionsPage() {
     focusedPaneId,
     setFocusedPaneId,
     dropPane,
-    runtimeBooting,
+    workspaceBooting,
   } = runtime;
 
   useEffect(() => {
@@ -452,14 +452,14 @@ export function SessionsPage() {
       setCreatingChat(false);
       return;
     }
-    if (runtimeConnection !== 'connected' || !isStreamOpen()) return;
+    if (workspaceConnection !== 'connected' || !isStreamOpen()) return;
     if (sendStreamMessage(pendingFirstMessage.payload)) {
       setPendingFirstMessage(null);
       setCreatingChat(false);
       setComposer('');
       setComposerAttachments([]);
     }
-  }, [pendingFirstMessage, activeInstanceName, activeSessionId, runtimeConnection, isStreamOpen, sendStreamMessage]);
+  }, [pendingFirstMessage, activeInstanceName, activeSessionId, workspaceConnection, isStreamOpen, sendStreamMessage]);
   useEffect(() => {
     if (!pendingFirstMessage) return;
     const timer = setTimeout(() => {
@@ -488,16 +488,16 @@ export function SessionsPage() {
   // wires its props. Stale-session guarding lives inside the hook.
   const workbench = useSessionWorkbench(activeSessionId);
   const {
-    runtimeFiles,
-    runtimePath,
-    runtimeFilesLoading,
-    runtimeFilesRefreshKey,
-    fetchRuntimeFiles,
-    bumpRuntimeFilesRefreshKey,
-    loadRuntimeDirectoryEntries,
-    downloadRuntimeEntry,
-    repoChangeSections: runtimeRepoChangeSections,
-    expandedGitDirs: runtimeExpandedGitDirs,
+    workspaceFiles,
+    workspacePath,
+    workspaceFilesLoading,
+    workspaceFilesRefreshKey,
+    fetchWorkspaceFiles,
+    bumpWorkspaceFilesRefreshKey,
+    loadWorkspaceDirectoryEntries,
+    downloadWorkspaceEntry,
+    repoChangeSections: workspaceRepoChangeSections,
+    expandedGitDirs: workspaceExpandedGitDirs,
     toggleGitDir,
     fetchChangedFilesForRepo,
     forgetRepoRoot,
@@ -505,8 +505,8 @@ export function SessionsPage() {
     activeWorkbenchPath,
     setActiveWorkbenchPath,
     activeWorkbenchTab,
-    openRuntimeFile,
-    openRuntimeFileDiff,
+    openWorkspaceFile,
+    openWorkspaceFileDiff,
     closeWorkbenchTab,
     closeAllWorkbenchTabs,
     workbenchShowDiffByPath,
@@ -543,9 +543,9 @@ export function SessionsPage() {
   // that the WebSocket lives in the runtime hook rather than inline here.
   useEffect(() => {
     setStreaming((current) =>
-      current.connection === runtimeConnection ? current : { ...current, connection: runtimeConnection },
+      current.connection === workspaceConnection ? current : { ...current, connection: workspaceConnection },
     );
-  }, [runtimeConnection]);
+  }, [workspaceConnection]);
 
   useEffect(() => {
     localStorage.setItem('sentinel-selected-tier', selectedTier);
@@ -629,7 +629,7 @@ export function SessionsPage() {
   const oldestServerMessageIdRef = useRef<string | null>(null);
   const loadingOlderRef = useRef(false);
   // The session WebSocket + reconnect now live in the shared stream manager
-  // (see `useSessionRuntimeStream` / `session-stream.ts`); no inline ws/reconnect
+  // (see `useSessionWorkspaceStream` / `session-stream.ts`); no inline ws/reconnect
   // refs remain here.
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const effortDropdownRef = useRef<HTMLDivElement | null>(null);
@@ -881,7 +881,7 @@ export function SessionsPage() {
     void fetchAgentModes();
     // Live-view + runtime-status fetching (incl. the session-change re-fetch, the
     // booting poll, and the desktop-visibility status refresh) is owned by
-    // `useSessionRuntimeStream`.
+    // `useSessionWorkspaceStream`.
   }, [activeInstanceName]);
 
   // Poll sessions every 30s to pick up unread changes
@@ -904,7 +904,7 @@ export function SessionsPage() {
   useEffect(() => {
     // Machine/workbench state (files, repo changes, workbench tabs, diffs) is
     // reset by `useSessionWorkbench` on session change; terminals + live view by
-    // `useSessionRuntimeStream`; the WS connection by the shared stream manager.
+    // `useSessionWorkspaceStream`; the WS connection by the shared stream manager.
     // This effect now only owns chat state (messages / context / tasks /
     // streaming) and re-fetches the initial runtime file tree.
     if (!activeSessionId) {
@@ -941,8 +941,8 @@ export function SessionsPage() {
 
   // The workbench waits for a confirmed workspace attachment before requesting files.
   useEffect(() => {
-    void fetchRuntimeFiles('', { refreshGit: false });
-  }, [activeSessionId, fetchRuntimeFiles]);
+    void fetchWorkspaceFiles('', { refreshGit: false });
+  }, [activeSessionId, fetchWorkspaceFiles]);
 
   useEffect(() => {
     if (!viewVisible || !activeSessionId || !hasActiveSubAgentTasks) return;
@@ -1217,10 +1217,10 @@ export function SessionsPage() {
     finally { setTasksLoading(false); }
   }
 
-  // Files / workbench actions (fetchRuntimeFiles, loadRuntimeDirectoryEntries,
-  // downloadRuntimeEntry, fetchChangedFilesForRepo, openRuntimeFile,
-  // openRuntimeDirectory, openRuntimeFileDiff, closeWorkbenchTab,
-  // fetchRuntimeGitDiff, ...) now live in `useSessionWorkbench`.
+  // Files / workbench actions (fetchWorkspaceFiles, loadWorkspaceDirectoryEntries,
+  // downloadWorkspaceEntry, fetchChangedFilesForRepo, openWorkspaceFile,
+  // openWorkspaceDirectory, openWorkspaceFileDiff, closeWorkbenchTab,
+  // fetchWorkspaceGitDiff, ...) now live in `useSessionWorkbench`.
 
   async function terminateTask(taskId: string) {
     if (!activeSessionId || isTerminatingTask) return;
@@ -1401,7 +1401,7 @@ export function SessionsPage() {
   }, [updatePersistedMessageApproval, updateStreamingCallApproval]);
 
   // WebSocket connection + reconnect are owned by the shared, ref-counted stream
-  // manager (`session-stream.ts`) and consumed via `useSessionRuntimeStream`.
+  // manager (`session-stream.ts`) and consumed via `useSessionWorkspaceStream`.
   // `onStreamEvent` below is the chat-side handler, wired in as the hook's
   // `onEvent` tap so chat + runtime share ONE socket per session.
 
@@ -1534,7 +1534,7 @@ export function SessionsPage() {
         break;
       case 'connected':
         // Terminal population from `event.panes` is handled by
-        // `useSessionRuntimeStream`; here we only own the chat-side payload
+        // `useSessionWorkspaceStream`; here we only own the chat-side payload
         // (context budget + message history).
         void fetchContextUsage(sessionId);
         if (event.history_via_http === true) {
@@ -1550,8 +1550,8 @@ export function SessionsPage() {
           return next;
         });
         break;
-      // panes_changed and runtime_ready are
-      // handled by useSessionRuntimeStream. SessionsPage does not opt into the
+      // panes_changed and workspace_ready are
+      // handled by useSessionWorkspaceStream. SessionsPage does not opt into the
       // hook, so no pane auto-focus here.
       case 'notice_message': {
         const notice = event.message as Message | undefined;
@@ -1817,8 +1817,8 @@ export function SessionsPage() {
             // Keep the chat workbench's file tree + repo changes fresh when a
             // file-mutating tool completes. The standalone Files tab runs its
             // own poll; this only feeds the workbench panel hosted here.
-            bumpRuntimeFilesRefreshKey();
-            void fetchRuntimeFiles(runtimePath, { refreshGit: true });
+            bumpWorkspaceFilesRefreshKey();
+            void fetchWorkspaceFiles(workspacePath, { refreshGit: true });
           }
         }
         setStreaming((current) => {
@@ -1876,7 +1876,7 @@ export function SessionsPage() {
         setStreaming((current) => ({ ...current, isCompactingContext: false }));
         notify.error((event.error as string) || 'Auto-compaction failed');
         break;
-      // useSessionRuntimeStream clears the booting flag on runtime_ready.
+      // useSessionWorkspaceStream clears the booting flag on workspace_ready.
       case 'done': {
         const stopReason = event.stop_reason as string | undefined;
         if (stopReason === 'tool_use') {
@@ -2283,7 +2283,7 @@ export function SessionsPage() {
                       connection: streaming.connection,
                       streamBusy,
                       showThinkingIndicator,
-                      runtimeBooting,
+                      workspaceBooting,
                       rightRailTab,
                       activeToolCalls: streaming.activeToolCalls.length,
                       completedToolCalls: streaming.completedToolCalls.length,
@@ -2915,13 +2915,13 @@ export function SessionsPage() {
                 onTabClose={closeWorkbenchTab}
                 onCloseAll={closeAllWorkbenchTabs}
                 showExplorer={false}
-                explorerEntries={runtimeFiles?.entries || []}
-                currentExplorerPath={runtimePath}
-                  explorerLoading={runtimeFilesLoading}
-                  onExplorerFileClick={(entry) => void openRuntimeFile(entry.path)}
-                  onExplorerDownload={(entry) => void downloadRuntimeEntry(entry)}
-                  loadExplorerDirectory={loadRuntimeDirectoryEntries}
-                  explorerRefreshKey={runtimeFilesRefreshKey}
+                explorerEntries={workspaceFiles?.entries || []}
+                currentExplorerPath={workspacePath}
+                  explorerLoading={workspaceFilesLoading}
+                  onExplorerFileClick={(entry) => void openWorkspaceFile(entry.path)}
+                  onExplorerDownload={(entry) => void downloadWorkspaceEntry(entry)}
+                  loadExplorerDirectory={loadWorkspaceDirectoryEntries}
+                  explorerRefreshKey={workspaceFilesRefreshKey}
                 onExplorerDirectoryToggle={(entry, expanded) => {
                   if (!activeSessionId || !entry.is_git_root) return;
                   if (!expanded) {
@@ -2930,10 +2930,10 @@ export function SessionsPage() {
                   }
                   void fetchChangedFilesForRepo(entry.path);
                 }}
-                repoChangesSections={runtimeRepoChangeSections}
-                expandedGitDirs={runtimeExpandedGitDirs}
+                repoChangesSections={workspaceRepoChangeSections}
+                expandedGitDirs={workspaceExpandedGitDirs}
                 onToggleGitDir={toggleGitDir}
-                onGitFileClick={(path) => void openRuntimeFileDiff(path)}
+                onGitFileClick={(path) => void openWorkspaceFileDiff(path)}
                 diffMode={activeWorkbenchTab ? workbenchShowDiffByPath[activeWorkbenchTab.path] ?? false : false}
                 setDiffMode={(enabled) => {
                   if (!activeWorkbenchTab) return;

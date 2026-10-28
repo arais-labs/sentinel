@@ -3,7 +3,7 @@ import { Terminal } from 'lucide-react';
 
 import { useInstanceName, usePaneId } from '../../lib/workspace-context';
 import { useActiveSessionId } from '../../store/active-session-store';
-import { useSessionRuntimeStream } from '../../hooks/useSessionRuntimeStream';
+import { useSessionWorkspaceStream } from '../../hooks/useSessionWorkspaceStream';
 import { TerminalPreview } from '../session/TerminalPreview';
 
 /** One native tmux session for the active conversation. */
@@ -15,7 +15,7 @@ export function TerminalTab() {
 
   const {
     focusedPaneId,
-  } = useSessionRuntimeStream(instanceName, activeSessionId, {
+  } = useSessionWorkspaceStream(instanceName, activeSessionId, {
   });
 
   // Effective focus falls back to the first terminal when nothing is explicitly

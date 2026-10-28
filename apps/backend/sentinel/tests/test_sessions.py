@@ -27,9 +27,9 @@ from sentral.llm.generic.types import (
     TextContent,
     UserMessage,
 )
-from app.services.runtime.files import (
-    RuntimePathInvalidError,
-    RuntimePathIsDirectoryError,
+from app.services.workspaces.files.manager import (
+    PathInvalidError,
+    PathIsDirectoryError,
 )
 from app.services.sessions.agent_run_registry import AgentRunRegistry
 from app.services.sessions.errors import SessionWorkspaceCleanupError
@@ -69,9 +69,9 @@ class _LocalRuntimeWorkspaceFiles:
         workspace = self._workspace(session_id).resolve()
         target = (workspace / path).resolve(strict=False) if path else workspace
         if target != workspace and workspace not in target.parents:
-            raise RuntimePathInvalidError("Path must stay within runtime workspace")
+            raise PathInvalidError("Path must stay within runtime workspace")
         if ".." in Path(path).parts:
-            raise RuntimePathInvalidError("Path traversal is not allowed")
+            raise PathInvalidError("Path traversal is not allowed")
         if must_exist and not target.exists():
             raise FileNotFoundError(path)
         return target
@@ -96,12 +96,12 @@ class _LocalRuntimeWorkspaceFiles:
         workspace = self._workspace(session_id)
         target = self._resolve(session_id, path)
         if not target.is_dir():
-            raise RuntimePathInvalidError("Machine path is not a directory")
+            raise PathInvalidError("Machine path is not a directory")
         children = sorted(target.iterdir(), key=lambda item: (item.is_file(), item.name.lower()))
         entries = [self._entry(workspace, child) for child in children[:limit]]
         return {
             "session_id": str(session_id),
-            "runtime_exists": workspace.parent.exists(),
+            "session_root_exists": workspace.parent.exists(),
             "workspace_exists": workspace.exists(),
             "path": path,
             "parent_path": str(Path(path).parent).replace(".", "") if path else None,
@@ -114,11 +114,11 @@ class _LocalRuntimeWorkspaceFiles:
     ) -> dict:
         target = self._resolve(session_id, path)
         if not target.is_file():
-            raise RuntimePathIsDirectoryError(path)
+            raise PathIsDirectoryError(path)
         raw = target.read_bytes()
         return {
             "session_id": str(session_id),
-            "runtime_exists": target.parent.exists(),
+            "session_root_exists": target.parent.exists(),
             "workspace_exists": self._workspace(session_id).exists(),
             "path": path,
             "name": target.name,
@@ -870,7 +870,7 @@ def test_context_usage_prefers_rebuilt_context_when_runtime_snapshot_missing():
 
 
 def test_file_requests_without_workspace_are_an_expected_conflict():
-    from app.services.runtime.machines import InstanceRuntimeNotConfigured
+    from app.services.workspaces.machines.registry import InstanceRuntimeNotConfigured
 
     fake_db = FakeDB()
     old_init = install_fake_db_overrides(app_db=fake_db)
@@ -882,17 +882,17 @@ def test_file_requests_without_workspace_are_an_expected_conflict():
         assert created.status_code == 200
         session_id = created.json()["id"]
         with patch(
-            "app.routers.sessions.get_runtime_workspace_files",
+            "app.routers.sessions.get_workspace_files",
             side_effect=InstanceRuntimeNotConfigured(
                 "No workspace attached. Use Attach in the session toolbar to choose a workspace."
             ),
         ) as files:
             for path in ["files", "file?path=README.md", "download?path=README.md"]:
-                response = client.get(f"{SESSIONS_API}/{session_id}/runtime/{path}")
+                response = client.get(f"{SESSIONS_API}/{session_id}/workspace/{path}")
                 assert response.status_code == 409
                 assert "No workspace attached" in response.json()["error"]["message"]
             files.reset_mock()
-            missing = client.get(f"{SESSIONS_API}/{uuid.uuid4()}/runtime/files")
+            missing = client.get(f"{SESSIONS_API}/{uuid.uuid4()}/workspace/files")
             assert missing.status_code == 404
             files.assert_not_called()
     finally:
@@ -923,11 +923,11 @@ def test_runtime_file_explorer_endpoints():
             (workspace / "repo").mkdir(parents=True, exist_ok=True)
 
             with patch(
-                "app.routers.sessions.get_runtime_workspace_files",
+                "app.routers.sessions.get_workspace_files",
                 return_value=_LocalRuntimeWorkspaceFiles(runtime_base, git_roots={"repo"}),
             ):
                 files_root = client.get(
-                    f"{SESSIONS_API}/{session_id}/runtime/files", headers=headers
+                    f"{SESSIONS_API}/{session_id}/workspace/files", headers=headers
                 )
                 assert files_root.status_code == 200
                 root_payload = files_root.json()
@@ -940,7 +940,7 @@ def test_runtime_file_explorer_endpoints():
                 assert repo_entry["is_git_root"] is True
 
                 files_src = client.get(
-                    f"{SESSIONS_API}/{session_id}/runtime/files?path=src",
+                    f"{SESSIONS_API}/{session_id}/workspace/files?path=src",
                     headers=headers,
                 )
                 assert files_src.status_code == 200
@@ -953,7 +953,7 @@ def test_runtime_file_explorer_endpoints():
                 )
 
                 preview = client.get(
-                    f"{SESSIONS_API}/{session_id}/runtime/file?path=src/main.py",
+                    f"{SESSIONS_API}/{session_id}/workspace/file?path=src/main.py",
                     headers=headers,
                 )
                 assert preview.status_code == 200
@@ -962,7 +962,7 @@ def test_runtime_file_explorer_endpoints():
                 assert "print('ok')" in preview_payload["content"]
 
                 forbidden = client.get(
-                    f"{SESSIONS_API}/{session_id}/runtime/files?path=../secrets",
+                    f"{SESSIONS_API}/{session_id}/workspace/files?path=../secrets",
                     headers=headers,
                 )
                 assert forbidden.status_code == 400
@@ -987,7 +987,7 @@ def test_runtime_git_diff_supports_deleted_and_untracked_files():
 
         deleted = {
             "session_id": session_id,
-            "runtime_exists": True,
+            "session_root_exists": True,
             "workspace_exists": True,
             "path": "repo/old.txt",
             "git_root": "repo",
@@ -1006,10 +1006,10 @@ def test_runtime_git_diff_supports_deleted_and_untracked_files():
             "diff": "--- /dev/null\n+++ b/new.txt\n@@ -0,0 +1 @@\n+after\n",
         }
         runtime = SimpleNamespace(git_diff=AsyncMock(side_effect=[deleted, added]))
-        with patch("app.routers.sessions.get_runtime_workspace_files", return_value=runtime):
+        with patch("app.routers.sessions.get_workspace_files", return_value=runtime):
             for expected in (deleted, added):
                 response = client.get(
-                    f"{SESSIONS_API}/{session_id}/runtime/git/diff",
+                    f"{SESSIONS_API}/{session_id}/workspace/git/diff",
                     params={
                         "path": expected["path"],
                         "base_ref": "HEAD",
@@ -1060,11 +1060,11 @@ def test_runtime_download_supports_files_and_directories():
             guide.write_text("hello zip\n", encoding="utf-8")
 
             with patch(
-                "app.routers.sessions.get_runtime_workspace_files",
+                "app.routers.sessions.get_workspace_files",
                 return_value=_LocalRuntimeWorkspaceFiles(runtime_base),
             ):
                 file_resp = client.get(
-                    f"{SESSIONS_API}/{session_id}/runtime/download?path=README.md",
+                    f"{SESSIONS_API}/{session_id}/workspace/download?path=README.md",
                     headers=headers,
                 )
                 assert file_resp.status_code == 200
@@ -1073,7 +1073,7 @@ def test_runtime_download_supports_files_and_directories():
                 assert file_resp.text == "# demo\n"
 
                 folder_resp = client.get(
-                    f"{SESSIONS_API}/{session_id}/runtime/download?path=docs",
+                    f"{SESSIONS_API}/{session_id}/workspace/download?path=docs",
                     headers=headers,
                 )
                 assert folder_resp.status_code == 200

@@ -1,0 +1,12 @@
+#!/sbin/openrc-run
+# The X11 desktop service, installed by sentineld when the desktop starts (distribution.json).
+description="Sentinel workspace desktop"
+command=/bin/sh
+command_args=/run/sentinel/desktop/session.sh
+supervisor=supervise-daemon
+respawn_delay=1
+
+start_pre() {
+	# Xorg finds input devices, the viewer's included, through udev (OpenRC starts none by default).
+	rc-service udev start >/dev/null && udevadm trigger --action=add && udevadm settle
+}

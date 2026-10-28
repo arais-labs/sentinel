@@ -25,17 +25,71 @@ def _fake_runtime_manager_db(monkeypatch):
     # The WS connect path probes runtime config via ssh_runtime's own module-level
     # ManagerSessionLocal, which bypasses dependency overrides and would open a real
     # database connection. Point it at an empty fake so the probe resolves "unconfigured".
-    from app.services.runtime import ssh_runtime
+    from app.services.workspaces import managers
     from tests.fake_db import FakeDB
     from tests.helpers import FakeSessionFactory
 
-    monkeypatch.setattr(ssh_runtime, "ManagerSessionLocal", FakeSessionFactory(FakeDB()))
+    monkeypatch.setattr(managers, "ManagerSessionLocal", FakeSessionFactory(FakeDB()))
     from app import dependencies
 
     async def empty_instance_factory(instance_name):
         return FakeSessionFactory(FakeDB())
 
     monkeypatch.setattr(dependencies, "get_instance_session_factory", empty_instance_factory)
+
+
+SHELL_FEATURES = ["shell", "terminal", "files"]
+TEST_CATALOG = {
+    "distributions": [
+        *(
+            {
+                "id": id,
+                "name": id,
+                "detail": "",
+                "features": SHELL_FEATURES,
+                "guide": f"Workspace OS: Linux ({id}). Shell: Bash.",
+                "installed": False,
+                "minimum": {},
+            }
+            for id in ("alpine", "ubuntu", "debian")
+        ),
+        {
+            "id": "windows-11",
+            "name": "Windows 11",
+            "detail": "",
+            "features": SHELL_FEATURES,
+            "guide": "Workspace OS: Windows 11 on Arm. Shell: MSYS2's Bash with GNU tools.",
+            "installed": False,
+            "minimum": {"memory_gib": 8, "disk_gib": 64},
+        },
+        {
+            # A guest without a POSIX shell: no terminals, files or agent tools.
+            "id": "shell-less",
+            "name": "Shell-less",
+            "detail": "",
+            "features": [],
+            "installed": False,
+            "minimum": {},
+        },
+    ],
+    "desktops": [{"id": "xfce", "name": "Xfce", "distributions": ["alpine", "ubuntu", "debian"]}],
+    "tools": [
+        {"id": "git", "name": "Git", "detail": "", "category": "Essentials", "distributions": []}
+    ],
+    "stacks": [{"id": "python", "name": "Python", "description": "", "tools": ["git", "python"]}],
+    "wallpapers": [],
+}
+
+
+@pytest.fixture(autouse=True)
+def _runtime_catalog(monkeypatch):
+    # sentineld's catalog, which the desktop runtime serves in production.
+    from app.services.workspaces import lifecycle
+
+    async def catalog(remote=None, *, refresh=False):
+        return TEST_CATALOG
+
+    monkeypatch.setattr(lifecycle, "catalog", catalog)
 
 
 def pytest_addoption(parser):
@@ -67,14 +121,14 @@ async def container_transport(request):
     """Live VM regressions run against an explicitly supplied disposable workspace."""
     import os
     from uuid import UUID
-    from app.services.runtime.container_transport import ContainerTransport
+    from app.services.workspaces.transport.guest import GuestTransport
 
     if not request.config.getoption("--live-workspace"):
         pytest.skip("Opt in with --live-workspace and a disposable test workspace")
     workspace = os.environ.get("SENTINEL_TEST_WORKSPACE_ID")
     if not workspace:
         pytest.skip("requires the disposable workspace integration harness")
-    transport = ContainerTransport(UUID(workspace), "/unused-existing-project", [])
+    transport = GuestTransport(UUID(workspace), "/unused-existing-project", [])
     try:
         yield transport
     finally:

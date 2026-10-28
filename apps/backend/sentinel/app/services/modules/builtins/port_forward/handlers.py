@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.services.runtime.port_forwards import (
-    RuntimeForwardError,
-    RuntimeForwardNotFound,
+from app.services.workspaces.forwards import (
+    ForwardError,
+    ForwardNotFound,
 )
-from app.services.runtime.ssh_runtime import (
-    get_runtime_port_forward_manager,
-    runtime_configured,
+from app.services.workspaces.managers import (
+    get_forward_manager,
+    workspace_attached,
 )
 from sentral.errors import ToolValidationError
 from app.services.tools.registry import ToolRuntimeContext
@@ -20,7 +20,7 @@ def _runtime_session_key(runtime: ToolRuntimeContext) -> str:
 
 
 async def handle_open(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:
-    if not await runtime_configured(
+    if not await workspace_attached(
         session_id=runtime.runtime_session_id or runtime.session_id,
         instance_name=runtime.instance_name,
         session_factory=runtime.db_session_factory,
@@ -32,7 +32,7 @@ async def handle_open(payload: dict[str, Any], runtime: ToolRuntimeContext) -> d
     if label is not None and not isinstance(label, str):
         raise ToolValidationError("Field 'label' must be a string.")
     try:
-        forwards = await get_runtime_port_forward_manager(
+        forwards = await get_forward_manager(
             session_id=runtime.runtime_session_id or runtime.session_id,
             instance_name=runtime.instance_name,
             session_factory=runtime.db_session_factory,
@@ -44,13 +44,13 @@ async def handle_open(payload: dict[str, Any], runtime: ToolRuntimeContext) -> d
             protocol=str(payload.get("protocol") or "http"),
             label=label,
         )
-    except RuntimeForwardError as exc:
+    except ForwardError as exc:
         raise ToolValidationError(str(exc)) from exc
     return forward.to_dict(instance_name=runtime.instance_name or "main")
 
 
 async def handle_list(_payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:
-    if not await runtime_configured(
+    if not await workspace_attached(
         session_id=runtime.runtime_session_id or runtime.session_id,
         instance_name=runtime.instance_name,
         session_factory=runtime.db_session_factory,
@@ -59,7 +59,7 @@ async def handle_list(_payload: dict[str, Any], runtime: ToolRuntimeContext) -> 
             "No usable workspace attached. Ask the user to attach a workspace from the session toolbar before using this tool."
         )
     session_id = _runtime_session_key(runtime)
-    manager = await get_runtime_port_forward_manager(
+    manager = await get_forward_manager(
         session_id=runtime.runtime_session_id or runtime.session_id,
         instance_name=runtime.instance_name,
         session_factory=runtime.db_session_factory,
@@ -74,7 +74,7 @@ async def handle_list(_payload: dict[str, Any], runtime: ToolRuntimeContext) -> 
 
 
 async def handle_close(payload: dict[str, Any], runtime: ToolRuntimeContext) -> dict[str, Any]:
-    if not await runtime_configured(
+    if not await workspace_attached(
         session_id=runtime.runtime_session_id or runtime.session_id,
         instance_name=runtime.instance_name,
         session_factory=runtime.db_session_factory,
@@ -86,7 +86,7 @@ async def handle_close(payload: dict[str, Any], runtime: ToolRuntimeContext) -> 
     if not isinstance(forward_id, str) or not forward_id.strip():
         raise ToolValidationError("Field 'forward_id' must be a non-empty string.")
     try:
-        forwards = await get_runtime_port_forward_manager(
+        forwards = await get_forward_manager(
             session_id=runtime.runtime_session_id or runtime.session_id,
             instance_name=runtime.instance_name,
             session_factory=runtime.db_session_factory,
@@ -95,6 +95,6 @@ async def handle_close(payload: dict[str, Any], runtime: ToolRuntimeContext) -> 
             session_id=_runtime_session_key(runtime),
             forward_id=forward_id.strip(),
         )
-    except RuntimeForwardNotFound as exc:
+    except ForwardNotFound as exc:
         raise ToolValidationError("Workspace port forward not found.") from exc
     return forward.to_dict(instance_name=runtime.instance_name or "main")

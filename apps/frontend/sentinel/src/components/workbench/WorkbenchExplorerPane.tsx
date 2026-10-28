@@ -1,14 +1,14 @@
 import React from 'react';
 import { ChevronDown, ChevronRight, Folder, Loader2, PanelLeftClose } from 'lucide-react';
 
-import type { SessionRuntimeFileEntry } from '../../types/api';
-import type { RuntimeGitChangedTreeNode } from '../../lib/runtimeGitTree';
+import type { SessionWorkspaceFileEntry } from '../../types/api';
+import type { WorkspaceGitChangedTreeNode } from '../../lib/workspaceGitTree';
 import { FileTree } from './FileTree';
 
 export interface WorkbenchRepoChangesSection {
   id: string;
   title: string;
-  tree: RuntimeGitChangedTreeNode[];
+  tree: WorkspaceGitChangedTreeNode[];
   loading: boolean;
 }
 
@@ -16,11 +16,11 @@ interface WorkbenchExplorerPaneProps {
   showTitle?: boolean;
   currentPath: string;
   explorerLoading: boolean;
-  explorerEntries: SessionRuntimeFileEntry[];
-  onExplorerFileClick: (entry: SessionRuntimeFileEntry) => void;
-  onExplorerDownload?: (entry: SessionRuntimeFileEntry) => void;
-  loadExplorerDirectory: (path: string) => Promise<SessionRuntimeFileEntry[]>;
-  onExplorerDirectoryToggle?: (entry: SessionRuntimeFileEntry, expanded: boolean) => void;
+  explorerEntries: SessionWorkspaceFileEntry[];
+  onExplorerFileClick: (entry: SessionWorkspaceFileEntry) => void;
+  onExplorerDownload?: (entry: SessionWorkspaceFileEntry) => void;
+  loadExplorerDirectory: (path: string) => Promise<SessionWorkspaceFileEntry[]>;
+  onExplorerDirectoryToggle?: (entry: SessionWorkspaceFileEntry, expanded: boolean) => void;
   explorerRefreshKey?: number;
   repoChangesSections: WorkbenchRepoChangesSection[];
   expandedGitDirs: Record<string, boolean>;
@@ -67,7 +67,7 @@ export const WorkbenchExplorerPane: React.FC<WorkbenchExplorerPaneProps> = ({
     }
   }
 
-  function renderGitTree(nodes: RuntimeGitChangedTreeNode[], depth = 0): React.JSX.Element[] {
+  function renderGitTree(nodes: WorkspaceGitChangedTreeNode[], depth = 0): React.JSX.Element[] {
     return nodes.map((node) => {
       if (node.kind === 'directory') {
         const expanded = expandedGitDirs[node.fullPath] ?? false;

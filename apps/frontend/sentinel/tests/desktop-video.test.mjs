@@ -15,6 +15,11 @@ const audioURL = await moduleURL('desktop-audio');
 const { DesktopVideo } = await import(await moduleURL('desktop-video', { './desktop-video-protocol': protocolURL, './desktop-audio': audioURL }));
 const { attachDesktopInput } = await import(await moduleURL('desktop-video-input'));
 
+function styles() {
+  const values = new Map();
+  return { values, setProperty: (name, value) => values.set(name, value), removeProperty: name => values.delete(name) };
+}
+
 test('guest cursor region excludes letterboxing and resets on exit and teardown', () => {
   const original = Object.getOwnPropertyDescriptors(globalThis);
   let resized;
@@ -22,7 +27,7 @@ test('guest cursor region excludes letterboxing and resets on exit and teardown'
     ResizeObserver: class { constructor(callback) { resized = callback; } observe() {} disconnect() {} } });
   const canvas = new EventTarget(), attributes = new Set();
   let rect = { left: 0, top: 0, width: 400, height: 400 };
-  Object.assign(canvas, { width: 400, height: 200, getBoundingClientRect: () => rect,
+  Object.assign(canvas, { width: 400, height: 200, getBoundingClientRect: () => rect, style: styles(),
     toggleAttribute: (key, enabled) => enabled ? attributes.add(key) : attributes.delete(key) });
   const enter = (x, y) => canvas.dispatchEvent(Object.assign(new Event('pointerenter'), { clientX: x, clientY: y }));
   const hidden = () => attributes.has('data-guest-pointer');
@@ -44,29 +49,63 @@ test('guest cursor region excludes letterboxing and resets on exit and teardown'
   }
 });
 
-test('pointer click sends position and button in one report', () => {
+test('pointer moves go out at once; a click sends position and button in one report', () => {
   const original = Object.getOwnPropertyDescriptors(globalThis);
-  let animations = 0;
   Object.assign(globalThis, { window: new EventTarget(), document: new EventTarget(),
-    ResizeObserver: class { observe() {} disconnect() {} },
-    requestAnimationFrame: () => ++animations, cancelAnimationFrame() {} });
+    ResizeObserver: class { observe() {} disconnect() {} } });
   const canvas = new EventTarget(), reports = [];
   Object.assign(canvas, { width: 400, height: 200, getBoundingClientRect: () => ({ left: 0, top: 0, width: 400, height: 200 }),
-    focus() {}, setPointerCapture() {}, toggleAttribute() {} });
+    style: styles(), focus() {}, setPointerCapture() {}, toggleAttribute() {} });
   let detach;
+  const kinds = report => report.events.map(event => [event.type, event.code]);
   try {
     detach = attachDesktopInput(canvas, { input: (device, events) => reports.push({ device, events }) });
     canvas.dispatchEvent(Object.assign(new Event('pointermove'), { clientX: 90, clientY: 45 }));
+    assert.equal(reports.length, 1, 'no wait for the next animation frame');
+    assert.deepEqual(kinds(reports[0]), [[3, 0], [3, 1], [0, 0]]);
     canvas.dispatchEvent(Object.assign(new Event('pointerdown', { cancelable: true }),
       { button: 0, pointerId: 1, clientX: 100, clientY: 50 }));
-    assert.equal(reports.length, 1);
-    assert.equal(reports[0].device, 1);
-    assert.deepEqual(reports[0].events.map(event => [event.type, event.code]), [[3, 0], [3, 1], [1, 272], [0, 0]]);
-    canvas.dispatchEvent(Object.assign(new Event('pointermove'), { clientX: 110, clientY: 55 }));
-    assert.equal(animations, 2, 'motion remains scheduled after a click');
+    assert.equal(reports.length, 2);
+    assert.equal(reports[1].device, 1);
+    assert.deepEqual(kinds(reports[1]), [[3, 0], [3, 1], [1, 272], [0, 0]]);
+    assert.deepEqual(reports[1].events.slice(0, 2).map(event => event.value), [16384, 16384]);
   } finally {
     detach?.();
-    for (const name of ['window', 'document', 'ResizeObserver', 'requestAnimationFrame', 'cancelAnimationFrame']) {
+    for (const name of ['window', 'document', 'ResizeObserver']) {
+      if (original[name]) Object.defineProperty(globalThis, name, original[name]); else delete globalThis[name];
+    }
+  }
+});
+
+test('guest cursor becomes the native pointer at the drawn scale, hidden when the guest hides it', () => {
+  const original = Object.getOwnPropertyDescriptors(globalThis);
+  const drawn = [];
+  const surface = () => ({ width: 0, height: 0,
+    getContext: () => ({ putImageData() {}, drawImage: (...args) => drawn.push(args.slice(1)) }),
+    toDataURL: () => 'data:image/png;base64,AA' });
+  Object.assign(globalThis, { window: Object.assign(new EventTarget(), { devicePixelRatio: 2 }),
+    document: Object.assign(new EventTarget(), { createElement: surface }),
+    ImageData: class { constructor(data, width, height) { Object.assign(this, { data, width, height }); } },
+    ResizeObserver: class { observe() {} disconnect() {} } });
+  const canvas = new EventTarget(), style = styles();
+  Object.assign(canvas, { width: 1920, height: 1080, style, toggleAttribute() {},
+    getBoundingClientRect: () => ({ left: 0, top: 0, width: 960, height: 540 }) });
+  const video = { input() {} };
+  let detach;
+  try {
+    detach = attachDesktopInput(canvas, video);
+    assert.equal(style.values.has('--guest-cursor'), false, 'hidden over the desktop until the guest sends a cursor');
+    video.cursor = { hotX: 4, hotY: 10, width: 24, height: 24, pixels: new Uint8ClampedArray(24 * 24 * 4) };
+    video.onCursor(video.cursor);
+    assert.equal(style.values.get('--guest-cursor'), 'image-set(url("data:image/png;base64,AA") 2x) 2 5, default');
+    assert.deepEqual(drawn.at(-1), [0, 0, 24, 24], 'half-size desktop on a 2x display: 12 CSS px, 24 device px');
+    video.cursor = null; video.onCursor(null);
+    assert.equal(style.values.get('--guest-cursor'), 'none');
+    detach(); detach = undefined;
+    assert.equal(video.onCursor, undefined);
+  } finally {
+    detach?.();
+    for (const name of ['window', 'document', 'ImageData', 'ResizeObserver']) {
       if (original[name]) Object.defineProperty(globalThis, name, original[name]); else delete globalThis[name];
     }
   }
@@ -108,10 +147,9 @@ test('desktop codec configuration describes AVC and rejects invalid dimensions',
   assert.throws(() => videoConfiguration(config.subarray(0, 8)), /Invalid/);
 });
 
-test('desktop decoder bounds queues, requests recovery, closes frames and preserves pane visibility', () => {
+test('desktop decoder paints on output, requests recovery, closes frames and preserves pane visibility', () => {
   const original = Object.getOwnPropertyDescriptors(globalThis);
   const document = new EventTarget(); document.hidden = false;
-  const animations = new Map(); let animationId = 0;
   const decoders = [];
   class Decoder {
     state = 'unconfigured'; decodeQueueSize = 0; chunks = [];
@@ -126,13 +164,12 @@ test('desktop decoder bounds queues, requests recovery, closes frames and preser
     close() { this.closed++; }
     packet(bytes) { this.dispatchEvent(new MessageEvent('message', { data: bytes.buffer })); }
   }
-  Object.assign(globalThis, { document, VideoDecoder: Decoder, EncodedVideoChunk: class { constructor(value) { Object.assign(this, value); } },
-    requestAnimationFrame: callback => { animations.set(++animationId, callback); return animationId; },
-    cancelAnimationFrame: id => animations.delete(id) });
+  Object.assign(globalThis, { document, VideoDecoder: Decoder, EncodedVideoChunk: class { constructor(value) { Object.assign(this, value); } } });
   try {
     const drawn = [], errors = [], socket = new Socket();
     let ready = 0;
-    const canvas = { width: 0, height: 0, getContext: () => ({ drawImage: frame => drawn.push(frame) }) };
+    let contextOptions;
+    const canvas = { width: 0, height: 0, getContext: (_, options) => { contextOptions = options; return { drawImage: frame => drawn.push(frame) }; } };
     const video = new DesktopVideo(canvas, socket, () => ready++, error => errors.push(error));
     socket.packet(videoPacket(5, Uint8Array.of(0xf4)));
     assert.deepEqual(errors, [], 'optional audio before activation never blocks video');
@@ -144,38 +181,28 @@ test('desktop decoder bounds queues, requests recovery, closes frames and preser
     assert.equal(decoders[0].chunks.length, 1);
     socket.packet(videoPacket(1, config));
     assert.equal(decoders.length, 1, 'periodic config must not reset the decoder');
+    assert.equal(contextOptions.desynchronized, true, 'frames reach the screen without compositor sync');
     const first = frame(), latest = frame();
-    decoders[0].callbacks.output(first); decoders[0].callbacks.output(latest);
-    assert.equal(first.closed, 0);
-    assert.equal(animations.size, 1);
-    const tick = () => { const callback = [...animations.values()][0]; animations.clear(); callback(); };
-    tick();
-    assert.deepEqual(drawn, [first]); assert.equal(first.closed, 1);
-    assert.equal(animations.size, 1, 'the second batched frame gets the next paint');
-    tick();
+    decoders[0].callbacks.output(first);
+    assert.deepEqual(drawn, [first], 'a decoded frame is painted at once'); assert.equal(first.closed, 1);
+    decoders[0].callbacks.output(latest);
     assert.deepEqual(drawn, [first, latest]); assert.equal(latest.closed, 1); assert.equal(ready, 1);
-    assert.equal(animations.size, 0, 'idle desktops do not schedule an animation loop');
     assert.equal(video.stats.dropped, 1, 'only the initial undecodable delta was dropped');
     const burst = [frame(), frame(), frame()];
     burst.forEach(value => decoders[0].callbacks.output(value));
-    assert.deepEqual(burst.map(value => value.closed), [1, 0, 0], 'backlog retains only two newest frames');
-    tick(); tick();
-    assert.deepEqual(drawn.slice(-2), burst.slice(1));
+    assert.deepEqual(drawn.slice(-3), burst, 'batched decoder callbacks are all painted');
     assert.ok(burst.every(value => value.closed === 1));
     assert.deepEqual([canvas.width, canvas.height], [1280, 720]);
-    const stale = frame(); decoders[0].callbacks.output(stale);
     decoders[0].decodeQueueSize = 4;
     socket.packet(videoPacket(2, Uint8Array.of(1), 0, 3));
     assert.equal(decoders[0].state, 'closed'); assert.equal(decoders[1].chunks.length, 0);
-    assert.equal(stale.closed, 1, 'decoder recovery releases queued frames');
-    assert.equal(animations.size, 0);
     assert.equal(socket.sent.at(-1)[0], 4, 'backlog requests one keyframe');
     socket.packet(videoPacket(2, Uint8Array.of(1), 1, 4));
     assert.equal(decoders[1].chunks.length, 1);
-    const hidden = [frame(), frame()]; hidden.forEach(value => decoders[1].callbacks.output(value));
     video.setVisible(false);
-    assert.ok(hidden.every(value => value.closed === 1));
-    assert.equal(animations.size, 0);
+    const painted = drawn.length;
+    const hidden = [frame(), frame()]; hidden.forEach(value => decoders[1].callbacks.output(value));
+    assert.ok(hidden.every(value => value.closed === 1)); assert.equal(drawn.length, painted, 'hidden panes paint nothing');
     document.hidden = true; document.dispatchEvent(new Event('visibilitychange'));
     document.hidden = false; document.dispatchEvent(new Event('visibilitychange'));
     socket.packet(videoPacket(2, Uint8Array.of(1), 0, 5));
@@ -186,10 +213,10 @@ test('desktop decoder bounds queues, requests recovery, closes frames and preser
     assert.equal(socket.sent.at(-1)[0], 4);
     const pending = [frame(), frame()]; pending.forEach(value => decoders.at(-1).callbacks.output(value));
     video.close(); video.close();
-    assert.ok(pending.every(value => value.closed === 1)); assert.equal(animations.size, 0); assert.equal(socket.closed, 1);
+    assert.ok(pending.every(value => value.closed === 1)); assert.equal(socket.closed, 1);
     assert.deepEqual(errors, []);
   } finally {
-    for (const name of ['document', 'VideoDecoder', 'EncodedVideoChunk', 'requestAnimationFrame', 'cancelAnimationFrame']) {
+    for (const name of ['document', 'VideoDecoder', 'EncodedVideoChunk']) {
       if (original[name]) Object.defineProperty(globalThis, name, original[name]); else delete globalThis[name];
     }
   }

@@ -1,0 +1,856 @@
+diff -ruN a/include/libkrun.h b/include/libkrun.h
+--- a/include/libkrun.h	2026-10-12 21:50:21
++++ b/include/libkrun.h	2026-10-12 21:28:31
+@@ -31,6 +31,7 @@
+ typedef void* KrunGpuDevice;
+ typedef void* KrunInputDevice;
+ typedef void* KrunAttachDevice; /* KrunFsDevice | KrunConsoleDevice | KrunBlockDevice | KrunNetDevice | KrunGpuDevice | KrunInputDevice | KrunVhostUserDevice | KrunBalloonDevice | KrunRngDevice | KrunSoundDevice | KrunVsockDevice */
++typedef void* KrunDeviceManager; /* KrunMmioDeviceManager | KrunPciDeviceManager */
+ typedef void* KrunError; /* KrunVmmError | KrunVtableError */
+ typedef void* KrunPushStr; /* KrunVtablePushStr */
+ 
+diff -ruN a/src/arch/src/aarch64/layout.rs b/src/arch/src/aarch64/layout.rs
+--- a/src/arch/src/aarch64/layout.rs	2026-10-12 21:50:21
++++ b/src/arch/src/aarch64/layout.rs	2026-10-12 21:27:59
+@@ -88,6 +88,12 @@
+ /// Below this address will reside the GIC, above this address will reside the MMIO devices.
+ pub const MAPPED_IO_START: u64 = 0x0a00_0000;
+ 
++/// PCI: 32-bit BAR window, then the ECAM configuration space of bus 0.
++pub const PCI_BAR_START: u64 = 0x1000_0000;
++pub const PCI_BAR_END: u64 = 0x3f00_0000;
++pub const PCI_ECAM_START: u64 = 0x3f00_0000;
++pub const PCI_ECAM_SIZE: u64 = 0x10_0000;
++
+ /// The address to put the SMBIOS contents, if present.
+ pub const SMBIOS_START: u64 = 0x4000_F000;
+ 
+diff -ruN a/src/arch/src/aarch64/mod.rs b/src/arch/src/aarch64/mod.rs
+--- a/src/arch/src/aarch64/mod.rs	2026-10-12 21:50:21
++++ b/src/arch/src/aarch64/mod.rs	2026-10-12 21:27:59
+@@ -41,6 +41,24 @@
+ /// The start of the memory area reserved for MMIO devices.
+ pub const MMIO_MEM_START: u64 = layout::MAPPED_IO_START;
+ 
++/// A PCI function on bus 0 and its INTx line (a GIC SPI, as an INTID).
++#[derive(Clone, Copy, Debug, Eq, PartialEq)]
++pub struct PciFunctionInfo {
++    pub device: u8,
++    pub function: u8,
++    pub irq: u32,
++}
++
++/// The PCI host bridge, for the device tree.
++#[derive(Clone, Debug)]
++pub struct PciHostInfo {
++    pub ecam_base: u64,
++    pub ecam_size: u64,
++    pub bar_start: u64,
++    pub bar_size: u64,
++    pub functions: Vec<PciFunctionInfo>,
++}
++
+ /// Returns a Vec of the valid memory addresses for aarch64.
+ /// See [`layout`](layout) module for a drawing of the specific memory model for this platform.
+ pub fn arch_memory_regions(
+diff -ruN a/src/devices/src/fdt/aarch64.rs b/src/devices/src/fdt/aarch64.rs
+--- a/src/devices/src/fdt/aarch64.rs	2026-10-12 21:50:21
++++ b/src/devices/src/fdt/aarch64.rs	2026-10-12 21:27:59
+@@ -77,6 +77,7 @@
+     device_info: &HashMap<(DeviceType, String), T>,
+     gic_device: &IrqChip,
+     initrd: &Option<InitrdConfig>,
++    pci: Option<&arch::aarch64::PciHostInfo>,
+ ) -> Result<Vec<u8>> {
+     // Alocate stuff necessary for the holding the blob.
+     let mut fdt = FdtWriter::new()?;
+@@ -103,6 +104,9 @@
+     create_clock_node(&mut fdt)?;
+     create_psci_node(&mut fdt)?;
+     create_devices_node(&mut fdt, device_info)?;
++    if let Some(pci) = pci {
++        create_pci_node(&mut fdt, pci)?;
++    }
+ 
+     // End Header node.
+     fdt.end_node(root_node)?;
+@@ -301,6 +305,48 @@
+     fdt.property_string("method", "smc")?;
+     fdt.end_node(node)?;
+ 
++    Ok(())
++}
++
++// A generic ECAM host bridge (bus 0): one 32-bit memory window, mapped 1:1, and per function its
++// INTA as a level-triggered SPI.
++fn create_pci_node(fdt: &mut FdtWriter, pci: &arch::aarch64::PciHostInfo) -> Result<()> {
++    const PCI_MEM32: u32 = 0x0200_0000;
++    let node = fdt.begin_node(&format!("pcie@{:x}", pci.ecam_base))?;
++    fdt.property_string("compatible", "pci-host-ecam-generic")?;
++    fdt.property_string("device_type", "pci")?;
++    fdt.property_u32("#address-cells", 3)?;
++    fdt.property_u32("#size-cells", 2)?;
++    fdt.property_u32("#interrupt-cells", 1)?;
++    fdt.property("bus-range", &generate_prop32(&[0, 0]))?;
++    fdt.property_u32("linux,pci-domain", 0)?;
++    fdt.property_null("dma-coherent")?;
++    fdt.property("reg", &generate_prop64(&[pci.ecam_base, pci.ecam_size]))?;
++    let (start, size) = (pci.bar_start, pci.bar_size);
++    fdt.property(
++        "ranges",
++        &generate_prop32(&[
++            PCI_MEM32,
++            (start >> 32) as u32,
++            start as u32,
++            (start >> 32) as u32,
++            start as u32,
++            (size >> 32) as u32,
++            size as u32,
++        ]),
++    )?;
++    let mut map = Vec::new();
++    for f in &pci.functions {
++        let devfn = (u32::from(f.device) << 11) | (u32::from(f.function) << 8);
++        #[cfg(target_os = "macos")]
++        let spi = f.irq - 32;
++        #[cfg(not(target_os = "macos"))]
++        let spi = f.irq;
++        map.extend_from_slice(&[devfn, 0, 0, 1, GIC_PHANDLE, 0, 0, GIC_FDT_IRQ_TYPE_SPI, spi, IRQ_TYPE_LEVEL_HI]);
++    }
++    fdt.property("interrupt-map", &generate_prop32(&map))?;
++    fdt.property("interrupt-map-mask", &generate_prop32(&[0xf800, 0, 0, 7]))?;
++    fdt.end_node(node)?;
+     Ok(())
+ }
+ 
+diff -ruN a/src/devices/src/legacy/hvfgicv3.rs b/src/devices/src/legacy/hvfgicv3.rs
+--- a/src/devices/src/legacy/hvfgicv3.rs	2026-10-12 21:50:21
++++ b/src/devices/src/legacy/hvfgicv3.rs	2026-10-12 21:27:59
+@@ -127,6 +127,10 @@
+         0
+     }
+ 
++    fn set_irq_level(&self, irq_line: u32, level: bool) -> Result<(), DeviceError> {
++        self.spi_level(irq_line, level)
++    }
++
+     fn set_irq(
+         &self,
+         irq_line: Option<u32>,
+@@ -147,6 +151,17 @@
+                 "IRQ not line configured",
+             )))
+         }
++    }
++}
++
++impl HvfGicV3 {
++    fn spi_level(&self, irq_line: u32, level: bool) -> Result<(), DeviceError> {
++        if unsafe { (self.bindings.hv_gic_set_spi)(irq_line, level) } != HV_SUCCESS {
++            return Err(DeviceError::FailedSignalingUsedQueue(std::io::Error::other(
++                "HVF returned error when setting SPI",
++            )));
++        }
++        Ok(())
+     }
+ }
+ 
+diff -ruN a/src/devices/src/legacy/irqchip.rs b/src/devices/src/legacy/irqchip.rs
+--- a/src/devices/src/legacy/irqchip.rs	2026-10-12 21:50:21
++++ b/src/devices/src/legacy/irqchip.rs	2026-10-12 21:27:59
+@@ -35,6 +35,11 @@
+     ) -> Result<(), DeviceError> {
+         self.inner.set_irq(irq_line, interrupt_evt)
+     }
++
++    #[cfg(target_arch = "aarch64")]
++    pub fn set_irq_level(&self, irq_line: u32, level: bool) -> Result<(), DeviceError> {
++        self.inner.set_irq_level(irq_line, level)
++    }
+ }
+ 
+ impl BusDevice for IrqChipDevice {
+@@ -132,6 +137,14 @@
+         irq_line: Option<u32>,
+         interrupt_evt: Option<&EventFd>,
+     ) -> Result<(), DeviceError>;
++    /// Drives a level-triggered line. Without level support, asserting raises the interrupt.
++    fn set_irq_level(&self, irq_line: u32, level: bool) -> Result<(), DeviceError> {
++        if level {
++            self.set_irq(Some(irq_line), None)
++        } else {
++            Ok(())
++        }
++    }
+ }
+ 
+ #[cfg(target_arch = "riscv64")]
+diff -ruN a/src/devices/src/virtio/console/device.rs b/src/devices/src/virtio/console/device.rs
+--- a/src/devices/src/virtio/console/device.rs	2026-10-12 21:50:21
++++ b/src/devices/src/virtio/console/device.rs	2026-10-12 21:21:15
+@@ -260,15 +260,16 @@
+             let rx_idx = port_id_to_queue_idx(QueueDirection::Rx, port_id);
+             let tx_idx = port_id_to_queue_idx(QueueDirection::Tx, port_id);
+ 
++            // The guest decides when a port opens: one it opens twice (its queues already belong
++            // to the running port), or one that does not exist, is refused, never a panic.
++            let free = |idx: usize| self.queues.get(idx).is_some_and(|q| q.is_some());
++            if port_id >= self.ports.len() || !free(rx_idx) || !free(tx_idx) {
++                log::warn!("Guest opened console port {port_id}, which is unknown or already open");
++                continue;
++            }
+             // Take ownership of port queues - they are moved to the port.
+-            let rx_queue = self.queues[rx_idx]
+-                .take()
+-                .expect("port rx queue should exist")
+-                .queue;
+-            let tx_queue = self.queues[tx_idx]
+-                .take()
+-                .expect("port tx queue should exist")
+-                .queue;
++            let rx_queue = self.queues[rx_idx].take().unwrap().queue;
++            let tx_queue = self.queues[tx_idx].take().unwrap().queue;
+ 
+             self.ports[port_id].start(
+                 mem.clone(),
+diff -ruN a/src/devices/src/virtio/pci.rs b/src/devices/src/virtio/pci.rs
+--- a/src/devices/src/virtio/pci.rs	2026-10-12 21:50:21
++++ b/src/devices/src/virtio/pci.rs	2026-10-12 21:45:45
+@@ -79,6 +79,7 @@
+     pub const COMMAND: usize = 0x04;
+     pub const STATUS: usize = 0x06;
+     pub const REVISION_ID: usize = 0x08;
++    pub const CLASS_CODE: usize = 0x0a;
+     pub const HEADER_TYPE: usize = 0x0e;
+     pub const BAR0: usize = 0x10;
+     pub const SUBSYSTEM_VENDOR_ID: usize = 0x2c;
+@@ -394,6 +395,7 @@
+             VirtioTransportState::new(mem, device).map_err(CreatePciTransportError::EventFd)?;
+         let bus_master_enabled = Arc::new(AtomicBool::new(false));
+         state.set_bus_master_gate(bus_master_enabled.clone());
++        Self::size_queues(&mut state);
+         let queue_registers = state
+             .queue_config
+             .iter()
+@@ -423,6 +425,20 @@
+         self.state.device()
+     }
+ 
++    /// The PCI base class and subclass for a virtio device type.
++    fn class_code(device_type: u32) -> u16 {
++        match device_type {
++            1 => 0x0200,  // net: network, Ethernet
++            2 => 0x0100,  // block: mass storage, SCSI
++            3 => 0x0780,  // console: communication, other
++            16 => 0x0300, // gpu: display, VGA: its driver retires the firmware framebuffer
++            18 => 0x0980, // input: input device, other
++            25 => 0x0401, // sound: multimedia, audio
++            26 => 0x0180, // fs: mass storage, other
++            _ => 0xff00,  // rng, balloon, vsock and the rest: unassigned class
++        }
++    }
++
+     fn build_config(
+         device_type: u32,
+         device_config_len: u32,
+@@ -481,6 +497,7 @@
+         config.write_u16(pci_config::COMMAND, PCI_COMMAND_MEMORY);
+         config.write_u16(pci_config::STATUS, PCI_CAPABILITY_LIST_STATUS);
+         config.write_u8(pci_config::REVISION_ID, PCI_REVISION_MODERN);
++        config.write_u16(pci_config::CLASS_CODE, Self::class_code(device_type));
+         config.write_u8(pci_config::HEADER_TYPE, PCI_HEADER_TYPE_ENDPOINT);
+         config.write_u16(pci_config::SUBSYSTEM_VENDOR_ID, PCI_VENDOR_ID_VIRTIO);
+         config.write_u16(
+@@ -745,7 +762,15 @@
+         }
+     }
+ 
++    fn size_queues(state: &mut VirtioTransportState) {
++        let sizes: Vec<u16> = state.queue_config.iter().map(|config| config.size).collect();
++        for (index, size) in sizes.into_iter().enumerate() {
++            state.with_queue_mut(index as u32, |queue| queue.size = size);
++        }
++    }
++
+     fn reset_queue_registers(&mut self) {
++        Self::size_queues(&mut self.state);
+         for (registers, queue_config) in self
+             .queue_registers
+             .iter_mut()
+diff -ruN a/src/hvf/src/lib.rs b/src/hvf/src/lib.rs
+--- a/src/hvf/src/lib.rs	2026-10-12 21:50:21
++++ b/src/hvf/src/lib.rs	2026-10-12 21:31:14
+@@ -754,6 +754,7 @@
+ 
+                     match len {
+                         1 => self.mmio_buf[0..1].copy_from_slice(&(val as u8).to_le_bytes()),
++                        2 => self.mmio_buf[0..2].copy_from_slice(&(val as u16).to_le_bytes()),
+                         4 => self.mmio_buf[0..4].copy_from_slice(&(val as u32).to_le_bytes()),
+                         8 => self.mmio_buf[0..8].copy_from_slice(&val.to_le_bytes()),
+                         _ => panic!("unsupported mmio len={len}"),
+diff -ruN a/src/libkrun/src/api/device_builders.rs b/src/libkrun/src/api/device_builders.rs
+--- a/src/libkrun/src/api/device_builders.rs	2026-10-12 21:50:21
++++ b/src/libkrun/src/api/device_builders.rs	2026-10-12 21:27:59
+@@ -18,7 +18,7 @@
+ use std::sync::{Arc, Mutex};
+ 
+ use crate::vmm::Vmm;
+-#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
++#[cfg(any(all(target_arch = "x86_64", target_os = "linux"), all(target_arch = "aarch64", target_os = "macos")))]
+ use crate::vmm::builder::attach_pci_device;
+ use crate::vmm::builder::{attach_mmio_device, setup_terminal_raw_mode};
+ use crate::vmm::device_manager::shm::ShmManager;
+@@ -106,7 +106,7 @@
+         }
+     }
+ 
+-    #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
++    #[cfg(any(all(target_arch = "x86_64", target_os = "linux"), all(target_arch = "aarch64", target_os = "macos")))]
+     pub(crate) fn new_pci(
+         vmm: &'a mut Vmm,
+         event_manager: &'a mut EventManager,
+@@ -312,6 +312,7 @@
+             event_manager: &mut EventManager,
+             shm_manager: &ShmManager,
+             intc: IrqChip,
++            first_index: usize,
+             #[cfg(target_os = "macos")] map_sender: Option<
+                 crossbeam_channel::Sender<utils::worker_message::WorkerMessage>,
+             >,
+@@ -346,7 +347,7 @@
+ ///
+ /// Available on x86_64 Linux hosts. The VM must enable ACPI with
+ /// [`VmmBuilder::acpi`](crate::api::vmm_builder::VmmBuilder::acpi).
+-#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
++#[cfg(any(all(target_arch = "x86_64", target_os = "linux"), all(target_arch = "aarch64", target_os = "macos")))]
+ #[derive(Default)]
+ pub struct PciDeviceManager<'a> {
+     devices: Vec<Box<dyn AttachDevice<'a> + 'a>>,
+@@ -390,6 +391,7 @@
+         event_manager: &mut EventManager,
+         shm_manager: &ShmManager,
+         intc: IrqChip,
++        first_index: usize,
+         #[cfg(target_os = "macos")] map_sender: Option<
+             crossbeam_channel::Sender<utils::worker_message::WorkerMessage>,
+         >,
+@@ -400,7 +402,7 @@
+                 event_manager,
+                 shm_manager,
+                 intc.clone(),
+-                i,
++                first_index + i,
+                 #[cfg(target_os = "macos")]
+                 map_sender.clone(),
+             );
+@@ -412,11 +414,11 @@
+ 
+ #[cfg_attr(
+     feature = "ffi",
+-    ffier::export(cfg = "all(target_arch = \"x86_64\", target_os = \"linux\")")
++    ffier::export(cfg = "any(all(target_arch = \"x86_64\", target_os = \"linux\"), all(target_arch = \"aarch64\", target_os = \"macos\"))")
+ )]
+ #[cfg_attr(
+     not(feature = "ffi"),
+-    cfg(all(target_arch = "x86_64", target_os = "linux"))
++    cfg(any(all(target_arch = "x86_64", target_os = "linux"), all(target_arch = "aarch64", target_os = "macos")))
+ )]
+ impl<'a> PciDeviceManager<'a> {
+     pub fn new() -> Self {
+@@ -424,7 +426,7 @@
+     }
+ }
+ 
+-#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
++#[cfg(any(all(target_arch = "x86_64", target_os = "linux"), all(target_arch = "aarch64", target_os = "macos")))]
+ impl<'a> PciDeviceManager<'a> {
+     pub fn add(&mut self, device: impl AttachDevice<'a>) -> &mut Self {
+         self.devices.push(Box::new(device));
+@@ -434,11 +436,11 @@
+ 
+ #[cfg_attr(
+     feature = "ffi",
+-    ffier::export(cfg = "all(target_arch = \"x86_64\", target_os = \"linux\")")
++    ffier::export(cfg = "any(all(target_arch = \"x86_64\", target_os = \"linux\"), all(target_arch = \"aarch64\", target_os = \"macos\"))")
+ )]
+ #[cfg_attr(
+     not(feature = "ffi"),
+-    cfg(all(target_arch = "x86_64", target_os = "linux"))
++    cfg(any(all(target_arch = "x86_64", target_os = "linux"), all(target_arch = "aarch64", target_os = "macos")))
+ )]
+ impl<'a> DeviceManager<'a> for PciDeviceManager<'a> {
+     fn add(&mut self, device: impl AttachDevice<'a>) {
+@@ -446,7 +448,7 @@
+     }
+ }
+ 
+-#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
++#[cfg(any(all(target_arch = "x86_64", target_os = "linux"), all(target_arch = "aarch64", target_os = "macos")))]
+ impl sealed::Sealed for PciDeviceManager<'_> {
+     fn requirements(&self) -> Vec<DeviceRequirements> {
+         self.devices
+@@ -465,14 +467,68 @@
+         event_manager: &mut EventManager,
+         shm_manager: &ShmManager,
+         intc: IrqChip,
++        first_index: usize,
+         #[cfg(target_os = "macos")] _map_sender: Option<
+             crossbeam_channel::Sender<utils::worker_message::WorkerMessage>,
+         >,
+     ) -> Result<(), VmmError> {
+         for (index, device) in self.devices.into_iter().enumerate() {
+-            let mut ctx =
+-                AttachContext::new_pci(vmm, event_manager, shm_manager, intc.clone(), index);
++            let mut ctx = AttachContext::new_pci(
++                vmm,
++                event_manager,
++                shm_manager,
++                intc.clone(),
++                first_index + index,
++            );
+             device.attach(&mut ctx)?;
++        }
++        Ok(())
++    }
++}
++
++/// The device managers of one VM, in the order they were given: each attaches its devices on its
++/// own transport.
++pub(crate) struct DeviceManagers<'a>(pub(crate) Vec<Box<dyn DeviceManager<'a> + 'a>>);
++
++impl<'a> DeviceManager<'a> for DeviceManagers<'a> {
++    fn add(&mut self, _device: impl AttachDevice<'a>) {
++        unreachable!("devices are added to a transport's own manager")
++    }
++}
++
++impl sealed::Sealed for DeviceManagers<'_> {
++    fn requirements(&self) -> Vec<DeviceRequirements> {
++        self.0.iter().flat_map(|m| m.requirements()).collect()
++    }
++
++    fn uses_pci(&self) -> bool {
++        self.0.iter().any(|m| m.uses_pci())
++    }
++
++    fn attach_all(
++        self: Box<Self>,
++        vmm: &mut Vmm,
++        event_manager: &mut EventManager,
++        shm_manager: &ShmManager,
++        intc: IrqChip,
++        first_index: usize,
++        #[cfg(target_os = "macos")] map_sender: Option<
++            crossbeam_channel::Sender<utils::worker_message::WorkerMessage>,
++        >,
++    ) -> Result<(), VmmError> {
++        let mut index = first_index;
++        for manager in self.0 {
++            let count = manager.requirements().len();
++            manager.attach_all(
++                vmm,
++                event_manager,
++                shm_manager,
++                intc.clone(),
++                index,
++                #[cfg(target_os = "macos")]
++                map_sender.clone(),
++            )?;
++            index += count;
+         }
+         Ok(())
+     }
+diff -ruN a/src/libkrun/src/api/mod.rs b/src/libkrun/src/api/mod.rs
+--- a/src/libkrun/src/api/mod.rs	2026-10-12 21:50:21
++++ b/src/libkrun/src/api/mod.rs	2026-10-12 21:27:59
+@@ -34,7 +34,7 @@
+ pub use device_builders::NetDevice;
+ #[cfg(feature = "net")]
+ pub use device_builders::NetFlags;
+-#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
++#[cfg(any(all(target_arch = "x86_64", target_os = "linux"), all(target_arch = "aarch64", target_os = "macos")))]
+ pub use device_builders::PciDeviceManager;
+ #[cfg(not(feature = "tee"))]
+ pub use device_builders::RngDevice;
+@@ -66,12 +66,12 @@
+     primitives_prefix = "krun",
+     crate::api::error::VmmError = 1,
+     crate::api::device_builders::MmioDeviceManager<'_> = 2,
+-    #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+-    crate::api::device_builders::PciDeviceManager<'_> = 25,
++    #[cfg(any(all(target_arch = "x86_64", target_os = "linux"), all(target_arch = "aarch64", target_os = "macos")))]
++    crate::api::device_builders::PciDeviceManager<'_> = 27,
+     trait crate::api::device_builders::DeviceManager = 26,
+     crate::api::device_builders::DeviceManager
+         for crate::api::device_builders::MmioDeviceManager,
+-    #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
++    #[cfg(any(all(target_arch = "x86_64", target_os = "linux"), all(target_arch = "aarch64", target_os = "macos")))]
+     crate::api::device_builders::DeviceManager
+         for crate::api::device_builders::PciDeviceManager,
+     #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
+diff -ruN a/src/libkrun/src/api/vmm_builder.rs b/src/libkrun/src/api/vmm_builder.rs
+--- a/src/libkrun/src/api/vmm_builder.rs	2026-10-12 21:50:21
++++ b/src/libkrun/src/api/vmm_builder.rs	2026-10-12 21:27:59
+@@ -26,7 +26,7 @@
+     vcpus: Option<u8>,
+     ram_mib: Option<u32>,
+     payload: Option<Payload>,
+-    device_manager: Option<Box<dyn DeviceManager<'a> + 'a>>,
++    device_managers: Vec<Box<dyn DeviceManager<'a> + 'a>>,
+     #[cfg(unix)]
+     serial_consoles: Vec<SerialConsoleConfig>,
+     kernel_console: Option<String>,
+@@ -68,7 +68,7 @@
+     ///
+     /// PCI devices require ACPI to be enabled with [`VmmBuilder::acpi`].
+     pub fn devices(mut self, devices: impl DeviceManager<'a>) -> Self {
+-        self.device_manager = Some(Box::new(devices));
++        self.device_managers.push(Box::new(devices));
+         self
+     }
+ 
+@@ -339,17 +339,18 @@
+         });
+     }
+ 
+-    let pci_enabled = builder_cfg
+-        .device_manager
+-        .as_ref()
+-        .is_some_and(|manager| manager.uses_pci());
+-    if pci_enabled && !builder_cfg.acpi {
++    // PCI on aarch64 is described by the device tree (the firmware builds ACPI from it).
++    #[cfg(target_arch = "x86_64")]
++    if builder_cfg.device_managers.iter().any(|m| m.uses_pci()) && !builder_cfg.acpi {
+         return Err(VmmError::InvalidParam());
+     }
+ 
+-    let device_manager = builder_cfg
+-        .device_manager
+-        .ok_or_else(|| VmmError::MissingConfig("no device manager set".into()))?;
++    if builder_cfg.device_managers.is_empty() {
++        return Err(VmmError::MissingConfig("no device manager set".into()));
++    }
++    let device_manager: Box<dyn DeviceManager<'_> + '_> = Box::new(
++        crate::api::device_builders::DeviceManagers(builder_cfg.device_managers),
++    );
+ 
+     let mut vm_resources = VmResources::default();
+     vm_resources
+diff -ruN a/src/libkrun/src/vmm/builder.rs b/src/libkrun/src/vmm/builder.rs
+--- a/src/libkrun/src/vmm/builder.rs	2026-10-12 21:50:21
++++ b/src/libkrun/src/vmm/builder.rs	2026-10-12 21:27:59
+@@ -221,13 +221,13 @@
+     /// Cannot initialize a MMIO Vsock Device or add a device to the MMIO Bus.
+     RegisterVsockDevice(device_manager::mmio::Error),
+     /// Cannot register the PCI root or a virtio PCI function.
+-    #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
++    #[cfg(any(all(target_arch = "x86_64", target_os = "linux"), all(target_arch = "aarch64", target_os = "macos")))]
+     RegisterPciDevice(device_manager::pci::Error),
+     /// PCI devices require ACPI discovery.
+-    #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
++    #[cfg(any(all(target_arch = "x86_64", target_os = "linux"), all(target_arch = "aarch64", target_os = "macos")))]
+     PciRequiresAcpi,
+     /// PCI shared-memory capabilities are not implemented yet.
+-    #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
++    #[cfg(any(all(target_arch = "x86_64", target_os = "linux"), all(target_arch = "aarch64", target_os = "macos")))]
+     PciSharedMemoryNotSupported,
+     /// Cannot attest the VM in the Secure Virtualization context.
+     SecureVirtAttest(VstateError),
+@@ -501,11 +501,11 @@
+                     "Cannot initialize a MMIO Vsock Device or add a device to the MMIO Bus. {err_msg}"
+                 )
+             }
+-            #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
++            #[cfg(any(all(target_arch = "x86_64", target_os = "linux"), all(target_arch = "aarch64", target_os = "macos")))]
+             RegisterPciDevice(ref err) => write!(f, "Cannot register PCI device: {err}"),
+-            #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
++            #[cfg(any(all(target_arch = "x86_64", target_os = "linux"), all(target_arch = "aarch64", target_os = "macos")))]
+             PciRequiresAcpi => write!(f, "PCI devices require ACPI to be enabled"),
+-            #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
++            #[cfg(any(all(target_arch = "x86_64", target_os = "linux"), all(target_arch = "aarch64", target_os = "macos")))]
+             PciSharedMemoryNotSupported => {
+                 write!(f, "PCI shared-memory regions are not supported yet")
+             }
+@@ -734,9 +734,10 @@
+ ) -> std::result::Result<Arc<Mutex<Vmm>>, StartMicrovmError> {
+     let payload = choose_payload(vm_resources)?;
+ 
+-    #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
++    #[cfg(any(all(target_arch = "x86_64", target_os = "linux"), all(target_arch = "aarch64", target_os = "macos")))]
+     let pci_enabled = {
+         let enabled = device_manager.uses_pci();
++        #[cfg(target_arch = "x86_64")]
+         if enabled && !vm_resources.acpi_enabled {
+             return Err(StartMicrovmError::PciRequiresAcpi);
+         }
+@@ -744,7 +745,7 @@
+     };
+ 
+     let requirements = device_manager.requirements();
+-    #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
++    #[cfg(any(all(target_arch = "x86_64", target_os = "linux"), all(target_arch = "aarch64", target_os = "macos")))]
+     if pci_enabled
+         && requirements
+             .iter()
+@@ -1077,7 +1078,7 @@
+     .map_err(Error::CreateLegacyDevice)
+     .map_err(StartMicrovmError::Internal)?;
+ 
+-    #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
++    #[cfg(any(all(target_arch = "x86_64", target_os = "linux"), all(target_arch = "aarch64", target_os = "macos")))]
+     let pci_device_manager = if pci_enabled {
+         Some(device_manager::pci::PciHostManager::new())
+     } else {
+@@ -1099,7 +1100,7 @@
+         (arch::IRQ_BASE, arch::IRQ_MAX),
+     );
+ 
+-    #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
++    #[cfg(any(all(target_arch = "x86_64", target_os = "linux"), all(target_arch = "aarch64", target_os = "macos")))]
+     if let Some(pci) = &pci_device_manager {
+         pci.register_mmio(&mut mmio_device_manager.bus)
+             .map_err(StartMicrovmError::RegisterPciDevice)?;
+@@ -1309,7 +1310,7 @@
+         #[cfg(not(target_os = "windows"))]
+         vm,
+         mmio_device_manager,
+-        #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
++        #[cfg(any(all(target_arch = "x86_64", target_os = "linux"), all(target_arch = "aarch64", target_os = "macos")))]
+         pci_device_manager,
+         #[cfg(target_os = "macos")]
+         vm_ctl_tx,
+@@ -1335,6 +1336,7 @@
+             event_manager,
+             &_shm_manager,
+             intc.clone(),
++            0,
+             #[cfg(target_os = "macos")]
+             Some(_sender.clone()),
+         )
+@@ -2534,7 +2536,7 @@
+     Ok(())
+ }
+ 
+-#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
++#[cfg(any(all(target_arch = "x86_64", target_os = "linux"), all(target_arch = "aarch64", target_os = "macos")))]
+ pub(crate) fn attach_pci_device(
+     vmm: &mut Vmm,
+     _id: String,
+@@ -2542,11 +2544,14 @@
+     device: Arc<Mutex<dyn VirtioDevice>>,
+ ) -> std::result::Result<(), device_manager::pci::Error> {
+     let guest_memory = vmm.guest_memory.clone();
+-    let vm = vmm.vm.fd_shared();
++    #[cfg(target_os = "linux")]
++    let line = vmm.vm.fd_shared();
++    #[cfg(target_os = "macos")]
++    let line = _intc;
+     vmm.pci_device_manager
+         .as_mut()
+         .expect("PCI device manager must exist when attaching PCI devices")
+-        .register_virtio_device(vm, guest_memory, device)?;
++        .register_virtio_device(line, guest_memory, device)?;
+     Ok(())
+ }
+ 
+diff -ruN a/src/libkrun/src/vmm/device_manager/hvf/mod.rs b/src/libkrun/src/vmm/device_manager/hvf/mod.rs
+--- a/src/libkrun/src/vmm/device_manager/hvf/mod.rs	2026-10-12 21:50:21
++++ b/src/libkrun/src/vmm/device_manager/hvf/mod.rs	2026-10-12 21:27:59
+@@ -1 +1,3 @@
+ pub mod mmio;
++#[cfg(target_arch = "aarch64")]
++pub mod pci;
+diff -ruN a/src/libkrun/src/vmm/device_manager/hvf/pci.rs b/src/libkrun/src/vmm/device_manager/hvf/pci.rs
+--- a/src/libkrun/src/vmm/device_manager/hvf/pci.rs	1969-12-31 18:00:00
++++ b/src/libkrun/src/vmm/device_manager/hvf/pci.rs	2026-10-12 21:27:59
+@@ -0,0 +1,146 @@
++// SPDX-License-Identifier: Apache-2.0
++
++//! PCI root and virtio-pci registration for the aarch64 Hypervisor.framework backend: the ECAM and
++//! the BAR window are MMIO bus devices, and each function's INTx is a level-triggered GIC SPI,
++//! allocated down from the top of the SPI range (MMIO devices take theirs from the bottom).
++
++use std::fmt::{Display, Formatter};
++use std::sync::{Arc, Mutex};
++
++use arch::aarch64::layout::{PCI_BAR_END, PCI_BAR_START, PCI_ECAM_SIZE, PCI_ECAM_START};
++use arch::aarch64::{PciFunctionInfo, PciHostInfo};
++use devices::Bus;
++use devices::legacy::IrqChip;
++use devices::pci::{BarWindow, Ecam, PciAddress, PciFunction, PciIntxLine, PciRootError};
++use devices::virtio::{
++    CreatePciTransportError, VIRTIO_PCI_BAR0_SIZE, VirtioDevice, VirtioPciTransport,
++};
++use vm_memory::GuestMemoryMmap;
++
++const PCI_BUS0: u8 = 0;
++
++#[derive(Debug)]
++pub enum Error {
++    Bus(devices::BusError),
++    CreateTransport(CreatePciTransportError),
++    IrqsExhausted,
++    PciRoot(PciRootError),
++}
++
++impl Display for Error {
++    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
++        match self {
++            Self::Bus(err) => write!(f, "failed to register PCI bus device: {err}"),
++            Self::CreateTransport(err) => write!(f, "failed to create virtio-pci transport: {err}"),
++            Self::IrqsExhausted => write!(f, "no more PCI slots or SPIs are available"),
++            Self::PciRoot(err) => write!(f, "failed to register PCI function: {err}"),
++        }
++    }
++}
++
++type Result<T> = std::result::Result<T, Error>;
++
++/// Owns the bus-0 PCI functions and their guest address windows.
++pub struct PciHostManager {
++    root: devices::pci::SharedPciRoot,
++    next_device: u8,
++    irq: u32,
++    functions: Vec<PciFunctionInfo>,
++}
++
++struct GicIntxLine {
++    intc: IrqChip,
++    irq: u32,
++}
++
++impl PciIntxLine for GicIntxLine {
++    fn set_level(&self, asserted: bool) -> std::io::Result<()> {
++        self.intc
++            .lock()
++            .expect("Poisoned interrupt controller lock")
++            .set_irq_level(self.irq, asserted)
++            .map_err(|err| std::io::Error::other(format!("{err:?}")))
++    }
++}
++
++impl Default for PciHostManager {
++    fn default() -> Self {
++        Self::new()
++    }
++}
++
++impl PciHostManager {
++    pub fn new() -> Self {
++        Self {
++            root: devices::pci::PciRoot::shared(),
++            next_device: 1,
++            irq: arch::IRQ_MAX,
++            functions: Vec::new(),
++        }
++    }
++
++    pub fn register_mmio(&self, bus: &mut Bus) -> Result<()> {
++        bus.insert(
++            Arc::new(Mutex::new(Ecam::new(self.root.clone()))),
++            PCI_ECAM_START,
++            PCI_ECAM_SIZE,
++        )
++        .map_err(Error::Bus)?;
++        bus.insert(
++            Arc::new(Mutex::new(BarWindow::new(self.root.clone(), PCI_BAR_START))),
++            PCI_BAR_START,
++            PCI_BAR_END - PCI_BAR_START,
++        )
++        .map_err(Error::Bus)
++    }
++
++    pub fn register_virtio_device(
++        &mut self,
++        intc: IrqChip,
++        guest_memory: GuestMemoryMmap,
++        device: Arc<Mutex<dyn VirtioDevice>>,
++    ) -> Result<PciFunctionInfo> {
++        if self.irq < arch::IRQ_BASE || self.next_device > 31 {
++            return Err(Error::IrqsExhausted);
++        }
++
++        let irq = self.irq;
++        let address = PciAddress::new(PCI_BUS0, self.next_device, 0);
++        let bar_base = PCI_BAR_START + u64::from(self.next_device - 1) * VIRTIO_PCI_BAR0_SIZE;
++        if bar_base + VIRTIO_PCI_BAR0_SIZE > PCI_BAR_END {
++            return Err(Error::IrqsExhausted);
++        }
++        let intx_line = Arc::new(GicIntxLine { intc, irq });
++        let transport =
++            VirtioPciTransport::new(guest_memory, device, irq as u8, intx_line, bar_base as u32)
++                .map_err(Error::CreateTransport)?;
++
++        let function: Arc<Mutex<dyn PciFunction>> = Arc::new(Mutex::new(transport));
++        self.root
++            .lock()
++            .expect("Poisoned PCI root lock")
++            .insert(address, function)
++            .map_err(Error::PciRoot)?;
++
++        let info = PciFunctionInfo {
++            device: address.device,
++            function: address.function,
++            irq,
++        };
++        self.functions.push(info);
++        self.next_device += 1;
++        self.irq -= 1;
++        Ok(info)
++    }
++
++    /// The host bridge for the device tree; `None` when no function is on the bus.
++    pub fn host_info(&self) -> Option<PciHostInfo> {
++        (!self.functions.is_empty()).then(|| PciHostInfo {
++            ecam_base: PCI_ECAM_START,
++            ecam_size: PCI_ECAM_SIZE,
++            bar_start: PCI_BAR_START,
++            bar_size: PCI_BAR_END - PCI_BAR_START,
++            functions: self.functions.clone(),
++        })
++    }
++}
+diff -ruN a/src/libkrun/src/vmm/device_manager/mod.rs b/src/libkrun/src/vmm/device_manager/mod.rs
+--- a/src/libkrun/src/vmm/device_manager/mod.rs	2026-10-12 21:50:21
++++ b/src/libkrun/src/vmm/device_manager/mod.rs	2026-10-12 21:27:59
+@@ -22,6 +22,8 @@
+ pub mod hvf;
+ #[cfg(target_os = "macos")]
+ pub use self::hvf::mmio;
++#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
++pub use self::hvf::pci;
+ #[cfg(target_os = "windows")]
+ pub mod whp;
+ #[cfg(target_os = "windows")]
+diff -ruN a/src/libkrun/src/vmm/mod.rs b/src/libkrun/src/vmm/mod.rs
+--- a/src/libkrun/src/vmm/mod.rs	2026-10-12 21:50:21
++++ b/src/libkrun/src/vmm/mod.rs	2026-10-12 21:27:59
+@@ -50,7 +50,7 @@
+ use utils::windows::AsRawFd;
+ 
+ use crate::vmm::device_manager::mmio::MMIODeviceManager;
+-#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
++#[cfg(any(all(target_arch = "x86_64", target_os = "linux"), all(target_arch = "aarch64", target_os = "macos")))]
+ use crate::vmm::device_manager::pci::PciHostManager;
+ #[cfg(any(target_os = "linux", target_os = "windows"))]
+ use crate::vmm::vstate::VcpuEvent;
+@@ -161,7 +161,7 @@
+ 
+     // Guest VM devices.
+     pub(crate) mmio_device_manager: MMIODeviceManager,
+-    #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
++    #[cfg(any(all(target_arch = "x86_64", target_os = "linux"), all(target_arch = "aarch64", target_os = "macos")))]
+     pub(crate) pci_device_manager: Option<PciHostManager>,
+ 
+     // Out-of-band live pause/resume requests: the C API sends `VmCtl` from
+@@ -366,6 +366,10 @@
+                 self.mmio_device_manager.get_device_info(),
+                 _intc,
+                 initrd,
++                #[cfg(target_os = "macos")]
++                self.pci_device_manager.as_ref().and_then(|pci| pci.host_info()).as_ref(),
++                #[cfg(not(target_os = "macos"))]
++                None,
+             )
+             .map_err(Error::SetupFDT)?;
+         }

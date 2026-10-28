@@ -2,33 +2,32 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import PurePosixPath
-from typing import Literal
+from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-import app.services.runtime.development_tools as development_tools_module
 from app.dependencies import get_db, get_manager_db, get_request_run_registry
 from app.models import Session, SubAgentTask, Workspace
 from app.models.manager import Machine
 from app.routers.workspace_browser import router as browser_router
 from app.services.modules.runtime_services import get_browser_pool
-from app.services.runtime import workspace_containers as containers
-from app.services.runtime import worker_catalog
-from app.services.runtime.compatibility import RuntimeCompatibilityError
-from app.services.runtime.directories import list_local_directories
-from app.services.runtime.distributions import Distribution, validate_distribution_tools
-from app.services.runtime.panes import TmuxPanes
-from app.services.runtime.ssh_runtime import (
-    get_runtime_terminal_manager,
-    invalidate_runtime_for_session,
-    runtime_configured,
+from app.services.workspaces import lifecycle
+from app.services.workspaces import catalog
+from app.services.workspaces.machines.remote.worker import RemoteMacError
+from app.services.workspaces.compatibility import RuntimeCompatibilityError
+from app.services.workspaces.machines.folders import list_local_directories
+from app.services.workspaces.terminals.panes import TmuxPanes
+from app.services.workspaces.managers import (
+    get_terminal_manager,
+    invalidate_session_managers,
+    workspace_attached,
 )
-from app.services.runtime.workspace_metrics import workspace_metrics
+from app.services.workspaces.metrics import workspace_metrics
 
 router = APIRouter()
 router.include_router(browser_router)
@@ -41,30 +40,24 @@ class WorkspaceResources(BaseModel):
     disk_gib: int = Field(default=32, ge=8, le=1024)
 
 
+# Catalog ids (distributions, desktops, tools, browsers); sentineld validates them.
+CatalogId = Annotated[str, StringConstraints(pattern=r"^[a-z0-9][a-z0-9-]{0,63}$")]
+
+
 class WorkspaceCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str = Field(min_length=1, max_length=120)
     machine_id: UUID
     directory: str = Field(min_length=1, max_length=4096)
-    development_tools: list[str] = Field(default_factory=list, max_length=64)
+    development_tools: list[CatalogId] = Field(default_factory=list, max_length=64)
     resources: WorkspaceResources | None = None
-    distribution: Distribution = "alpine"
-    desktop: Literal["none", "xfce", "weston", "lxqt", "gnome", "plasma"] = "none"
-    browser: Literal["chromium", "firefox", "chrome"] = "chromium"
-
-    @model_validator(mode="after")
-    def distribution_tools(self):
-        validate_distribution_tools(self.distribution, self.development_tools)
-        if self.distribution == "alpine" and self.browser == "chrome":
-            raise ValueError("Google Chrome is supported on Ubuntu and Debian, not Alpine")
-        return self
+    distribution: CatalogId = "alpine"
+    desktop: CatalogId = "none"
+    browser: CatalogId = "chromium"
 
     @field_validator("development_tools")
     @classmethod
     def validate_tools(cls, value: list[str]) -> list[str]:
-
-        if set(value) - development_tools_module.TOOL_IDS:
-            raise ValueError("Unknown development tool")
         return sorted(set(value))
 
     @field_validator("name", "directory")
@@ -86,9 +79,9 @@ class WorkspaceCreate(BaseModel):
 
 class WorkspaceUpdate(BaseModel):
     revision: int | None = Field(default=None, ge=1)
-    distribution: Distribution | None = None
-    desktop: Literal["none", "xfce", "weston", "lxqt", "gnome", "plasma"] | None = None
-    browser: Literal["chromium", "firefox", "chrome"] | None = None
+    distribution: CatalogId | None = None
+    desktop: CatalogId | None = None
+    browser: CatalogId | None = None
     directory: str | None = Field(default=None, min_length=1, max_length=4096)
 
     @field_validator("directory")
@@ -99,7 +92,7 @@ class WorkspaceUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str | None = Field(default=None, min_length=1, max_length=120)
     resources: WorkspaceResources | None = None
-    development_tools: list[str] | None = Field(default=None, max_length=64)
+    development_tools: list[CatalogId] | None = Field(default=None, max_length=64)
 
     @field_validator("development_tools")
     @classmethod
@@ -115,12 +108,12 @@ class WorkspaceResponse(BaseModel):
     machine_id: UUID
     directory: str
     development_tools: list[str] = Field(default_factory=list)
-    distribution: Distribution = "alpine"
-    browser: Literal["chromium", "firefox", "chrome"] = "chromium"
-    desktop: Literal["none", "xfce", "weston", "lxqt", "gnome", "plasma"] = "none"
-    container_state: str = "stopped"
-    container_error: str | None = None
-    container_message: str | None = None
+    distribution: str = "alpine"
+    browser: str = "chromium"
+    desktop: str = "none"
+    state: str = "stopped"
+    error: str | None = None
+    message: str | None = None
     recovery_backup: str | None = None
     recovery_available: bool = False
     resources: dict[str, int] | None = None
@@ -140,34 +133,34 @@ async def get_workspace_metrics(workspace_id: UUID, db: AsyncSession = Depends(g
 
 
 @router.get("/workspaces", response_model=list[WorkspaceResponse])
-async def list_workspaces(db: AsyncSession = Depends(get_db), include_runtime: bool = True):
+async def list_workspaces(db: AsyncSession = Depends(get_db), include_status: bool = True):
     rows = list((await db.scalars(select(Workspace).order_by(Workspace.name))).all())
     for row in rows:
-        containers.bind(row.id, row.machine_id, row.distribution, row.desktop, row.browser)
+        lifecycle.bind(row.id, row.machine_id, row.distribution, row.desktop, row.browser)
     await db.close()
-    if not include_runtime:
+    if not include_status:
         return [
-            WorkspaceResponse.model_validate(row).model_copy(update={"container_state": "checking"})
+            WorkspaceResponse.model_validate(row).model_copy(update={"state": "checking"})
             for row in rows
         ]
     try:
-        snapshot = await containers.overview() if rows else {}
+        snapshot = await lifecycle.overview() if rows else {}
         states = snapshot.get("states", {})
         unavailable = None
-    except containers.WorkspaceContainerError as exc:
+    except lifecycle.WorkspaceLifecycleError as exc:
         snapshot, states, unavailable = {}, {}, str(exc)
     return [
         WorkspaceResponse.model_validate(row).model_copy(
             update={
-                "container_state": (
+                "state": (
                     "unavailable"
                     if unavailable
                     else states.get(str(row.id), {}).get("state", "stopped")
                 ),
-                "container_error": unavailable or states.get(str(row.id), {}).get("error"),
+                "error": unavailable or states.get(str(row.id), {}).get("error"),
                 "recovery_available": not unavailable
                 and states.get(str(row.id), {}).get("recovery_available", False),
-                "container_message": states.get(str(row.id), {}).get("message"),
+                "message": states.get(str(row.id), {}).get("message"),
                 "resources": states.get(str(row.id), {}).get("resources")
                 or snapshot.get("resources"),
             }
@@ -188,18 +181,18 @@ async def discover_worker_workspaces(
     await manager.close()
     try:
         async with asyncio.timeout(10):
-            snapshot = await worker_catalog.snapshot(machine_id)
+            snapshot = await catalog.snapshot(machine_id)
         result = []
         for workspace_id, record in snapshot["workspaces"].items():
-            row = await worker_catalog.cache_record(db, machine_id, workspace_id, record)
+            row = await catalog.cache_record(db, machine_id, workspace_id, record)
             state = snapshot.get("states", {}).get(workspace_id, {})
             result.append(
                 WorkspaceResponse.model_validate(row).model_copy(
                     update={
                         "revision": record["revision"],
                         "resources": record["spec"]["resources"],
-                        "container_state": state.get("state", "stopped"),
-                        "container_error": state.get("error"),
+                        "state": state.get("state", "stopped"),
+                        "error": state.get("error"),
                         "recovery_available": state.get("recovery_available", False),
                         "recovery_backup": state.get("recovery_backup"),
                     }
@@ -220,12 +213,12 @@ async def get_workspace_status(workspace_id: UUID, db: AsyncSession = Depends(ge
     row = await db.get(Workspace, workspace_id)
     if row is None:
         raise HTTPException(404, "Workspace not found")
-    containers.bind(row.id, row.machine_id, row.distribution, row.desktop, row.browser)
+    lifecycle.bind(row.id, row.machine_id, row.distribution, row.desktop, row.browser)
     await db.close()
     try:
-        states = await asyncio.wait_for(containers.statuses(workspace_id), timeout=8)
+        states = await asyncio.wait_for(lifecycle.statuses(workspace_id), timeout=8)
         state = states.get(str(workspace_id), {})
-    except (TimeoutError, containers.WorkspaceContainerError) as exc:
+    except (TimeoutError, lifecycle.WorkspaceLifecycleError) as exc:
         state = {
             "state": "unavailable",
             "error": (
@@ -234,10 +227,10 @@ async def get_workspace_status(workspace_id: UUID, db: AsyncSession = Depends(ge
         }
     return WorkspaceResponse.model_validate(row).model_copy(
         update={
-            "container_state": state.get("state", "stopped"),
+            "state": state.get("state", "stopped"),
             "revision": state.get("revision"),
-            "container_error": state.get("error"),
-            "container_message": state.get("message"),
+            "error": state.get("error"),
+            "message": state.get("message"),
             "recovery_backup": state.get("recovery_backup"),
             "recovery_available": state.get("recovery_available", False),
             "resources": state.get("resources"),
@@ -257,7 +250,7 @@ async def create_workspace(
         raise HTTPException(404, "Machine not found")
     if (
         machine.provider not in {"local", "ssh"}
-        or (machine.provider == "local" and not containers.available())
+        or (machine.provider == "local" and not lifecycle.available())
         or (machine.provider == "ssh" and not (machine.provider_config or {}).get("host_key"))
     ):
         raise HTTPException(
@@ -265,13 +258,23 @@ async def create_workspace(
             "Install Sentinel Runtime for this machine before creating workspaces.",
         )
     await manager.close()
+    # Omitted resources take the defaults, raised to the distribution's catalog minimum.
+    resources = (
+        payload.resources.model_dump()
+        if payload.resources is not None
+        else await lifecycle.default_resources(
+            payload.distribution,
+            WorkspaceResources().model_dump(),
+            machine,
+        )
+    )
     row = Workspace(**payload.model_dump(exclude={"resources"}))
     if machine.provider == "ssh":
         from uuid import uuid4
 
         row.id = uuid4()
         try:
-            record = await worker_catalog.configure(
+            record = await catalog.configure(
                 db,
                 row,
                 name=row.name,
@@ -280,14 +283,14 @@ async def create_workspace(
                 distribution=row.distribution,
                 desktop=row.desktop,
                 browser=row.browser,
-                resources=(payload.resources or WorkspaceResources()).model_dump(),
+                resources=resources,
                 revision=0,
             )
-            await containers.start(row.id, row.directory, row.development_tools)
+            await lifecycle.start(row.id, row.directory, row.development_tools)
         except Exception as exc:
             raise HTTPException(502, str(exc)) from exc
         return WorkspaceResponse.model_validate(row).model_copy(
-            update={"revision": record["revision"], "container_state": "preparing"}
+            update={"revision": record["revision"], "state": "preparing"}
         )
     async with get_request_run_registry(request).workspace_change_guard():
         if await db.scalar(
@@ -299,10 +302,10 @@ async def create_workspace(
         db.add(row)
         await db.commit()
     await db.refresh(row)
-    containers.bind(row.id, row.machine_id, row.distribution, row.desktop, row.browser)
+    lifecycle.bind(row.id, row.machine_id, row.distribution, row.desktop, row.browser)
     await db.close()
     try:
-        await containers.start(
+        await lifecycle.start(
             row.id,
             row.directory,
             row.development_tools,
@@ -310,20 +313,16 @@ async def create_workspace(
                 "instanceName": request.path_params["instance_name"],
                 "name": row.name,
             },
-            **(
-                {"resources": payload.resources.model_dump()}
-                if payload.resources is not None
-                else {}
-            ),
+            resources=resources,
         )
-    except containers.WorkspaceContainerError as exc:
+    except lifecycle.WorkspaceLifecycleError as exc:
         return WorkspaceResponse.model_validate(row).model_copy(
-            update={"container_state": "failed", "container_error": str(exc)}
+            update={"state": "failed", "error": str(exc)}
         )
     return WorkspaceResponse.model_validate(row).model_copy(
         update={
-            "container_state": "preparing",
-            "resources": payload.resources.model_dump() if payload.resources else None,
+            "state": "preparing",
+            "resources": resources,
         }
     )
 
@@ -341,11 +340,11 @@ async def start_workspace(
     machine = await manager.get(Machine, row.machine_id)
     if machine is None or machine.provider not in {"local", "ssh"}:
         raise HTTPException(422, "Choose a local or enrolled remote Mac")
-    containers.bind(row.id, row.machine_id, row.distribution, row.desktop, row.browser)
+    lifecycle.bind(row.id, row.machine_id, row.distribution, row.desktop, row.browser)
     await manager.close()
     await db.close()
     try:
-        await containers.start(
+        await lifecycle.start(
             row.id,
             row.directory,
             row.development_tools,
@@ -354,9 +353,9 @@ async def start_workspace(
                 "name": row.name,
             },
         )
-    except containers.WorkspaceContainerError as exc:
+    except lifecycle.WorkspaceLifecycleError as exc:
         raise HTTPException(503, str(exc)) from exc
-    return WorkspaceResponse.model_validate(row).model_copy(update={"container_state": "preparing"})
+    return WorkspaceResponse.model_validate(row).model_copy(update={"state": "preparing"})
 
 
 @router.post("/workspaces/{workspace_id}/stop", status_code=204)
@@ -371,8 +370,8 @@ async def stop_workspace(workspace_id: UUID, request: Request, db: AsyncSession 
             raise HTTPException(409, "Stop the active agent before stopping its workspace")
     await db.close()
     try:
-        await containers.stop(workspace_id)
-    except containers.WorkspaceContainerError as exc:
+        await lifecycle.stop(workspace_id)
+    except lifecycle.WorkspaceLifecycleError as exc:
         raise HTTPException(502, str(exc)) from exc
 
 
@@ -402,11 +401,11 @@ async def recover_workspace(
         sessions = await _workspace_sessions(db, workspace_id)
         if any(session.running for session in await _removal_sessions(db, sessions, running)):
             raise HTTPException(409, "Stop this workspace's active agents before recovering it")
-        containers.bind(row.id, row.machine_id, row.distribution, row.desktop, row.browser)
+        lifecycle.bind(row.id, row.machine_id, row.distribution, row.desktop, row.browser)
         await db.close()
         try:
-            result = await containers.request("recover", workspace=str(workspace_id))
-        except containers.WorkspaceContainerError as exc:
+            result = await lifecycle.request("recover", workspace=str(workspace_id))
+        except lifecycle.WorkspaceLifecycleError as exc:
             raise HTTPException(503, str(exc)) from exc
     return result
 
@@ -426,7 +425,7 @@ async def reinstall_workspace(
         row = await db.get(Workspace, workspace_id)
         if row is None:
             raise HTTPException(404, "Workspace not found")
-        containers.bind(row.id, row.machine_id, row.distribution, row.desktop, row.browser)
+        lifecycle.bind(row.id, row.machine_id, row.distribution, row.desktop, row.browser)
         machine = await manager.get(Machine, row.machine_id)
         if machine is None or machine.provider not in {"local", "ssh"}:
             raise HTTPException(422, "Choose a local or enrolled remote Mac")
@@ -443,7 +442,7 @@ async def reinstall_workspace(
         if machine.provider == "ssh" and settings:
             if settings.revision is None:
                 raise HTTPException(409, "Refresh workspace settings before reinstalling")
-            snapshot = await worker_catalog.snapshot(row.machine_id)
+            snapshot = await catalog.snapshot(row.machine_id)
             record = snapshot["workspaces"][str(row.id)]
             if settings.revision != record["revision"]:
                 raise HTTPException(409, "Workspace settings changed. Refresh before reinstalling")
@@ -468,12 +467,6 @@ async def reinstall_workspace(
         name = settings.name.strip() if settings and settings.name is not None else current["name"]
         if not name:
             raise HTTPException(422, "Enter a workspace name")
-        if browser == "chrome" and distribution == "alpine":
-            raise HTTPException(422, "Google Chrome is supported on Ubuntu and Debian, not Alpine")
-        try:
-            validate_distribution_tools(distribution, tools)
-        except ValueError as exc:
-            raise HTTPException(422, str(exc)) from exc
         if directory != row.directory and machine.provider == "local":
             try:
                 await asyncio.to_thread(list_local_directories, directory)
@@ -500,7 +493,7 @@ async def reinstall_workspace(
         await manager.close()
         await db.close()
         try:
-            state = (await containers.statuses()).get(str(row.id), {}).get("state")
+            state = (await lifecycle.statuses(row.id)).get(str(row.id), {}).get("state")
             if state in {"preparing", "stopping"}:
                 raise HTTPException(
                     409, "Wait for workspace setup to finish before reinstalling Linux"
@@ -530,7 +523,7 @@ async def reinstall_workspace(
                 if settings
                 else {}
             )
-            await containers.reinstall(
+            await lifecycle.reinstall(
                 row.id,
                 directory,
                 tools,
@@ -540,7 +533,7 @@ async def reinstall_workspace(
                 },
                 **reinstall_options,
             )
-        except containers.WorkspaceContainerError as exc:
+        except lifecycle.WorkspaceLifecycleError as exc:
             raise HTTPException(503, str(exc)) from exc
         row = await db.get(Workspace, workspace_id)
         if row is None:
@@ -551,13 +544,13 @@ async def reinstall_workspace(
         row.distribution = distribution
         row.desktop = desktop
         row.browser = browser
-        containers.bind(row.id, row.machine_id, distribution, desktop, browser)
+        lifecycle.bind(row.id, row.machine_id, distribution, desktop, browser)
         await db.commit()
         await db.refresh(row)
     return WorkspaceResponse.model_validate(row).model_copy(
         update={
-            "container_state": "preparing",
-            "container_message": "Rebuilding the Linux environment…",
+            "state": "preparing",
+            "message": "Rebuilding the Linux environment…",
         }
     )
 
@@ -575,7 +568,7 @@ async def update_workspace(
         row = await db.get(Workspace, workspace_id)
         if row is None:
             raise HTTPException(404, "Workspace not found")
-        containers.bind(row.id, row.machine_id, row.distribution, row.desktop, row.browser)
+        lifecycle.bind(row.id, row.machine_id, row.distribution, row.desktop, row.browser)
         machine = await manager.get(Machine, row.machine_id)
         await manager.close()
         if machine is not None and machine.provider == "ssh":
@@ -587,9 +580,9 @@ async def update_workspace(
                     409, "Wait for this workspace's agents to finish before changing its settings"
                 )
             try:
-                snapshot = await worker_catalog.snapshot(row.machine_id)
+                snapshot = await catalog.snapshot(row.machine_id)
                 current = snapshot["workspaces"][str(row.id)]["spec"]
-                record = await worker_catalog.configure(
+                record = await catalog.configure(
                     db,
                     row,
                     name=payload.name if payload.name is not None else current["name"],
@@ -620,14 +613,12 @@ async def update_workspace(
                     configuration_changed
                     and snapshot.get("states", {}).get(str(row.id), {}).get("state") == "running"
                 ):
-                    await containers.start(row.id, row.directory, row.development_tools)
+                    await lifecycle.start(row.id, row.directory, row.development_tools)
                 if current["project"] != spec["project"]:
                     instance_name = request.path_params["instance_name"]
                     ws_manager = getattr(request.app.state, "ws_manager", None)
                     for session in sessions:
-                        await invalidate_runtime_for_session(
-                            instance_name, session.id, stop_remote=False
-                        )
+                        await invalidate_session_managers(instance_name, session.id)
                         if ws_manager:
                             await ws_manager.broadcast(
                                 str(session.id),
@@ -644,17 +635,6 @@ async def update_workspace(
                 422,
                 "Choose the distribution when creating a new workspace; existing disks cannot change distribution",
             )
-        try:
-            validate_distribution_tools(
-                row.distribution,
-                (
-                    payload.development_tools
-                    if payload.development_tools is not None
-                    else row.development_tools
-                ),
-            )
-        except ValueError as exc:
-            raise HTTPException(422, str(exc)) from exc
         name = payload.name.strip() if payload.name is not None else row.name
         if not name:
             raise HTTPException(422, "Enter a workspace name")
@@ -672,8 +652,6 @@ async def update_workspace(
         )
         desktop_changed = payload.desktop is not None and payload.desktop != row.desktop
         browser_changed = payload.browser is not None and payload.browser != row.browser
-        if (payload.browser or row.browser) == "chrome" and row.distribution == "alpine":
-            raise HTTPException(422, "Google Chrome is supported on Ubuntu and Debian, not Alpine")
         previous_directory = row.directory
         # Release the read connection while retaining objects for the later update.
         await db.commit()
@@ -698,8 +676,8 @@ async def update_workspace(
                     422, "Installed workspace tools are kept; choose additional tools"
                 )
             try:
-                state = (await containers.statuses()).get(str(row.id), {})
-            except containers.WorkspaceContainerError as exc:
+                state = (await lifecycle.statuses(row.id)).get(str(row.id), {})
+            except lifecycle.WorkspaceLifecycleError as exc:
                 raise HTTPException(503, str(exc)) from exc
             current_resources = state.get("resources") or WorkspaceResources().model_dump()
             resized = allocation is not None and allocation != current_resources
@@ -736,9 +714,9 @@ async def update_workspace(
         await db.refresh(row)
         await db.commit()
         if tools_changed or desktop_changed or browser_changed or resized or directory_changed:
-            containers.bind(row.id, row.machine_id, row.distribution, row.desktop, row.browser)
+            lifecycle.bind(row.id, row.machine_id, row.distribution, row.desktop, row.browser)
             try:
-                await containers.start(
+                await lifecycle.start(
                     row.id,
                     row.directory,
                     row.development_tools,
@@ -748,7 +726,7 @@ async def update_workspace(
                     },
                     **({"resources": allocation} if resized else {}),
                 )
-            except containers.WorkspaceContainerError as exc:
+            except lifecycle.WorkspaceLifecycleError as exc:
                 if directory_changed:
                     row.directory = previous_directory
                     await db.commit()
@@ -757,9 +735,7 @@ async def update_workspace(
                 instance_name = request.path_params["instance_name"]
                 manager = getattr(request.app.state, "ws_manager", None)
                 for session in sessions:
-                    await invalidate_runtime_for_session(
-                        instance_name, session.id, stop_remote=False
-                    )
+                    await invalidate_session_managers(instance_name, session.id)
                     if manager:
                         await manager.broadcast(
                             str(session.id),
@@ -767,7 +743,7 @@ async def update_workspace(
                         )
             return WorkspaceResponse.model_validate(row).model_copy(
                 update={
-                    "container_state": (
+                    "state": (
                         "stopped"
                         if (resized or directory_changed)
                         and not tools_changed
@@ -781,7 +757,7 @@ async def update_workspace(
             )
         return WorkspaceResponse.model_validate(row).model_copy(
             update={
-                "container_state": state.get("state", "stopped"),
+                "state": state.get("state", "stopped"),
                 "resources": state.get("resources"),
             }
         )
@@ -860,16 +836,16 @@ async def delete_workspace(
                 "Wait for all agents in the linked sessions to finish before removing this workspace.",
             )
         await db.commit()
-        # Keep the registration and bindings on disk if container cleanup fails.
+        # Keep the registration and bindings on disk if workspace cleanup fails.
         try:
-            await containers.stop(row.id, delete=True)
-        except containers.WorkspaceContainerError as exc:
+            await lifecycle.stop(row.id, delete=True)
+        except lifecycle.WorkspaceLifecycleError as exc:
             raise HTTPException(502, str(exc)) from exc
         for session in sessions:
             await get_browser_pool().remove(
                 str(session.id), instance_name=instance_name, stop_remote=False
             )
-            await invalidate_runtime_for_session(instance_name, session.id, stop_remote=False)
+            await invalidate_session_managers(instance_name, session.id)
         for session in sessions:
             session.workspace_id = None
         await db.flush()
@@ -927,8 +903,8 @@ async def attach_workspace(
         stop_remote = True
         if session.workspace_id:
             try:
-                if await runtime_configured(instance_name=instance_name, session_id=session_id):
-                    terminal = await get_runtime_terminal_manager(
+                if await workspace_attached(instance_name=instance_name, session_id=session_id):
+                    terminal = await get_terminal_manager(
                         instance_name=instance_name, session_id=session_id
                     )
                     if any(
@@ -940,15 +916,16 @@ async def attach_workspace(
                             409,
                             "Stop or finish running terminal commands before changing the workspace",
                         )
-            except RuntimeCompatibilityError:
-                # Detach this client without issuing commands to an incompatible
-                # worker. Existing programs remain owned by their workspace.
+            except (RuntimeCompatibilityError, RemoteMacError):
+                # Detach this client without issuing commands to an incompatible or
+                # unreachable worker: a Mac that is off must never pin a session to it.
+                # Existing programs remain owned by their workspace.
                 stop_remote = False
         if session.workspace_id:
             await get_browser_pool().remove(
                 str(session_id), instance_name=instance_name, stop_remote=stop_remote
             )
-        await invalidate_runtime_for_session(instance_name, session_id, stop_remote=stop_remote)
+        await invalidate_session_managers(instance_name, session_id)
         session.workspace_id = payload.workspace_id
         await db.commit()
     manager = getattr(request.app.state, "ws_manager", None)

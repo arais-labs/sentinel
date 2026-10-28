@@ -11,7 +11,7 @@ from uuid import uuid4
 
 import pytest
 
-from app.services.runtime import file_stream
+from app.services.workspaces.files import stream as file_stream
 from app.middleware.security_headers import SecurityHeadersMiddleware
 from httpx import ASGITransport, AsyncClient
 
@@ -99,7 +99,7 @@ def file_workspace(tmp_path, monkeypatch):
                 self.process.stdin.close()
                 await self.process.wait()
 
-    monkeypatch.setattr(file_stream, "ContainerTransport", Transport)
+    monkeypatch.setattr(file_stream, "GuestTransport", Transport)
     return workspace, processes
 
 

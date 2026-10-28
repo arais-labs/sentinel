@@ -1,0 +1,19 @@
+#!/usr/bin/busybox sh
+# The first boot's initramfs: loads the drivers the build needs (modules in Debian's kernel: the
+# disk, ext4, the network, the EFI system partition's FAT, EFI variables) and hands over to the
+# build script on the root file system. Debian's own initramfs replaces it.
+b=/usr/bin/busybox
+$b mkdir -p /proc /sys /dev /newroot
+$b mount -t proc proc /proc
+$b mount -t sysfs sys /sys
+$b mount -t devtmpfs dev /dev
+exec </dev/console >/dev/console 2>&1
+for m in crc16 mbcache jbd2 crc32c_generic ext4 virtio_blk failover net_failover virtio_net fat vfat nls_cp437 nls_ascii nls_iso8859-1 efivarfs; do
+	$b insmod "$($b find /usr/lib/modules -name "$m.ko*")" || echo "init: cannot load $m"
+done
+while [ ! -b /dev/vdb ]; do $b sleep 0.1; done
+$b mount -t ext4 /dev/vdb /newroot
+# The build's busybox (DHCP, power off) lives in memory, so nothing of it stays on the disk.
+$b mount -t tmpfs -o mode=0755 run /newroot/run
+$b cp $b /newroot/run/busybox
+exec $b switch_root /newroot /usr/sbin/sentinel-build

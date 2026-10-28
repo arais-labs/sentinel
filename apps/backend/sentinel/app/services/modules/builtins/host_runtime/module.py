@@ -21,7 +21,7 @@ MODULE = ModuleDefinition(
     icon="terminal",
     system=True,
     grouped_tool=True,
-    description=f"Host OS: {platform.system()}; default shell: {default_shell()}. Execute commands directly on the machine running Sentinel, as its OS user, with the full inherited environment. No attached workspace or container is needed. Uses the host's default shell (PowerShell on Windows); commands must match that shell and OS. Exec requires approval by default. Wait expiry leaves commands running and returns a process_id; poll later rather than repeatedly polling. Output is a cumulative bounded tail, not incremental. Handles belong to this session, are retained until capacity eviction after completion, and do not survive backend restarts. Processes are stopped on backend shutdown. No persistent terminal, interactive stdin, or automatic execution deadline. Use terminate explicitly to stop a process.",
+    description=f"Host OS: {platform.system()}; default shell: {default_shell()}. Execute commands directly on the machine running Sentinel, as its OS user, with the full inherited environment. No attached workspace is needed. Uses the host's default shell (PowerShell on Windows); commands must match that shell and OS. Exec requires approval by default. Wait expiry leaves commands running and returns a process_id; poll later rather than repeatedly polling. Output is a cumulative bounded tail, not incremental. Handles belong to this session, are retained until capacity eviction after completion, and do not survive backend restarts. Processes are stopped on backend shutdown. No persistent terminal, interactive stdin, or automatic execution deadline. Use terminate explicitly to stop a process.",
     actions=[
         ActionDefinition(
             id=action,

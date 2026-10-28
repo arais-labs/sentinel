@@ -128,13 +128,13 @@ async def test_pagination_is_bounded_stable_and_preserves_screenshots_and_full_h
 @pytest.mark.asyncio
 async def test_ready_workspace_only_needs_one_status_request(monkeypatch):
     from unittest.mock import AsyncMock
-    from app.services.runtime import workspace_containers
+    from app.services.workspaces import lifecycle
 
     workspace = uuid4()
     statuses = AsyncMock(return_value={str(workspace): {"state": "running"}})
     start = AsyncMock()
-    monkeypatch.setattr(workspace_containers, "statuses", statuses)
-    monkeypatch.setattr(workspace_containers, "start", start)
-    await workspace_containers.ensure_ready(workspace, "/project", [])
+    monkeypatch.setattr(lifecycle, "statuses", statuses)
+    monkeypatch.setattr(lifecycle, "start", start)
+    await lifecycle.ensure_ready(workspace, "/project", [])
     statuses.assert_awaited_once()
     start.assert_not_awaited()

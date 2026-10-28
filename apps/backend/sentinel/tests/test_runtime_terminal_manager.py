@@ -10,14 +10,14 @@ from pathlib import Path
 
 import pytest
 
-from app.services.runtime.terminal_manager import (
-    RuntimeTerminalManager,
+from app.services.workspaces.terminals.manager import (
+    TerminalManager,
 )
-from app.services.runtime.workspace import WorkspaceLocation
+from app.services.workspaces.paths import WorkspaceLocation
 
 
 def test_visible_command_keeps_simple_command_bare() -> None:
-    manager = RuntimeTerminalManager(
+    manager = TerminalManager(
         object(), workspace_location=WorkspaceLocation("/project", "/internal/workspace")
     )
 
@@ -25,7 +25,7 @@ def test_visible_command_keeps_simple_command_bare() -> None:
 
 
 def test_visible_command_scopes_cwd_and_env() -> None:
-    manager = RuntimeTerminalManager(
+    manager = TerminalManager(
         object(), workspace_location=WorkspaceLocation("/project", "/internal/workspace")
     )
 
@@ -36,7 +36,7 @@ def test_visible_command_scopes_cwd_and_env() -> None:
 
 
 def test_visible_command_preserves_multiline_script(tmp_path: Path) -> None:
-    manager = RuntimeTerminalManager(
+    manager = TerminalManager(
         object(), workspace_location=WorkspaceLocation("/project", "/internal/workspace")
     )
 
@@ -67,7 +67,7 @@ def tmux_socket():
 def test_pane_feed_delivers_large_heredoc_intact(tmp_path: Path, tmux_socket: str) -> None:
     # End-to-end: a ~26 KB heredoc must land byte-for-byte (paced feed) and the
     # command chained after it must run (subshell wrap), on whatever bash is here.
-    from app.services.runtime.tmux import build_pane_feed_script
+    from app.services.workspaces.terminals.tmux import build_pane_feed_script
 
     socket = tmux_socket
     target = tmp_path / "out.txt"
@@ -75,7 +75,7 @@ def test_pane_feed_delivers_large_heredoc_intact(tmp_path: Path, tmux_socket: st
     name = "t"
     body = "\n".join(f"line{i:05d} " + "x" * 60 for i in range(400))  # ~26 KB
     raw = f"cat > {target} << 'SENTINEL_EOF'\n{body}\nSENTINEL_EOF\ntouch {sentinel}"
-    manager = RuntimeTerminalManager(
+    manager = TerminalManager(
         object(), workspace_location=WorkspaceLocation("/project", "/internal/workspace")
     )
     command = manager._build_visible_command(raw)
@@ -148,12 +148,12 @@ def test_pane_feed_delivers_large_heredoc_intact(tmp_path: Path, tmux_socket: st
 def test_osc133_capture_is_clean_for_wrapped_multiline(tmp_path: Path, tmux_socket: str) -> None:
     # The real rcfile emits OSC 133 A/B/C/D; capturing C->D must yield only the
     # command output (no echoed input/prompts) for a wrapped multiline command.
-    from app.services.runtime.terminal_manager import (
+    from app.services.workspaces.terminals.manager import (
         _OSC_C_PATTERN,
         _OSC_D_PATTERN,
         _clean_terminal_text,
     )
-    from app.services.runtime.tmux import SENTINEL_BASHRC
+    from app.services.workspaces.terminals.tmux import SENTINEL_BASHRC
 
     socket = tmux_socket
     log = tmp_path / "pane.log"
@@ -161,7 +161,7 @@ def test_osc133_capture_is_clean_for_wrapped_multiline(tmp_path: Path, tmux_sock
     rc.write_text(SENTINEL_BASHRC)
     name = "t"
     # As _build_visible_command wraps multiline commands.
-    manager = RuntimeTerminalManager(
+    manager = TerminalManager(
         object(), workspace_location=WorkspaceLocation("/project", "/internal/workspace")
     )
     cmd = manager._build_visible_command(
