@@ -66,9 +66,11 @@ class Platform {
   // Disk operations on stopped VMs; synchronous because they are O(1) on APFS.
   virtual void cloneDisk(const std::string& from, const std::string& to) = 0;
   virtual void growDisk(const std::string& path, uint64_t bytes) = 0;
+  // The bytes a file holds that no clone shares: what deleting it frees.
+  virtual uint64_t ownBytes(const std::string& path) = 0;
 };
 
-// `workspace`: the sentinel-workspace directory (bin/sentinel-workspace, lib/, share/firmware/).
-std::unique_ptr<Platform> makePlatform(Loop& loop, std::string workspace);
+// `exe`: this sentineld, whose `vm` mode runs each VM (lib/ and share/firmware/ beside its bin/).
+std::unique_ptr<Platform> makePlatform(Loop& loop, std::string exe);
 
 }  // namespace sentineld

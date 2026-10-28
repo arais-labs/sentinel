@@ -286,3 +286,36 @@ html.dark .workspace-library:not(.workspace-library--onboarding) {
 .workspace-library--page .machines-add:hover { background:var(--surface-2); border-color:var(--border-subtle); color:var(--text-primary); }
 .workspace-library--page .machines-note { background:transparent; border:0; padding:8px 0; }
 .workspace-library--page .machines-note svg { color:var(--text-muted); }
+
+/* Disk usage: a stacked bar over the disk, then one row per workspace and shared item. */
+.workspace-usage { --usage-workspaces: var(--sentinel-blue); --usage-systems: #8b7cf6; --usage-packages: #45b787; --usage-sources: #dca552; --usage-installs: #df6674; --usage-distributions: #d16fb4; --usage-elsewhere: color-mix(in srgb, var(--text-muted) 45%, transparent); --usage-free: color-mix(in srgb, var(--text-primary) 6%, transparent);
+  margin-top: 28px; padding: 18px 22px; border: 1px solid color-mix(in srgb, var(--text-primary) 5%, transparent); border-radius: 22px; background: var(--workspace-face, var(--surface-1)); box-shadow: var(--workspace-shadow, none); }
+.workspace-usage-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+.workspace-usage-header h2 { display: inline-flex; align-items: center; gap: 8px; color: var(--text-muted); font-size: 10px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; }
+.workspace-usage-header button { display: inline-flex; align-items: center; gap: 7px; padding: 6px 10px; border-radius: 999px; color: var(--text-secondary); font-size: 10px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; transition: color 160ms, background 160ms; }
+.workspace-usage-header button:hover:not(:disabled) { color: var(--text-primary); background: var(--surface-2); }
+.workspace-usage-header button:disabled { opacity: .5; cursor: default; }
+.workspace-usage-machine + .workspace-usage-machine { margin-top: 18px; padding-top: 16px; border-top: 1px solid color-mix(in srgb, var(--text-primary) 6%, transparent); }
+.workspace-usage-machine h3 { margin-bottom: 10px; font-size: 12px; font-weight: 600; }
+.workspace-usage-bar { display: flex; gap: 2px; height: 8px; overflow: hidden; border-radius: 999px; background: var(--usage-free); }
+.workspace-usage-bar > span { min-width: 3px; }
+.workspace-usage [data-kind="workspaces"] { --usage: var(--usage-workspaces); }
+.workspace-usage [data-kind="systems"] { --usage: var(--usage-systems); }
+.workspace-usage [data-kind="packages"] { --usage: var(--usage-packages); }
+.workspace-usage [data-kind="sources"] { --usage: var(--usage-sources); }
+.workspace-usage [data-kind="installs"] { --usage: var(--usage-installs); }
+.workspace-usage [data-kind="distributions"] { --usage: var(--usage-distributions); }
+.workspace-usage [data-kind="elsewhere"] { --usage: var(--usage-elsewhere); }
+.workspace-usage [data-kind="free"] { --usage: transparent; }
+.workspace-usage-bar > span { background: var(--usage); }
+.workspace-usage-rows { display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px 28px; margin-top: 14px; }
+@container (min-width: 640px) { .workspace-usage-rows { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.workspace-usage-rows li { display: flex; align-items: center; gap: 9px; padding: 4px 0; color: var(--text-secondary); font-size: 12px; font-variant-numeric: tabular-nums; }
+.workspace-usage-rows li[data-empty] { color: var(--text-muted); }
+.workspace-usage-dot { flex-shrink: 0; width: 7px; height: 7px; border-radius: 50%; background: var(--usage); }
+.workspace-usage-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workspace-usage-total { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px 16px; margin-top: 12px; padding-top: 12px; border-top: 1px solid color-mix(in srgb, var(--text-primary) 6%, transparent); color: var(--text-secondary); font-size: 12px; font-variant-numeric: tabular-nums; }
+.workspace-usage-total strong { color: var(--text-primary); font-weight: 600; }
+.workspace-usage-error { color: #df6674; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.workspace-usage-loading { display: flex; align-items: center; gap: 8px; color: var(--text-secondary); font-size: 12px; }
+@media (prefers-reduced-motion: reduce) { .workspace-usage-header button { transition: none; } }

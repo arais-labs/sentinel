@@ -44,7 +44,7 @@ static slirp_ssize_t send_packet(const void *buf, size_t len, void *opaque) {
 
 static void guest_error(const char *message, void *opaque) {
   (void)opaque;
-  fprintf(stderr, "sentinel-workspace: network: %s\n", message);
+  fprintf(stderr, "sentineld vm: network: %s\n", message);
 }
 
 static int64_t clock_get_ns(void *opaque) {
@@ -59,7 +59,7 @@ static void *timer_new(SlirpTimerCb cb, void *cb_opaque, void *opaque) {
     net.timers[i] = (struct timer){.cb = cb, .opaque = cb_opaque, .expire_ms = -1, .used = true};
     return &net.timers[i];
   }
-  fprintf(stderr, "sentinel-workspace: network: out of timers\n");
+  fprintf(stderr, "sentineld vm: network: out of timers\n");
   abort();
 }
 
@@ -130,7 +130,7 @@ static void *run(void *arg) {
     slirp_pollfds_fill_socket(net.slirp, &timeout, add_poll, NULL);
     const int ready = poll(net.fds, net.count, (int)timeout);
     if (ready < 0 && errno != EINTR) {
-      perror("sentinel-workspace: network poll");
+      perror("sentineld vm: network poll");
       return NULL;
     }
     if (ready > 0 && (net.fds[0].revents & POLLIN)) {
@@ -154,7 +154,7 @@ static void *run(void *arg) {
 KrunNetDevice net_device(const uint8_t mac[6]) {
   int pair[2];
   if (socketpair(AF_UNIX, SOCK_DGRAM, 0, pair)) {
-    perror("sentinel-workspace: network socket pair");
+    perror("sentineld vm: network socket pair");
     exit(1);
   }
   // Room for bursts of full frames in both directions.
@@ -184,12 +184,12 @@ KrunNetDevice net_device(const uint8_t mac[6]) {
   inet_pton(AF_INET, "10.0.2.3", &config.vnameserver);
   net.slirp = slirp_new(&config, &callbacks, NULL);
   if (!net.slirp) {
-    fprintf(stderr, "sentinel-workspace: network setup failed\n");
+    fprintf(stderr, "sentineld vm: network setup failed\n");
     exit(1);
   }
   pthread_t thread;
   if (pthread_create(&thread, NULL, run, NULL)) {
-    perror("sentinel-workspace: network thread");
+    perror("sentineld vm: network thread");
     exit(1);
   }
   pthread_detach(thread);
@@ -199,7 +199,7 @@ KrunNetDevice net_device(const uint8_t mac[6]) {
   KrunNetDevice device = krun_net_device_new_unixgram_fd(
       (KrunStr){.data = "net0", .len = 4}, pair[1], (KrunBytes){.data = mac, .len = 6}, 0, 0, &err);
   if (err) {
-    fprintf(stderr, "sentinel-workspace: network device failed\n");
+    fprintf(stderr, "sentineld vm: network device failed\n");
     exit(1);
   }
   return device;

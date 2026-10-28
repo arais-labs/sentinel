@@ -79,6 +79,8 @@ import { useSessionWorkspaceStream } from '../hooks/useSessionWorkspaceStream';
 import { useWorkspaceStore } from '../store/workspace-store';
 import { useSessionWorkbench } from '../hooks/useSessionWorkbench';
 import {
+  applyStreamReset,
+  applyToolcallDiscard,
   applyToolcallEnd,
   applyToolResult,
   defaultStreamingState,
@@ -1788,6 +1790,14 @@ export function SessionsPage() {
             return next;
           });
         }
+        break;
+      case 'toolcall_discard': {
+        const callId = String((event.tool_call as any)?.id ?? '');
+        if (callId) setStreaming((current) => applyToolcallDiscard(current, callId));
+        break;
+      }
+      case 'stream_reset':
+        setStreaming(applyStreamReset);
         break;
       case 'tool_result':
         {

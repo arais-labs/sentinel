@@ -6,8 +6,8 @@ import { spawnSync } from 'node:child_process';
 export const runtimeBuildVersion = 9;
 
 // The app bundles only what runs the app itself: Python for the backend, git and gh for the
-// agents (bundled-tools.lock.json). The workspace runtime (sentineld, the workspace VM process) is
-// made of release components the app downloads and updates (src/main/app/components.ts).
+// agents (bundled-tools.lock.json). The workspace runtime (sentineld, which also runs each VM) is
+// a release component the app downloads and updates (src/main/app/components.ts).
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {

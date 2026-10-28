@@ -27,9 +27,10 @@ async def test_version_comparison_does_not_prepare_and_invalidates_changed_asset
     before = expected
     for changed in (
         "sentineld/bin/sentineld",
-        "sentinel-workspace/bin/sentinel-workspace",
+        "sentineld/lib/libkrun.dylib",
         "sentineld/share/catalog.json",
         "sentineld/tools/mke2fs",
+        "sentineld/distributions/example/distribution.json",
     ):
         (Path(tmp_path) / changed).write_text("changed " + changed)
         assert await available_version() != before
@@ -38,9 +39,7 @@ async def test_version_comparison_does_not_prepare_and_invalidates_changed_asset
 
 @pytest.mark.asyncio
 async def test_missing_assets_have_unknown_version_without_downloading(monkeypatch, tmp_path):
-    request = AsyncMock(
-        return_value={"sentineld": str(tmp_path / "missing"), "workspace": "/missing"}
-    )
+    request = AsyncMock(return_value={"sentineld": str(tmp_path / "missing")})
     monkeypatch.setattr(lifecycle, "local_request", request)
     assert await available_version() is None
     request.assert_awaited_once_with("deployment", prepare=False)

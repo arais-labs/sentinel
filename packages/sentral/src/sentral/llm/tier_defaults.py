@@ -18,7 +18,6 @@ class TierDefaults(BaseModel):
     tier_fast_openai_model: str = "gpt-6-luna"
     tier_fast_codex_model: str = "gpt-6-luna"
     tier_fast_gemini_model: str = "gemini-3.5-flash-lite"
-    tier_fast_max_tokens: int = 4096
     tier_fast_temperature: float = 0.3
     tier_fast_anthropic_reasoning_effort: str = "low"
     tier_fast_openai_reasoning_effort: str = "low"
@@ -29,7 +28,6 @@ class TierDefaults(BaseModel):
     tier_normal_openai_model: str = "gpt-6.1-sol"
     tier_normal_codex_model: str = "gpt-6.1-sol"
     tier_normal_gemini_model: str = "gemini-3.8-flash"
-    tier_normal_max_tokens: int = 8192
     tier_normal_temperature: float = 0.7
     tier_normal_anthropic_reasoning_effort: str = "medium"
     tier_normal_openai_reasoning_effort: str = "medium"
@@ -40,7 +38,6 @@ class TierDefaults(BaseModel):
     tier_hard_openai_model: str = "gpt-6-astra"
     tier_hard_codex_model: str = "gpt-6-astra"
     tier_hard_gemini_model: str = "gemini-3.1-pro-preview"
-    tier_hard_max_tokens: int = 40000
     tier_hard_temperature: float = 0.7
     tier_hard_anthropic_reasoning_effort: str = "high"
     tier_hard_openai_reasoning_effort: str = "high"
@@ -62,6 +59,5 @@ class TierDefaults(BaseModel):
         return GenerationConfig(
             model=model,
             temperature=getattr(self, f"tier_{tier}_temperature"),
-            max_output_tokens=getattr(self, f"tier_{tier}_max_tokens"),
             provider_metadata=metadata,
         )

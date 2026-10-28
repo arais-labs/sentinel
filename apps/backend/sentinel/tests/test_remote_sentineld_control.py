@@ -179,9 +179,9 @@ async def test_real_sentineld_update_handoff(root):
     release = root + "/releases/r1"
     os.makedirs(release)
     os.symlink(SENTINELD.parents[1], release + "/sentineld")
-    os.symlink(SENTINELD.parents[3] / "sentinel-workspace/build", release + "/sentinel-workspace")
     manifest = {
         "executable": release + "/sentineld/bin/sentineld",
+        # As the backend writes it for releases before the merge: the coordinator ignores it.
         "workspace": release + "/sentinel-workspace",
         "version": "0123456789abcdef",
         "updateProtocol": 1,

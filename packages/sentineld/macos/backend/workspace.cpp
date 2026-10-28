@@ -1,4 +1,4 @@
-// macOS Platform: one sentinel-workspace process per VM (DESIGN.md §15). Hypervisor.framework runs
+// macOS Platform: one `sentineld vm` process per VM (DESIGN.md §15). Hypervisor.framework runs
 // one VM per process, so each workspace's machine is a child: sentineld writes its config on the
 // control socket, keeps its console, reaches the guest agent through the unix socket libkrun maps to
 // vsock port 1, and powers it off by ending the process. Everything runs on the core Loop.
@@ -11,6 +11,7 @@
 #include <map>
 #include <spawn.h>
 #include <stdexcept>
+#include <sys/attr.h>
 #include <sys/clonefile.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -32,7 +33,7 @@ constexpr uint32_t kAgentPort = 1;
 constexpr size_t kConsoleBytes = 1 << 20;
 constexpr size_t kConsoleLogBytes = 16 << 20;  // per run
 constexpr uint64_t kKillAfterMs = 5000;        // SIGTERM is a hard power off; this only bounds a stuck one
-constexpr int kExitReset = 3;                  // sentinel-workspace's exit status when the guest rebooted
+constexpr int kExitReset = 3;                  // the VM process's exit status when the guest rebooted
 
 // Newest console bytes for failure messages, and the whole run written to its log file as it
 // arrives (a guest that wedges still leaves its kernel's last words on disk). The guest controls
@@ -101,7 +102,7 @@ std::string lastLogLine(const std::string& path) {
 
 class WorkspacePlatform final : public Platform {
  public:
-  WorkspacePlatform(Loop& loop, std::string workspace) : loop_(loop), exe_(std::move(workspace) + "/bin/sentinel-workspace") {}
+  WorkspacePlatform(Loop& loop, std::string exe) : loop_(loop), exe_(std::move(exe)) {}
 
   void start(const VmConfig& c, Done done) override {
     if (vms_.count(c.id)) {
@@ -141,7 +142,7 @@ class WorkspacePlatform final : public Platform {
     posix_spawnattr_t attr;
     posix_spawnattr_init(&attr);
     posix_spawnattr_setflags(&attr, POSIX_SPAWN_CLOEXEC_DEFAULT);
-    const char* argv[] = {exe_.c_str(), nullptr};
+    const char* argv[] = {exe_.c_str(), "vm", nullptr};
     const int rc = ::posix_spawn(&vm->pid, exe_.c_str(), &actions, &attr, const_cast<char* const*>(argv), environ);
     posix_spawn_file_actions_destroy(&actions);
     posix_spawnattr_destroy(&attr);
@@ -287,6 +288,24 @@ class WorkspacePlatform final : public Platform {
       throw std::runtime_error("cannot grow " + path);
   }
 
+  // APFS's private size: blocks a clone (a workspace and its base) shares count for neither.
+  uint64_t ownBytes(const std::string& path) override {
+    struct attrlist request{};
+    request.bitmapcount = ATTR_BIT_MAP_COUNT;
+    request.commonattr = ATTR_CMN_RETURNED_ATTRS;
+    request.forkattr = ATTR_CMNEXT_PRIVATESIZE;
+    struct __attribute__((packed)) {
+      uint32_t length;
+      attribute_set_t returned;
+      off_t privateSize;
+    } reply{};
+    if (::getattrlist(path.c_str(), &request, &reply, sizeof reply, FSOPT_ATTR_CMN_EXTENDED | FSOPT_NOFOLLOW) == 0 &&
+        (reply.returned.forkattr & ATTR_CMNEXT_PRIVATESIZE))
+      return uint64_t(reply.privateSize);
+    struct stat st;
+    return ::lstat(path.c_str(), &st) == 0 ? uint64_t(st.st_blocks) * 512 : 0;
+  }
+
  private:
   // Ends the process: a hard power off (the agent does graceful shutdowns). By value: callers pass
   // the shared pointer they hold.
@@ -370,8 +389,8 @@ class WorkspacePlatform final : public Platform {
 
 }  // namespace
 
-std::unique_ptr<Platform> makePlatform(Loop& loop, std::string workspace) {
-  return std::make_unique<WorkspacePlatform>(loop, std::move(workspace));
+std::unique_ptr<Platform> makePlatform(Loop& loop, std::string exe) {
+  return std::make_unique<WorkspacePlatform>(loop, std::move(exe));
 }
 
 }  // namespace sentineld

@@ -2,7 +2,7 @@ sentineld: runs virtual machines (workspaces) on this Mac. Each workspace boots 
 a folder describes: sentineld itself knows no operating system.
 
 usage:
-  sentineld --state DIR [--cache DIR] [--distributions DIR]... [--keep-images] [--workspace DIR]
+  sentineld --state DIR [--cache DIR] [--distributions DIR]... [--keep-images]
   sentineld ctl (--state DIR | --socket PATH) OP [FIELDS]
   sentineld view (--state DIR | --socket PATH) WORKSPACE
   sentineld help [distributions]
@@ -15,7 +15,6 @@ Running the daemon (it stays in the foreground; SIGTERM or SIGINT powers off eve
                        any number of times, read again at every catalog, configure and start
                        (default: the distributions shipped beside this binary)
   --keep-images        keep base disks no workspace uses (faster repeated tests)
-  --workspace DIR      the sentinel-workspace build that runs each VM (default: beside this binary)
   --share DIR, --mke2fs PATH, --lifeline, --owner-fd N
                        set by the Sentinel app; defaults suit a standalone sentineld
 
@@ -37,3 +36,4 @@ Files a running sentineld writes:
   <state>/logs/<id>/console-<time>.log        the guest console of each of the last 5 boots
   <cache>/install/<key>.console.log           a failed install's console
   <cache>/install/<key>.failed.raw            a failed install's disk, for a look
+  <cache>/install/<key>.failed.root.raw       and its root disk (the installer's own logs)

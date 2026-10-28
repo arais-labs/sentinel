@@ -86,8 +86,9 @@ class Settings(TierDefaults, BaseSettings):
     chat_default_iterations: int = 0
     chat_max_iterations: int = 100
     context_token_budget: int = 200_000
-    stored_tool_result_max_chars: int = 4_000
-    stored_tool_call_args_max_chars: int = 1_200
+    # A tool result over this many characters keeps its start and end, cut once when the tool
+    # returns; the model, the history and every later request see that same text.
+    tool_result_max_chars: int = 50_000
     session_auto_rename_enabled: bool = True
     session_auto_rename_every_messages: int = 10
     session_auto_rename_context_messages: int = 24

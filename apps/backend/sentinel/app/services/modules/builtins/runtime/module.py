@@ -41,7 +41,7 @@ MODULE = ModuleDefinition(
         action(
             "workspace",
             "Workspace status",
-            "Inspect the attached workspace and available workspaces without creating shells. Ask the user to attach a workspace if needed.",
+            "Inspect the attached workspace and available workspaces without creating shells. To attach one, see the workspaces tool.",
         ),
         action(
             "exec",

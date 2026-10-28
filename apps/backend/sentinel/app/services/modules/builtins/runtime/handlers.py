@@ -145,5 +145,5 @@ async def handle_workspace(payload: dict, runtime) -> dict:
         "attached": row is not None,
         "workspace": describe(row) if row else None,
         "available_workspaces": [describe(value) for value in available],
-        "guidance": "Workspaces share files across chats; each chat has its own terminal state. Ask the user to use Attach in the session toolbar when a workspace is needed. Never assume or automatically attach a workspace.",
+        "guidance": "Workspaces share files across chats; each chat has its own terminal state. When a workspace is needed, ask the user to use Attach in the session toolbar, or attach the one the user named with workspaces attach. Never attach a workspace the user did not ask for.",
     }

@@ -60,7 +60,6 @@ export interface LogEntry {
 export interface RuntimeComponentFile { file: string; sha256: string; url?: string }
 export interface RuntimeComponents {
   sentineld: RuntimeComponentFile;
-  'sentinel-workspace': RuntimeComponentFile;
 }
 
 export interface PayloadUpdate {

@@ -1,20 +1,19 @@
-// The workspace runtime components a release carries next to the payload: sentineld and the
-// workspace VM process as tarballs (each package's `make release`). The app downloads what changed
-// (src/main/app/components.ts).
+// The workspace runtime component a release carries next to the payload: sentineld (the daemon
+// and, as `sentineld vm`, each VM) as a tarball (`make release` in packages/sentineld). The app
+// downloads it when it changed (src/main/app/components.ts).
 //
 // Index shape (latest-<channel>.json):
 //   components: {
-//     sentineld:            { file, sha256, url? },   url is filled in by publish-release.mjs
-//     'sentinel-workspace': { file, sha256, url? },
-//     images:               {}   read by app builds from before sentineld installed every distribution
+//     sentineld: { file, sha256, url? },   url is filled in by publish-release.mjs
+//     images:    {}   read by app builds from before sentineld installed every distribution
 //   }
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
-export const COMPONENT_NAMES = ['sentineld', 'sentinel-workspace'];
-const FILE = /^(sentineld|sentinel-workspace)-[0-9a-f]{16}\.tar\.gz$/;
+export const COMPONENT_NAMES = ['sentineld'];
+const FILE = /^sentineld-[0-9a-f]{16}\.tar\.gz$/;
 
 export async function sha256File(filePath) {
   return createHash('sha256').update(await readFile(filePath)).digest('hex');

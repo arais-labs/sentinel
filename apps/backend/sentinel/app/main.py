@@ -5,6 +5,7 @@ from app.services.host_runtime import host_processes
 from sentral.llm.http_pool import close_provider_http_pool
 from sentral.llm.providers.codex import close_codex_connections
 from app.services.workspaces.managers import close_session_managers
+from app.services.workspaces import reports as workspace_reports
 from app.services.workspaces.machines.remote.worker import close_all as close_remote_runtimes
 from app.services.sessions.compaction import CompactionService
 from app.services.sessions.job_reports import deliver_job_report
@@ -456,6 +457,9 @@ async def lifespan(app: FastAPI):
                 asyncio.gather(*list(wakeup_drainer_tasks), return_exceptions=True),
                 timeout=2.0,
             )
+
+        # Workspace report watchers: in-memory polls, gone with the app.
+        await _bounded("workspace_reports", workspace_reports.close(), timeout=2.0)
 
         # 3. Cooperative loops (all use stop_event); bound just in case.
         await _bounded("rate_limit_cleanup", cleanup_task, timeout=2.0)

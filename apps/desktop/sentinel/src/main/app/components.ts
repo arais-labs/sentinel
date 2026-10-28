@@ -7,31 +7,31 @@ import { pipeline } from 'node:stream/promises';
 import type { RuntimeComponentFile, RuntimeComponents } from '../../shared/ipc.js';
 import { execFileText } from './shell.js';
 
-// The workspace runtime the app downloads instead of bundling: sentineld and the workspace VM
-// process as release tarballs. They ride the release index next to the payload
+// The workspace runtime the app downloads instead of bundling: sentineld (the daemon and, as
+// `sentineld vm`, each VM) as a release tarball. It rides the release index next to the payload
 // (scripts/packaging/components.mjs writes the same shape):
-//   components: { sentineld: {file, sha256, url?}, 'sentinel-workspace': {...} }
+//   components: { sentineld: {file, sha256, url?} }
 // Each version lives in <root>/<name>/<sha256>, immutable once complete; <root>/installed.json names
 // the active ones. sentineld starts from them when the app starts it, so an update never swaps
 // files under running VMs. sentineld installs each distribution itself (its share's recipes).
 
-export const COMPONENT_NAMES = ['sentineld', 'sentinel-workspace'] as const;
+export const COMPONENT_NAMES = ['sentineld'] as const;
 export type ComponentName = typeof COMPONENT_NAMES[number];
 
 export type ComponentFile = RuntimeComponentFile;
 export type Components = RuntimeComponents;
 
 export interface ActiveComponents {
-  sentineld: string;   // directory: bin/sentineld, tools/, share/
-  workspace: string;   // directory: bin/sentinel-workspace, lib/, share/firmware/
+  sentineld: string;   // directory: bin/sentineld, lib/, tools/, share/
 }
 
 // What a complete component directory must hold before it may become active.
 const REQUIRED: Record<ComponentName, string[]> = {
-  sentineld: ['bin/sentineld', 'bin/sentineld-media', 'tools/mke2fs', 'tools/resize2fs', 'tools/wimlib-imagex', 'tools/mkntfs', 'tools/hive', 'share/sentineld-agent', 'share/catalog.json'],
-  'sentinel-workspace': ['bin/sentinel-workspace', 'lib/libkrun.dylib', 'lib/libvulkan_kosmickrisp.dylib', 'share/firmware/SENTINEL_EFI.fd'],
+  sentineld: ['bin/sentineld', 'bin/sentineld-media', 'lib/libkrun.dylib', 'lib/libvulkan_kosmickrisp.dylib', 'tools/mke2fs',
+    'tools/resize2fs', 'tools/wimlib-imagex', 'tools/mkntfs', 'tools/hive', 'share/sentineld-agent', 'share/catalog.json',
+    'share/firmware/SENTINEL_EFI.fd'],
 };
-const FILE = /^(sentineld|sentinel-workspace)-[0-9a-f]{16}\.tar\.gz$/;
+const FILE = /^sentineld-[0-9a-f]{16}\.tar\.gz$/;
 const COMPLETE = '.complete';
 
 export function validateComponents(value: unknown): Components {
@@ -58,14 +58,16 @@ export class ComponentStore {
     catch { return null; }
   }
 
-  /** The active runtime, or null when none is installed (or a directory went missing). */
+  /**
+   * The active runtime, or null when none is installed, a directory went missing, or it lacks what
+   * this app needs (a sentineld from before it carried the VM libraries: the release's replaces it).
+   */
   async active(): Promise<ActiveComponents | null> {
     const installed = await this.installed();
     if (!installed) return null;
     const sentineld = this.dir('sentineld', installed.sentineld.sha256);
-    const workspace = this.dir('sentinel-workspace', installed['sentinel-workspace'].sha256);
-    if (!existsSync(path.join(sentineld, COMPLETE)) || !existsSync(path.join(workspace, COMPLETE))) return null;
-    return { sentineld, workspace };
+    if (!complete('sentineld', sentineld)) return null;
+    return { sentineld };
   }
 
   /**
@@ -80,7 +82,7 @@ export class ComponentStore {
     for (const name of COMPONENT_NAMES) {
       const entry = components[name];
       const target = this.dir(name, entry.sha256);
-      if (existsSync(path.join(target, COMPLETE))) continue;
+      if (complete(name, target)) continue;
       changed = true;
       const scratch = `${target}.tar.gz`;
       const partial = `${target}.partial`;
@@ -104,13 +106,10 @@ export class ComponentStore {
       }
     }
     const previous = await this.installed();
-    if (!changed && previous?.sentineld.sha256 === components.sentineld.sha256
-      && previous?.['sentinel-workspace'].sha256 === components['sentinel-workspace'].sha256) return false;
+    if (!changed && previous?.sentineld.sha256 === components.sentineld.sha256) return false;
     const manifest = path.join(this.root, 'installed.json');
     const strip = ({ file, sha256 }: ComponentFile) => ({ file, sha256 });
-    await writeFile(`${manifest}.next`, `${JSON.stringify({
-      sentineld: strip(components.sentineld), 'sentinel-workspace': strip(components['sentinel-workspace']),
-    }, null, 2)}\n`);
+    await writeFile(`${manifest}.next`, `${JSON.stringify({ sentineld: strip(components.sentineld) }, null, 2)}\n`);
     await rename(`${manifest}.next`, manifest);
     return true;
   }
@@ -119,18 +118,25 @@ export class ComponentStore {
   async prune(keep: ActiveComponents): Promise<void> {
     for (const name of COMPONENT_NAMES) {
       const base = path.join(this.root, name);
-      const used = name === 'sentineld' ? keep.sentineld : keep.workspace;
+      const used = keep[name];
       let entries: string[] = [];
       try { entries = await readdir(base); } catch { continue; }
       for (const entry of entries) {
         if (path.join(base, entry) !== used) await rm(path.join(base, entry), { recursive: true, force: true });
       }
     }
-    // The GPU provider the workspace VM process replaced, and the OCI archives of local builds from
+    // Retired components: the GPU provider the workspace VM process replaced, that process (now
+    // `sentineld vm`, its libraries in sentineld's lib/), and the OCI archives of local builds from
     // before sentineld installed every distribution itself.
     await rm(path.join(this.root, 'sentinel-gpu'), { recursive: true, force: true });
+    await rm(path.join(this.root, 'sentinel-workspace'), { recursive: true, force: true });
     await rm(path.join(this.root, 'images'), { recursive: true, force: true });
   }
+}
+
+// A finished install of `name` that holds every file this app needs.
+function complete(name: ComponentName, directory: string): boolean {
+  return [COMPLETE, ...REQUIRED[name]].every(file => existsSync(path.join(directory, file)));
 }
 
 async function sha256File(filePath: string): Promise<string> {

@@ -143,7 +143,6 @@ async function main() {
         '--pattern', sourceTarName,
         '--pattern', 'latest-beta.json',
         '--pattern', 'sentineld-*.tar.gz',
-        '--pattern', 'sentinel-workspace-*.tar.gz',
         '--dir', downloaded,
         '--repo', repoSlug,
       ]);

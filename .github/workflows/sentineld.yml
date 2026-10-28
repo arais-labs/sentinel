@@ -1,7 +1,9 @@
 name: sentineld
-# The workspace runtime daemon (packages/sentineld): builds its release tarball (make release), the
+# The workspace runtime (packages/sentineld): the daemon and, as `sentineld vm`, each VM, on the
+# libraries packages/sentinel-workspace builds. Builds its release tarball (make release), the
 # component the desktop app downloads. The candidate build (ci.yml) calls this; unchanged sources
-# reuse the cached tarball, so nothing rebuilds. Output: the `sentineld-release` artifact.
+# reuse the cached tarball, so libkrun, virglrenderer and Mesa never rebuild on unrelated PRs.
+# Output: the `sentineld-release` artifact.
 on:
   workflow_call:
   workflow_dispatch:
@@ -17,7 +19,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - id: key
-        run: echo "key=sentineld-release-v1-${{ hashFiles('packages/sentineld/core/**', 'packages/sentineld/macos/**', 'packages/sentineld/media/**', 'packages/sentineld/guest/**', 'packages/sentineld/Makefile', 'VERSION') }}" >> "$GITHUB_OUTPUT"
+        run: echo "key=sentineld-release-v1-${{ hashFiles('packages/sentineld/core/**', 'packages/sentineld/macos/**', 'packages/sentineld/media/**', 'packages/sentineld/guest/**', 'packages/sentineld/patches/**', 'packages/sentineld/Makefile', 'packages/sentinel-workspace/macos/**', 'packages/sentinel-workspace/Makefile', 'VERSION') }}" >> "$GITHUB_OUTPUT"
       - id: cache
         uses: actions/cache/restore@v5
         with:
@@ -27,16 +29,25 @@ jobs:
           enableCrossOsArchive: true
 
   macos:
-    name: Build sentineld and pack the release (macOS arm64)
+    name: Build sentineld and the VM libraries; pack the release (macOS arm64)
     needs: key
     if: needs.key.outputs.hit != 'true'
     runs-on: macos-26
-    timeout-minutes: 30
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v6
-      - name: Build the daemon, the media server, the tools and the guest share; pack the release
+      # The VM libraries' pinned tools and sources, plus their incremental build trees: keyed by every input.
+      - uses: actions/cache@v5
+        with:
+          path: packages/sentinel-workspace/build/work
+          key: sentinel-workspace-${{ runner.arch }}-${{ hashFiles('packages/sentinel-workspace/macos/scripts/**', 'packages/sentinel-workspace/macos/patches/**') }}
+          restore-keys: sentinel-workspace-${{ runner.arch }}-
+      - name: Build the daemon, the VM libraries, the media server, the tools and the guest share; pack the release
         working-directory: packages/sentineld
         run: make share release
+      - name: Test the encoder and the renderers
+        working-directory: packages/sentineld
+        run: make test && make -C ../sentinel-workspace test
       - uses: actions/cache/save@v5
         with:
           path: packages/sentineld/build/release

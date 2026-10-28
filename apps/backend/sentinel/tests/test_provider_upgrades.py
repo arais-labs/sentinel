@@ -750,10 +750,12 @@ async def test_async_tool_overlaps_model_and_is_cleaned_up(cancel):
 
 def test_legacy_claude_does_not_receive_adaptive_thinking():
     from sentral.llm.generic.types import ReasoningConfig
+    from sentral.llm.model_limits import DEFAULT_MAX_OUTPUT_TOKENS
 
     provider = AnthropicProvider("test")
     options = provider._generation_options(ReasoningConfig(), "claude-haiku-4-5")
-    assert options == {"max_tokens": 8192}
+    # Not a catalog model: the default output cap.
+    assert options == {"max_tokens": DEFAULT_MAX_OUTPUT_TOKENS}
     options = provider._generation_options(
         ReasoningConfig(thinking_budget=2048), "claude-sonnet-4-5"
     )

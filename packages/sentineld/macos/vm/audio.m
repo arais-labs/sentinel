@@ -55,7 +55,7 @@ static void *run(void *arg) {
       .mSampleRate = 48000, .mFormatID = kAudioFormatOpus, .mFramesPerPacket = FRAME_SAMPLES, .mChannelsPerFrame = 2};
   static struct encoder e;
   if (AudioConverterNew(&pcm, &opus, &e.converter)) {
-    fprintf(stderr, "sentinel-workspace: no Opus encoder; desktop sound is off\n");
+    fprintf(stderr, "sentineld vm: no Opus encoder; desktop sound is off\n");
     return NULL;
   }
   const UInt32 bitrate = 128000;
@@ -76,7 +76,7 @@ static void *run(void *arg) {
 KrunSoundDevice audio_device(void) {
   int pair[2];
   if (socketpair(AF_UNIX, SOCK_STREAM, 0, pair)) {
-    perror("sentinel-workspace: sound socket pair");
+    perror("sentineld vm: sound socket pair");
     exit(1);
   }
   // A few hundred milliseconds of room: the device drops what does not fit, never waits.
@@ -86,12 +86,12 @@ KrunSoundDevice audio_device(void) {
   KrunError err = NULL;
   KrunSoundDevice device = krun_sound_device_new(pair[0], &err);
   if (err) {
-    fprintf(stderr, "sentinel-workspace: sound device failed\n");
+    fprintf(stderr, "sentineld vm: sound device failed\n");
     exit(1);
   }
   pthread_t thread;
   if (pthread_create(&thread, NULL, run, (void *)(intptr_t)pair[1])) {
-    perror("sentinel-workspace: sound thread");
+    perror("sentineld vm: sound thread");
     exit(1);
   }
   pthread_detach(thread);

@@ -143,6 +143,55 @@ async def workspace_app(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_machine_usage_names_this_instances_workspaces(workspace_app, monkeypatch):
+    from app.models import Workspace
+    from app.services.workspaces import lifecycle
+
+    client, factory, machine, *_ = workspace_app
+    async with factory() as db:
+        small = Workspace(name="Small", machine_id=machine.id, directory="/p/s")
+        big = Workspace(name="Big", machine_id=machine.id, directory="/p/b")
+        empty = Workspace(name="Empty", machine_id=machine.id, directory="/p/e")
+        db.add_all([small, big, empty])
+        await db.commit()
+    sent = []
+
+    async def local_request(action, **values):
+        sent.append((action, values))
+        return {
+            "workspaces": {str(small.id): 10, str(big.id): 300, "elsewhere": 7, "gone": 5},
+            "shared": {"systems": 1000, "packages": 20, "sources": 0, "installs": 3},
+            "total": 1345,
+            "free": 9000,
+            "capacity": None,
+        }
+
+    monkeypatch.setattr(lifecycle, "local_request", local_request)
+    response = await client.get(f"workspaces/usage/{machine.id}")
+    assert response.status_code == 200
+    assert sent == [("usage", {})]
+    assert response.json() == {
+        "workspaces": [
+            {"id": str(big.id), "name": "Big", "bytes": 300},
+            {"id": str(small.id), "name": "Small", "bytes": 10},
+            {"id": str(empty.id), "name": "Empty", "bytes": 0},
+        ],
+        "other": 12,
+        "shared": {
+            "systems": 1000,
+            "packages": 20,
+            "sources": 0,
+            "installs": 3,
+            "distributions": 0,
+        },
+        "total": 1345,
+        "free": 9000,
+        "capacity": None,
+    }
+    assert (await client.get(f"workspaces/usage/{uuid4()}")).status_code == 404
+
+
+@pytest.mark.asyncio
 async def test_workspace_catalog_and_healthy_status_do_not_wait_for_remote(
     workspace_app, monkeypatch
 ):
@@ -309,7 +358,7 @@ async def test_switch_from_incompatible_runtime_preserves_remote_programs(
     # An incompatible or unreachable worker (a Mac that is off) never pins a session to it.
     from unittest.mock import AsyncMock
     from app.models import Workspace
-    from app.routers import workspaces as routes
+    from app.services.workspaces import operations as routes
     from app.services.workspaces.compatibility import RuntimeCompatibilityError
     from app.services.workspaces.machines.remote.worker import RuntimeUnavailable
 

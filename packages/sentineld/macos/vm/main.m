@@ -1,4 +1,4 @@
-// sentinel-workspace: one workspace's virtual machine, started by sentineld (DESIGN.md §15). libkrun
+// sentineld vm: one workspace's virtual machine, a child sentineld starts (DESIGN.md §15). libkrun
 // on Hypervisor.framework (one VM per process), booting the workspace's disks through EFI firmware;
 // with a desktop, a virtio-gpu (Venus on KosmicKrisp; with virgl and Neptune for Windows; or 2D) whose
 // scanout is encoded for viewers.
@@ -34,7 +34,7 @@ static bool printError(void *userdata, KrunStr s) {
 }
 
 static void fail(const char *what, KrunError err) {
-  fprintf(stderr, "sentinel-workspace: %s failed", what);
+  fprintf(stderr, "sentineld vm: %s failed", what);
   if (err) {
     fputs(": ", stderr);
     KrunVtableHandle writer =
@@ -55,12 +55,12 @@ static void fail(const char *what, KrunError err) {
 
 static KrunStr str(NSString *s) { return (KrunStr){.data = s.UTF8String, .len = strlen(s.UTF8String)}; }
 
-// <root>/bin/sentinel-workspace: lib/ and share/ are its siblings.
+// <root>/bin/sentineld: lib/ and share/ are its siblings.
 static NSString *root(void) {
   char executable[PATH_MAX], resolved[PATH_MAX];
   uint32_t size = sizeof executable;
   if (_NSGetExecutablePath(executable, &size) || !realpath(executable, resolved)) {
-    fprintf(stderr, "sentinel-workspace: cannot resolve its own path\n");
+    fprintf(stderr, "sentineld vm: cannot resolve its own path\n");
     exit(1);
   }
   return @(resolved).stringByDeletingLastPathComponent.stringByDeletingLastPathComponent;
@@ -74,7 +74,7 @@ static NSDictionary *readConfig(void) {
     ssize_t n = read(3, &c, 1);
     if (n < 0 && errno == EINTR) continue;
     if (n <= 0 || line.length > (1 << 20)) {
-      fprintf(stderr, "sentinel-workspace: no config on fd 3\n");
+      fprintf(stderr, "sentineld vm: no config on fd 3\n");
       exit(2);
     }
     if (c == '\n') break;
@@ -82,7 +82,7 @@ static NSDictionary *readConfig(void) {
   }
   id config = [NSJSONSerialization JSONObjectWithData:line options:0 error:NULL];
   if (![config isKindOfClass:NSDictionary.class]) {
-    fprintf(stderr, "sentinel-workspace: invalid config\n");
+    fprintf(stderr, "sentineld vm: invalid config\n");
     exit(2);
   }
   return config;
@@ -91,7 +91,7 @@ static NSDictionary *readConfig(void) {
 static NSString *text(NSDictionary *d, NSString *key) {
   id v = d[key];
   if (![v isKindOfClass:NSString.class] || ![v length]) {
-    fprintf(stderr, "sentinel-workspace: config needs %s\n", key.UTF8String);
+    fprintf(stderr, "sentineld vm: config needs %s\n", key.UTF8String);
     exit(2);
   }
   return v;
@@ -100,7 +100,7 @@ static NSString *text(NSDictionary *d, NSString *key) {
 static uint32_t number(NSDictionary *d, NSString *key) {
   id v = d[key];
   if (![v isKindOfClass:NSNumber.class] || [v longLongValue] <= 0 || [v longLongValue] > UINT32_MAX) {
-    fprintf(stderr, "sentinel-workspace: config needs %s\n", key.UTF8String);
+    fprintf(stderr, "sentineld vm: config needs %s\n", key.UTF8String);
     exit(2);
   }
   return [v unsignedIntValue];
@@ -110,7 +110,7 @@ static uint32_t number(NSDictionary *d, NSString *key) {
 static int quietInput(void) {
   int fds[2];
   if (pipe(fds)) {
-    perror("sentinel-workspace: pipe");
+    perror("sentineld vm: pipe");
     exit(1);
   }
   return fds[0];
@@ -151,7 +151,7 @@ static void enterSandbox(NSArray<NSString *> *writable) {
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
   if (sandbox_init(profile.UTF8String, 0, &error)) {
-    fprintf(stderr, "sentinel-workspace: sandbox: %s\n", error);
+    fprintf(stderr, "sentineld vm: sandbox: %s\n", error);
     exit(1);
   }
 #pragma clang diagnostic pop
@@ -162,7 +162,7 @@ static void powerOff(int signal) {
   _exit(0);  // a hard power off: graceful shutdown is the guest agent's
 }
 
-int main(void) {
+int sentineld_vm(void) {
   @autoreleasepool {
     signal(SIGPIPE, SIG_IGN);
     signal(SIGTERM, powerOff);
@@ -298,7 +298,7 @@ int main(void) {
       uint8_t mac[6];
       if (sscanf(text(config, @"mac").UTF8String, "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx", &mac[0], &mac[1], &mac[2], &mac[3],
                  &mac[4], &mac[5]) != 6) {
-        fprintf(stderr, "sentinel-workspace: invalid mac\n");
+        fprintf(stderr, "sentineld vm: invalid mac\n");
         return 2;
       }
       add(net_device(mac));

@@ -5,7 +5,7 @@ import json
 
 from app.models import Message, Session
 from app.services.agent.runtime_support import SentinelRuntimeSupport
-from app.services.agent.runtime_support import humanize_error, settings
+from app.services.agent.runtime_support import humanize_error
 from sentral.llm.generic.types import (
     AssistantMessage,
     ImageContent,
@@ -162,17 +162,21 @@ def test_runtime_support_persists_distinct_created_at_order_and_iteration_metada
     assert assistants[1].metadata_json.get("iteration") == 2
 
 
-def test_runtime_support_truncates_large_tool_results_for_storage():
+def test_runtime_support_stores_tool_results_and_arguments_as_sent():
     db = FakeDB()
     session = _new_session(db)
     support = _support()
+    content = json.dumps({"blob": "x" * 60000})
+    arguments = {"files": {"a": {"text": "y" * 5000}}}
     created = [
+        AssistantMessage(
+            content=[ToolCallContent(id="call_big", name="big", arguments=arguments)],
+            model="m",
+            provider="p",
+        ),
         ToolResultMessage(
-            tool_call_id="call_big",
-            tool_name="big",
-            content=json.dumps({"blob": "x" * 60000}),
-            is_error=False,
-        )
+            tool_call_id="call_big", tool_name="big", content=content, is_error=False
+        ),
     ]
 
     _run(
@@ -187,12 +191,11 @@ def test_runtime_support_truncates_large_tool_results_for_storage():
         )
     )
 
-    [tool_record] = [m for m in db.storage[Message] if m.session_id == session.id]
-    assert (
-        "[TRUNCATED - " in tool_record.content or "[TRUNCATED_FOR_STORAGE - " in tool_record.content
-    )
-    assert tool_record.metadata_json.get("storage_truncated") is True
-    assert int(tool_record.metadata_json.get("original_chars") or 0) > len(tool_record.content)
+    saved = [m for m in db.storage[Message] if m.session_id == session.id]
+    assistant = next(m for m in saved if m.role == "assistant")
+    tool_record = next(m for m in saved if m.role == "tool_result")
+    assert tool_record.content == content
+    assert assistant.metadata_json["tool_calls"][0]["arguments"] == arguments
 
 
 def test_execution_snapshot_records_only_its_first_request_usage():
@@ -235,8 +238,6 @@ def test_execution_snapshot_records_only_its_first_request_usage():
 
 
 def test_large_form_survives_persistence_and_can_be_answered(monkeypatch):
-    monkeypatch.setattr(settings, "stored_tool_result_max_chars", 200)
-    monkeypatch.setattr(settings, "stored_tool_call_args_max_chars", 200)
     db = FakeDB()
     session = _new_session(db)
     definition = {
@@ -283,7 +284,6 @@ def test_large_form_survives_persistence_and_can_be_answered(monkeypatch):
         assert assistant.metadata_json["tool_calls"][0]["arguments"] == arguments
         assert saved.content == content
         assert json.loads(saved.content) == result
-        assert not saved.metadata_json.get("storage_truncated")
         answers = [{"question_id": q["id"], "option_id": "accept"} for q in definition["questions"]]
         _, response = await validate_response(
             db,

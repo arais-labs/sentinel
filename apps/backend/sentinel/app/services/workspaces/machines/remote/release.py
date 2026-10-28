@@ -1,10 +1,10 @@
-"""The runtime release a remote Mac installs: sentineld and the workspace VM process the desktop app runs.
+"""The runtime release a remote Mac installs: the sentineld the desktop app runs.
 
-A release is two trees, uploaded under ROOT/releases/<version>-<id>/:
-  sentineld/           bin/sentineld, bin/sentineld-media, tools/{mke2fs,resize2fs}, share/ (the guest share)
-  sentinel-workspace/  bin/sentinel-workspace, lib/ (libkrun, virglrenderer, KosmicKrisp), share/firmware/
-sentineld installs each distribution itself, from the share's recipes.
-Both trees hold regular files only: a symlink is rejected, never shipped.
+A release is one tree, uploaded under ROOT/releases/<version>-<id>/sentineld/:
+  bin/sentineld (the daemon and, as `sentineld vm`, each workspace VM), bin/sentineld-media,
+  lib/ (libkrun, virglrenderer, KosmicKrisp), tools/, share/ (the guest share and firmware),
+  distributions/ (the recipes sentineld installs each distribution from)
+The tree holds regular files only: a symlink is rejected, never shipped.
 The installed manifest records the inventory, so verification never trusts the remote tree's shape.
 """
 
@@ -14,20 +14,20 @@ from pathlib import Path, PurePosixPath
 import re
 import stat
 
-# What each tree ships, relative to its build directory.
-_TREES = {
-    "sentineld": (
-        "bin/sentineld",
-        "bin/sentineld-media",
-        "tools/mke2fs",
-        "tools/resize2fs",
-        "tools/wimlib-imagex",
-        "tools/mkntfs",
-        "tools/hive",
-        "share",
-    ),
-    "sentinel-workspace": ("bin/sentinel-workspace", "lib", "share/firmware"),
-}
+# What the tree ships, relative to its build directory.
+_TREE = "sentineld"
+_ENTRIES = (
+    "bin/sentineld",
+    "bin/sentineld-media",
+    "lib",
+    "tools/mke2fs",
+    "tools/resize2fs",
+    "tools/wimlib-imagex",
+    "tools/mkntfs",
+    "tools/hive",
+    "share",
+    "distributions",
+)
 REQUIRED = frozenset(
     {
         "sentineld/bin/sentineld",
@@ -39,10 +39,9 @@ REQUIRED = frozenset(
         "sentineld/tools/hive",
         "sentineld/share/sentineld-agent",
         "sentineld/share/catalog.json",
-        "sentinel-workspace/bin/sentinel-workspace",
-        "sentinel-workspace/lib/libkrun.dylib",  # linked by the workspace binary
-        "sentinel-workspace/lib/libvulkan_kosmickrisp.dylib",
-        "sentinel-workspace/share/firmware/SENTINEL_EFI.fd",
+        "sentineld/lib/libkrun.dylib",  # linked by sentineld for its VMs
+        "sentineld/lib/libvulkan_kosmickrisp.dylib",
+        "sentineld/share/firmware/SENTINEL_EFI.fd",
     }
 )
 # Mach-O executables the installer marks executable and checks the signature of.
@@ -54,9 +53,8 @@ SIGNED = (
     "sentineld/tools/wimlib-imagex",
     "sentineld/tools/mkntfs",
     "sentineld/tools/hive",
-    "sentinel-workspace/bin/sentinel-workspace",
 )
-_NAME = re.compile(r"(?:sentineld|sentinel-workspace)/[A-Za-z0-9._+/-]+")
+_NAME = re.compile(r"sentineld/[A-Za-z0-9._+/-]+")
 
 
 def validate_release_files(names):
@@ -74,29 +72,26 @@ def validate_release_files(names):
     return names
 
 
-def release_files(sentineld, workspace):
-    """The two build trees: [(local path, release name)] sorted by name."""
+def release_files(sentineld):
+    """The sentineld build tree: [(local path, release name)] sorted by name."""
+    directory = Path(sentineld)
     files = {}
-    for tree, directory in (
-        ("sentineld", Path(sentineld)),
-        ("sentinel-workspace", Path(workspace)),
-    ):
-        for entry in _TREES[tree]:
-            top = directory / entry
-            if not top.exists():
-                raise ValueError(f"Missing runtime build output: {top}")
-            # The entry itself too: a symlinked directory is rejected like any other link.
-            paths = [top, *sorted(top.rglob("*"))] if top.is_dir() else [top]
-            for path in paths:
-                mode = path.lstat().st_mode
-                if stat.S_ISDIR(mode) or "__pycache__" in path.parts:
-                    continue
-                name = str(PurePosixPath(tree, path.relative_to(directory).as_posix()))
-                if stat.S_ISLNK(mode):
-                    raise ValueError(f"Runtime release trees must not contain symlinks: {path}")
-                if not stat.S_ISREG(mode):
-                    raise ValueError(f"Runtime release files must be regular files: {path}")
-                files[name] = path
+    for entry in _ENTRIES:
+        top = directory / entry
+        if not top.exists():
+            raise ValueError(f"Missing runtime build output: {top}")
+        # The entry itself too: a symlinked directory is rejected like any other link.
+        paths = [top, *sorted(top.rglob("*"))] if top.is_dir() else [top]
+        for path in paths:
+            mode = path.lstat().st_mode
+            if stat.S_ISDIR(mode) or "__pycache__" in path.parts:
+                continue
+            name = str(PurePosixPath(_TREE, path.relative_to(directory).as_posix()))
+            if stat.S_ISLNK(mode):
+                raise ValueError(f"Runtime release trees must not contain symlinks: {path}")
+            if not stat.S_ISREG(mode):
+                raise ValueError(f"Runtime release files must be regular files: {path}")
+            files[name] = path
     names = validate_release_files(sorted(files))
     return [(files[name], name) for name in names]
 

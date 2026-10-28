@@ -10,6 +10,16 @@ export interface WorkspaceCatalog {
 }
 /** The smallest allocation sentineld accepts for a distribution. */
 export interface WorkspaceMinimum { cpus?: number; memory_gib?: number; disk_gib?: number }
+/** Bytes Sentinel uses on a machine's disk: per workspace (what deleting it frees) and shared. */
+export interface MachineUsage {
+  workspaces: { id: string; name: string; bytes: number }[];
+  /** Workspaces on the machine this Sentinel does not list. */
+  other: number;
+  shared: { systems: number; packages: number; sources: number; installs: number; distributions: number };
+  total: number;
+  free: number | null;
+  capacity: number | null;
+}
 export interface WorkspaceTool { id: string; name: string; detail: string; category: string; distributions: string[]; requires?: string[] }
 
 export interface Session {

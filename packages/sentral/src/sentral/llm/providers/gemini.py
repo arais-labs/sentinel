@@ -12,6 +12,7 @@ import httpx
 
 from sentral.llm.generic.base import LLMProvider
 from sentral.llm.ids import ProviderId
+from sentral.llm.model_limits import output_cap
 from sentral.llm.generic.errors import TransientProviderError
 from sentral.llm.providers.gemini_schema_cleaner import clean_schema_for_gemini
 from sentral.llm.generic.types import (
@@ -112,6 +113,7 @@ class GeminiProvider(LLMProvider):
             thinking_budget,
             tool_choice=tool_choice,
             reasoning_effort=rc.reasoning_effort,
+            max_tokens=rc.max_tokens,
         )
         url = f"{self._base_url}/models/{model}:generateContent"
         headers = await self._request_headers()
@@ -153,6 +155,7 @@ class GeminiProvider(LLMProvider):
             thinking_budget,
             tool_choice=tool_choice,
             reasoning_effort=rc.reasoning_effort,
+            max_tokens=rc.max_tokens,
         )
         url = f"{self._base_url}/models/{model}:streamGenerateContent?alt=sse"
         headers = await self._request_headers()
@@ -296,6 +299,11 @@ class GeminiProvider(LLMProvider):
                             if finish_upper == "SAFETY" or last_block_reason:
                                 reason = last_block_reason or finish_upper
                                 raise RuntimeError(f"Gemini blocked response ({reason})")
+                            if finish_upper == "MAX_TOKENS":
+                                # Thinking used the whole output cap: a cut-off reply.
+                                yield AgentEvent(type="done", stop_reason="length")
+                                done_emitted = True
+                                continue
                             raise TransientProviderError(
                                 f"Gemini stream finished without content (finishReason={finish_reason})"
                             )
@@ -303,11 +311,7 @@ class GeminiProvider(LLMProvider):
                             yield AgentEvent(type="thinking_end", content_index=0)
                         if text_started:
                             yield AgentEvent(type="text_end", content_index=0)
-                        stop = (
-                            "tool_use"
-                            if response_has_function_call
-                            else _map_finish_reason(finish_reason)
-                        )
+                        stop = _stop_reason(finish_reason, response_has_function_call)
                         yield AgentEvent(type="done", stop_reason=stop)
                         done_emitted = True
 
@@ -351,6 +355,7 @@ class GeminiProvider(LLMProvider):
         *,
         tool_choice: str | None = None,
         reasoning_effort: str | None = None,
+        max_tokens: int | None = None,
     ) -> dict[str, Any]:
         """Build a Gemini generateContent/streamGenerateContent request payload."""
         system_text, contents = self._to_gemini_contents(messages)
@@ -358,6 +363,7 @@ class GeminiProvider(LLMProvider):
             "contents": contents,
             "generationConfig": {
                 "temperature": temperature,
+                "maxOutputTokens": output_cap(model, max_tokens),
             },
         }
         if system_text:
@@ -804,7 +810,7 @@ class GeminiProvider(LLMProvider):
             if "text" in part:
                 blocks.append(TextContent(text=part["text"]))
 
-        stop = "tool_use" if has_function_call else _map_finish_reason(finish_reason)
+        stop = _stop_reason(finish_reason, has_function_call)
 
         return AssistantMessage(
             content=blocks,
@@ -853,6 +859,12 @@ class GeminiProvider(LLMProvider):
             if isinstance(nested_signature, str) and nested_signature.strip():
                 payload["thoughtSignature"] = nested_signature.strip()
         return payload
+
+
+def _stop_reason(finish_reason: str | None, has_function_call: bool) -> str:
+    """Calls arrive whole, so they run; the output cap still ended the reply early."""
+    mapped = _map_finish_reason(finish_reason)
+    return "tool_use" if has_function_call and mapped != "length" else mapped
 
 
 def _map_finish_reason(reason: str | None) -> str:

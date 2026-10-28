@@ -4,7 +4,10 @@
 // (Workspaces).
 #pragma once
 #include <atomic>
+#include <cstdint>
+#include <stdexcept>
 #include <string>
+#include <vector>
 
 #include "../util/json.hpp"
 
@@ -22,5 +25,16 @@ std::string installKey(const json::Value& install, const std::string& folder);
 // to read their inputs and write `work`. Throws on failure or when `cancel` is set.
 void prepareInstall(const json::Value& install, const std::string& folder, const std::string& sources,
                     const std::string& work, const std::string& tools, const std::atomic<bool>& cancel);
+
+// An archive's members, to write a recipe that uses it (the source op). With `paths`: those
+// members, each {bytes, text} or {bytes, binary: true} (with one path, `offset` and `length` read
+// a byte range of it, for a member larger than a reply); otherwise the members whose path matches
+// the glob `match`, each {path, bytes, type}. A reply over `limit` characters throws TooLarge,
+// whose message says how much matched and where, so the asker narrows the request.
+struct TooLarge : std::runtime_error {
+  using std::runtime_error::runtime_error;
+};
+json::Object browseArchive(const std::string& file, const std::string& match, const std::vector<std::string>& paths,
+                           size_t limit, uint64_t offset = 0, uint64_t length = 0);
 
 }  // namespace sentineld::image

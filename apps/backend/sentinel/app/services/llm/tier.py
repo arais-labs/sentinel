@@ -490,7 +490,12 @@ class TierProvider(LLMProvider):
         tool_choice: str | None = None,
         reasoning_config: ReasoningConfig | None = None,
     ) -> AsyncIterator[AgentEvent]:
-        """Execute a streaming call through tier primary/fallback providers."""
+        """Execute a streaming call through tier primary/fallback providers.
+
+        Events stream live. When an attempt fails after streaming some, a
+        ``stream_reset`` voids them before the next attempt (or the final error):
+        each attempt answers the same request with the same history, from scratch.
+        """
         configs = self._ordered_configs(tier)
         diagnostics: list[str] = []
 
@@ -502,8 +507,8 @@ class TierProvider(LLMProvider):
                 self._record_probe(pname)
 
             for attempt in range(1, self._max_retries + 1):
+                attached_generation_hint = False
                 try:
-                    attached_generation_hint = False
                     async for event in cfg.provider.stream(
                         messages,
                         model=cfg.model,
@@ -541,6 +546,8 @@ class TierProvider(LLMProvider):
                     diagnostics.append(
                         f"provider={pname} model={cfg.model} attempt {attempt}/{self._max_retries}: {error_tag(exc)}"
                     )
+                    if attached_generation_hint:
+                        yield AgentEvent(type="stream_reset")
                     if retryable and attempt < self._max_retries:
                         await self._sleep((self._base_backoff_ms * (2 ** (attempt - 1))) / 1000)
                         continue

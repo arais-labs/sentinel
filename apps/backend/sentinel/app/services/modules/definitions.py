@@ -110,6 +110,12 @@ class ActionDefinition:
             d["approval"] = True
         return d
 
+    def default_permission(self) -> str:
+        """The permission level an action has until the user sets one."""
+        return _normalize_permission_default_value(self.permission_default) or (
+            "approval" if self.approval else "allow"
+        )
+
     def get_parameters_schema(self) -> dict[str, Any] | None:
         """Return parameters_schema, auto-converting flat params if needed."""
         if self.parameters_schema:

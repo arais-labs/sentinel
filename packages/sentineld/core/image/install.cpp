@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "../util/sha256.hpp"
+#include "../util/text.hpp"
 #include "media.hpp"
 #include "download.hpp"
 
@@ -393,6 +394,81 @@ void prepareInstall(const json::Value& install, const std::string& folder, const
       throw std::runtime_error("install: unknown step " + json::dump(step));
     }
   }
+}
+
+json::Object browseArchive(const std::string& file, const std::string& match, const std::vector<std::string>& paths,
+                           size_t limit, uint64_t offset, uint64_t length) {
+  const bool range = offset || length;
+  if (range && paths.size() != 1) throw std::runtime_error("offset and length read one member: give one path");
+  std::unique_ptr<archive, int (*)(archive*)> a(archive_read_new(), archive_read_free);
+  archive_read_support_format_all(a.get());
+  archive_read_support_filter_all(a.get());
+  if (archive_read_open_filename(a.get(), file.c_str(), 1 << 20) != ARCHIVE_OK)
+    throw std::runtime_error(std::string("not an archive sentineld reads: ") + archive_error_string(a.get()));
+  const std::set<std::string> wanted(paths.begin(), paths.end());
+  json::Object found;                   // paths: path -> {bytes, text | binary}
+  json::Array members;                  // match: {path, bytes, type}
+  std::map<std::string, double> where;  // match: count per top folder, for a refusal
+  size_t size = 0, matched = 0;
+  archive_entry* e;
+  int r;
+  while ((r = archive_read_next_header(a.get(), &e)) == ARCHIVE_OK) {
+    std::string name = archive_entry_pathname(e);
+    if (name.rfind("./", 0) == 0) name.erase(0, 2);
+    if (name.empty()) continue;
+    const double bytes = double(archive_entry_size(e));
+    if (!paths.empty()) {
+      if (!wanted.count(name)) continue;
+      json::Object member{{"bytes", bytes}};
+      // A range: the member's bytes [offset, offset + length), length defaulting to what fits.
+      const uint64_t from = std::min<uint64_t>(offset, uint64_t(bytes));
+      const uint64_t take = range ? std::min<uint64_t>(length ? length : limit, uint64_t(bytes) - from) : uint64_t(bytes);
+      if (range) member["offset"] = double(from);
+      if (archive_entry_filetype(e) == AE_IFREG && size + take <= limit) {
+        std::string data(size_t(from + take), '\0');
+        if (archive_read_data(a.get(), data.data(), data.size()) != la_ssize_t(data.size()))
+          throw std::runtime_error("cannot read " + name);
+        data.erase(0, size_t(from));
+        // A range may cut a character at either end: those bytes read as U+FFFD, the rest as text.
+        const bool text = data.find('\0') == std::string::npos && (range || utf8(data) == data);
+        member[text ? "text" : "binary"] = text ? json::Value(utf8(data)) : json::Value(true);
+      } else if (archive_entry_filetype(e) != AE_IFREG) {
+        member["type"] = archive_entry_filetype(e) == AE_IFDIR ? "dir" : "link";
+      }
+      size += size_t(take);
+      found[name] = std::move(member);
+      continue;
+    }
+    if (fnmatch(match.c_str(), name.c_str(), 0) != 0) continue;
+    ++matched;
+    where[name.substr(0, name.find('/'))] += 1;
+    const unsigned type = archive_entry_filetype(e);
+    json::Object member{{"path", name}, {"bytes", bytes}, {"type", type == AE_IFREG ? "file" : type == AE_IFDIR ? "dir" : "link"}};
+    if (const char* target = archive_entry_symlink(e)) member["target"] = target;
+    size += json::dump(member).size() + 1;
+    if (size <= limit) members.push_back(std::move(member));
+  }
+  if (r != ARCHIVE_EOF) throw std::runtime_error(std::string("cannot read the archive: ") + archive_error_string(a.get()));
+  if (!paths.empty()) {
+    std::string missing;
+    for (auto& p : paths)
+      if (!found.count(p)) missing += (missing.empty() ? "" : ", ") + p;
+    if (!missing.empty()) throw std::runtime_error("not in the archive: " + missing);
+    if (size > limit) {
+      json::Object sizes;
+      for (auto& [p, m] : found) sizes[p] = m["bytes"];
+      throw TooLarge("these members take " + std::to_string(size) + " bytes, over the " + std::to_string(limit) +
+                     " one reply holds; read fewer at a time. Sizes: " + json::dump(sizes));
+    }
+    return {{"files", std::move(found)}};
+  }
+  if (size > limit) {
+    json::Object counts;
+    for (auto& [folder, n] : where) counts[folder] = n;
+    throw TooLarge(std::to_string(matched) + " members match, over what one reply holds; narrow match. Matches per top folder: " +
+                   json::dump(counts));
+  }
+  return {{"members", std::move(members)}, {"matched", double(matched)}};
 }
 
 }  // namespace sentineld::image

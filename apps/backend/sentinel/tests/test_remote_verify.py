@@ -47,7 +47,6 @@ def installation(monkeypatch):
     hashes = [hashlib.sha256(str(i).encode()).hexdigest() for i in range(len(names))]
     manifest = {
         "executable": RELEASE + "/sentineld/bin/sentineld",
-        "workspace": RELEASE + "/sentinel-workspace",
         "files": names,
         "version": runtime_version(names, hashes),
     }

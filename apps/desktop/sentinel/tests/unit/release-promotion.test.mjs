@@ -66,14 +66,12 @@ test('promotion keeps the runtime components byte for byte and drops their old U
   const sha = (c) => c.repeat(64);
   const components = {
     sentineld: { file: `sentineld-${sha('a').slice(0, 16)}.tar.gz`, sha256: sha('a'), url: 'https://old/sentineld' },
-    'sentinel-workspace': { file: `sentinel-workspace-${sha('b').slice(0, 16)}.tar.gz`, sha256: sha('b'), url: 'https://old/workspace' },
   };
   const index = promoteIndex({ channel: 'beta', commit: 'source', components }, 'stable', 'target', 'p.tar.gz', 'h');
   assert.deepEqual(index.components.sentineld, { file: components.sentineld.file, sha256: sha('a') });
-  assert.equal(index.components['sentinel-workspace'].url, undefined);
   assert.equal(validateComponents(index.components), index.components);
   for (const broken of [
     { ...components, sentineld: { ...components.sentineld, sha256: sha('d') } },  // file name not from its hash
-    { ...components, 'sentinel-workspace': undefined },
+    { ...components, sentineld: undefined },
   ]) assert.throws(() => validateComponents(broken));
 });

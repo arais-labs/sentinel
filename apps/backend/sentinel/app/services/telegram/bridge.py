@@ -990,6 +990,8 @@ class TelegramBridge:
 
             delivery_state = _ToolDeliveryState(expected_chat_id=route.chat_id)
             inline_stream_text = ""
+            # Where the current model call's text starts: a retried call replaces it.
+            call_text_start = 0
             inline_stream_message = (
                 RichReplyDraft(
                     self._app.bot,
@@ -1001,11 +1003,16 @@ class TelegramBridge:
             )
 
             async def _on_event(event: Any) -> None:
-                nonlocal inline_stream_text
+                nonlocal inline_stream_text, call_text_start
                 sentinel_event = runtime_event_to_sentinel_event(event)
                 await self._ws_manager.broadcast_agent_event(route.session_key, sentinel_event)
                 if route.inline_reply_mode:
-                    if sentinel_event.type == "text_delta":
+                    if sentinel_event.type == "agent_progress":
+                        call_text_start = len(inline_stream_text)
+                    elif sentinel_event.type == "stream_reset":
+                        inline_stream_text = inline_stream_text[:call_text_start]
+                        inline_stream_message.update(inline_stream_text)
+                    elif sentinel_event.type == "text_delta":
                         delta = getattr(sentinel_event, "delta", None)
                         if isinstance(delta, str) and delta:
                             inline_stream_text += delta

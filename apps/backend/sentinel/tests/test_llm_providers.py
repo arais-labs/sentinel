@@ -12,7 +12,6 @@ from sentral.llm.providers.gemini import GeminiProvider
 from sentral.llm.providers.gemini_oauth import GeminiOAuthCredentials, GeminiOAuthProvider
 from sentral.llm.providers.gemini_schema_cleaner import clean_schema_for_gemini
 from sentral.llm.providers.openai import OpenAIProvider
-from sentral.llm.generic.reliable import ReliableProvider
 from sentral.llm.generic.router import RouterProvider
 from app.services.llm.tier import TierConfig, TierModelConfig, TierProvider
 from sentral.llm.ids import ProviderId, TierName
@@ -340,125 +339,6 @@ def test_anthropic_formats_user_image_blocks():
     assert blocks[1]["type"] == "image"
     assert blocks[1]["source"]["media_type"] == "image/jpeg"
     assert blocks[1]["source"]["data"] == "CCCCDDDD"
-
-
-def test_reliable_provider_fallback_on_429():
-    class _RetryProvider(LLMProvider):
-        @property
-        def name(self) -> str:
-            return "retry"
-
-        async def chat(
-            self,
-            messages,
-            model,
-            tools=None,
-            temperature=0.7,
-            reasoning_config=None,
-            tool_choice=None,
-        ):
-            request = httpx.Request("POST", "https://retry.example")
-            response = httpx.Response(429, request=request)
-            raise httpx.HTTPStatusError("rate limited", request=request, response=response)
-
-        async def stream(
-            self,
-            messages,
-            model,
-            tools=None,
-            temperature=0.7,
-            reasoning_config=None,
-            tool_choice=None,
-        ):
-            if False:
-                yield
-            return
-
-    class _OkProvider(LLMProvider):
-        def __init__(self) -> None:
-            self.called = 0
-
-        @property
-        def name(self) -> str:
-            return "ok"
-
-        async def chat(
-            self,
-            messages,
-            model,
-            tools=None,
-            temperature=0.7,
-            reasoning_config=None,
-            tool_choice=None,
-        ):
-            self.called += 1
-            return AssistantMessage(content=[TextContent(text="ok")], model=model, provider="ok")
-
-        async def stream(
-            self,
-            messages,
-            model,
-            tools=None,
-            temperature=0.7,
-            reasoning_config=None,
-            tool_choice=None,
-        ):
-            yield AgentEvent(type="start")
-            yield AgentEvent(type="done", stop_reason="stop")
-
-    ok = _OkProvider()
-    provider = ReliableProvider(
-        [_RetryProvider(), ok], max_retries=2, sleep_func=lambda _: asyncio.sleep(0)
-    )
-    result = _run(provider.chat([UserMessage(content="hello")], model="test-model"))
-    assert result.content[0].text == "ok"
-    assert ok.called == 1
-
-
-def test_reliable_provider_stream_attaches_generation_hint_on_first_event():
-    class _OkProvider(LLMProvider):
-        @property
-        def name(self) -> str:
-            return "ok"
-
-        async def chat(
-            self,
-            messages,
-            model,
-            tools=None,
-            temperature=0.7,
-            reasoning_config=None,
-            tool_choice=None,
-        ):
-            return AssistantMessage(content=[TextContent(text="ok")], model=model, provider="ok")
-
-        async def stream(
-            self,
-            messages,
-            model,
-            tools=None,
-            temperature=0.7,
-            reasoning_config=None,
-            tool_choice=None,
-        ):
-            yield AgentEvent(type="start")
-            yield AgentEvent(type="done", stop_reason="stop")
-
-    provider = ReliableProvider(
-        [_OkProvider()], max_retries=1, sleep_func=lambda _: asyncio.sleep(0)
-    )
-
-    async def _collect():
-        events = []
-        async for event in provider.stream([UserMessage(content="hello")], model="gpt-4.1-mini"):
-            events.append(event)
-        return events
-
-    events = _run(_collect())
-    assert events
-    assert events[0].message is not None
-    assert events[0].message.provider == "ok"
-    assert events[0].message.model == "gpt-4.1-mini"
 
 
 def test_router_provider_routes_hint_and_passthrough_model():
@@ -3096,17 +2976,20 @@ def test_claude_truncated_stream_does_not_claim_final_usage():
 
 
 @pytest.mark.parametrize(
-    "fragments,closed,error",
+    "fragments,closed,stop,error",
     [
-        (['{"action":', '"status"}'], True, None),
-        ([], True, None),
-        (['{"action":'], False, "before tool content_block_stop"),
-        (["{}"], False, "before tool content_block_stop"),
-        (['{"action":'], True, "invalid JSON"),
-        (["[]"], True, "must be an object"),
+        (['{"action":', '"status"}'], True, "tool_use", None),
+        ([], True, "tool_use", None),
+        (['{"action":'], False, "tool_use", "before tool content_block_stop"),
+        (["{}"], False, "tool_use", "before tool content_block_stop"),
+        (['{"action":'], True, "tool_use", "invalid JSON"),
+        (["[]"], True, "tool_use", "must be an object"),
+        # The output cap ends the reply inside the call: a cut-off, not a failure.
+        (['{"action":'], False, "max_tokens", None),
+        (["{}"], False, "max_tokens", None),
     ],
 )
-def test_claude_tool_stream_requires_completed_arguments(fragments, closed, error):
+def test_claude_tool_stream_requires_completed_arguments(fragments, closed, stop, error):
     events = [
         {"type": "message_start", "message": {"content": []}},
         {
@@ -3127,7 +3010,7 @@ def test_claude_tool_stream_requires_completed_arguments(fragments, closed, erro
         events.append({"type": "content_block_stop", "index": 0})
     events.extend(
         [
-            {"type": "message_delta", "delta": {"stop_reason": "tool_use"}},
+            {"type": "message_delta", "delta": {"stop_reason": stop}},
             {"type": "message_stop"},
         ]
     )
@@ -3145,6 +3028,14 @@ def test_claude_tool_stream_requires_completed_arguments(fragments, closed, erro
         with pytest.raises(RuntimeError, match=error):
             _run(request())
         assert not any(event.type == "done" for event in received)
+    elif not closed:
+        _run(request())
+        done = next(event for event in received if event.type == "done")
+        assert done.stop_reason == "length"
+        # The unfinished call is flagged, and is neither content nor replayable output.
+        assert [call.id for call in done.message.incomplete_tool_calls] == ["call_1"]
+        assert done.message.content == []
+        assert done.message.responses_output == []
     else:
         _run(request())
         message = next(event.message for event in received if event.type == "done")

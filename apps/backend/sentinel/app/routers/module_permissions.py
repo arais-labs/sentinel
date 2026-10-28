@@ -10,14 +10,12 @@ from app.dependencies import get_db
 from app.models.modules import Module, ModulePermission
 from app.models.mcp import MCPServer
 from app.schemas.module_permissions import PermissionListResponse, PermissionOut, PermissionUpdate
-from app.services.modules.builtins import get_builtins
 from app.services.modules.custom_modules import (
     VALID_PERMISSION_LEVELS,
     build_custom_module_permission_levels,
     normalize_custom_module_actions,
 )
-from app.services.modules.definitions import ActionDefinition
-from app.services.modules.permissions import AGENT_PERMISSIONS
+from app.services.modules.permissions import combined_agent_permissions
 from app.services.mcp.tools import permission_actions, server_namespaces
 
 logger = logging.getLogger(__name__)
@@ -75,7 +73,7 @@ async def _resolved_permissions(db: AsyncSession) -> dict[str, str]:
         and isinstance(getattr(row, "level", None), str)
     }
 
-    resolved = dict(_system_permission_defaults())
+    resolved = combined_agent_permissions()
 
     modules_result = await db.execute(
         select(Module).where(Module.system.is_(False)).order_by(Module.order, Module.name)
@@ -122,25 +120,6 @@ async def _resolved_permissions(db: AsyncSession) -> dict[str, str]:
             resolved[action] = level
 
     return resolved
-
-
-def _system_permission_defaults() -> dict[str, str]:
-    permissions = dict(AGENT_PERMISSIONS)
-    for module in get_builtins():
-        for action in module.actions or []:
-            if not action.handler:
-                continue
-            permissions.setdefault(
-                f"{module.name}.{action.id}",
-                _default_permission_level(action),
-            )
-    return permissions
-
-
-def _default_permission_level(action: ActionDefinition) -> str:
-    if action.permission_default in VALID_PERMISSION_LEVELS:
-        return action.permission_default
-    return "approval" if action.approval else "allow"
 
 
 def _permission_sort_key(item: tuple[str, str]) -> tuple[str, str]:

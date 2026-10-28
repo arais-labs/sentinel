@@ -38,7 +38,7 @@ async def handle_edit(payload: dict[str, Any], runtime: ToolRuntimeContext) -> d
         session_factory=runtime.db_session_factory,
     ):
         raise ToolValidationError(
-            "No usable workspace attached. Ask the user to attach a workspace from the session toolbar before using this tool."
+            "No usable workspace attached. Attach one with the workspaces tool, or ask the user to attach one from the session toolbar, before using this tool."
         )
 
     session_id = require_runtime_session_id(runtime)

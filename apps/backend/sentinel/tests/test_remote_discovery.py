@@ -21,7 +21,7 @@ async def test_new_machine_reads_existing_installation(monkeypatch, installed):
         paths.append(path)
         if not installed or path.endswith("update.json"):
             raise asyncssh.SFTPNoSuchFile("Missing")
-        document = {"version": "existing", "workspace": "/release/sentinel-workspace"}
+        document = {"version": "existing", "executable": "/release/sentineld/bin/sentineld"}
         text = "worker-1\n" if path.endswith("worker-id") else json.dumps(document)
         yield SimpleNamespace(read=AsyncMock(return_value=text))
 

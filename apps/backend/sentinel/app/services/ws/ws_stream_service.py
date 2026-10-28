@@ -46,7 +46,7 @@ logger = logging.getLogger(__name__)
 
 def _phase_from_sentinel_event(event: Any) -> str | None:
     event_type = getattr(event, "type", None)
-    if event_type in {"agent_thinking", "thinking_start", "thinking_delta"}:
+    if event_type in {"agent_thinking", "thinking_start", "thinking_delta", "stream_reset"}:
         return "thinking"
     if event_type == "text_delta":
         return "streaming_text"

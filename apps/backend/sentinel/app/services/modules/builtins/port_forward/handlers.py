@@ -26,7 +26,7 @@ async def handle_open(payload: dict[str, Any], runtime: ToolRuntimeContext) -> d
         session_factory=runtime.db_session_factory,
     ):
         raise ToolValidationError(
-            "No usable workspace attached. Ask the user to attach a workspace from the session toolbar before using this tool."
+            "No usable workspace attached. Attach one with the workspaces tool, or ask the user to attach one from the session toolbar, before using this tool."
         )
     label = payload.get("label")
     if label is not None and not isinstance(label, str):
@@ -56,7 +56,7 @@ async def handle_list(_payload: dict[str, Any], runtime: ToolRuntimeContext) -> 
         session_factory=runtime.db_session_factory,
     ):
         raise ToolValidationError(
-            "No usable workspace attached. Ask the user to attach a workspace from the session toolbar before using this tool."
+            "No usable workspace attached. Attach one with the workspaces tool, or ask the user to attach one from the session toolbar, before using this tool."
         )
     session_id = _runtime_session_key(runtime)
     manager = await get_forward_manager(
@@ -80,7 +80,7 @@ async def handle_close(payload: dict[str, Any], runtime: ToolRuntimeContext) -> 
         session_factory=runtime.db_session_factory,
     ):
         raise ToolValidationError(
-            "No usable workspace attached. Ask the user to attach a workspace from the session toolbar before using this tool."
+            "No usable workspace attached. Attach one with the workspaces tool, or ask the user to attach one from the session toolbar, before using this tool."
         )
     forward_id = payload.get("forward_id")
     if not isinstance(forward_id, str) or not forward_id.strip():

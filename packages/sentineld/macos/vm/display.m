@@ -124,7 +124,7 @@ static BOOL configure(uint32_t width, uint32_t height) {
     flushPending();
     [display.lock unlock];
   };
-  fprintf(stderr, "sentinel-workspace: display %ux%u\n", width, height);
+  fprintf(stderr, "sentineld vm: display %ux%u\n", width, height);
   return YES;
 }
 
@@ -138,7 +138,7 @@ static int32_t configureScanout(void *self, uint32_t scanout, uint32_t displayWi
   (void)self, (void)displayWidth, (void)displayHeight;
   if (scanout != 0) return KRUN_DISPLAY_ERR_INVALID_SCANOUT_ID;
   if (format != KRUN_DISPLAY_FORMAT_B8G8R8A8_UNORM && format != KRUN_DISPLAY_FORMAT_B8G8R8X8_UNORM) {
-    fprintf(stderr, "sentinel-workspace: unsupported scanout format %u\n", format);
+    fprintf(stderr, "sentineld vm: unsupported scanout format %u\n", format);
     return KRUN_DISPLAY_ERR_INVALID_PARAM;
   }
   [display.lock lock];
@@ -256,7 +256,7 @@ KrunDisplayBackend display_backend(uint32_t width, uint32_t height, uint32_t hz)
   KrunError err = NULL;
   KrunDisplayBackend displays = krun_display_backend_new(&backend, sizeof backend, &err);
   if (err) {
-    fprintf(stderr, "sentinel-workspace: display backend failed\n");
+    fprintf(stderr, "sentineld vm: display backend failed\n");
     exit(1);
   }
   KrunDisplayInfoBuilder info = krun_display_info_builder_new(width, height);
@@ -279,7 +279,7 @@ static BOOL readFull(int fd, void *bytes, size_t count) {
 
 void display_media(int fd) {
   mediaFD = fd;
-  mediaQueue = dispatch_queue_create("sentinel-workspace.media", DISPATCH_QUEUE_SERIAL);
+  mediaQueue = dispatch_queue_create("sentineld.vm.media", DISPATCH_QUEUE_SERIAL);
   // Viewer requests: input (3), key frames (4), the viewers' refresh rate (7, Hz u16be) and whether
   // there are viewers (8, u8).
   dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0), ^{
@@ -293,7 +293,7 @@ void display_media(int fd) {
       if (header[0] == 7 && size == 2) {
         const uint32_t hz = (uint32_t)payload[0] << 8 | payload[1];
         for (unsigned i = 0; i < refreshCount; i++) krun_display_refresh_set(refreshes[i], hz, NULL);
-        fprintf(stderr, "sentinel-workspace: display refresh %u Hz\n", hz);
+        fprintf(stderr, "sentineld vm: display refresh %u Hz\n", hz);
       }
       if (header[0] == 8 && size == 1 && !payload[0]) atomic_store(&watched, false);
       if (header[0] == 4 || (header[0] == 8 && size == 1 && payload[0])) {

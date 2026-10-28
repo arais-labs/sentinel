@@ -37,6 +37,8 @@ async def test_development_tools_pass_the_runtime_catalog_through(workspace_app,
         "os": "darwin",
         "workspaces_available": True,
         **{key: TEST_CATALOG[key] for key in ("distributions", "desktops", "tools", "stacks")},
+        # The folders sentineld could not use, and why: none in this catalog.
+        "problems": [],
     }
     assert calls == ["catalog"]
 

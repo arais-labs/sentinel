@@ -12,6 +12,7 @@ import { useWorkspaceLibrary } from './useWorkspaceLibrary';
 import { Code2, FolderOpen, Server, Plus, Pencil, Trash2, Loader2, Play, Square, RefreshCw, Wrench, Search, ChevronDown, Monitor, Terminal } from 'lucide-react';
 import { notificationPublisher } from '../../lib/notifications';
 import { MachinesPanel } from './MachinesPanel';
+import { WorkspaceDiskUsage } from './WorkspaceDiskUsage';
 import { PillSwitch } from '../ui/PillSwitch';
 import { WorkspaceEditor, type WorkspaceDraft } from './WorkspaceEditor';
 import { api } from '../../lib/api';
@@ -144,6 +145,7 @@ export function WorkspacesPanel({ onboarding = false, onAddMachine, page = false
           <div className="workspace-library-card-actions"><button disabled={space.recovery_available || changing === space.id || space.state === 'stopping' || ['checking', 'recovering', 'unavailable'].includes(space.state || '')} onClick={() => void changeState(space, ['running', 'preparing'].includes(space.state || '') ? 'stop' : 'start')}>{changing === space.id ? <Loader2 size={13} className="animate-spin" /> : ['running', 'preparing'].includes(space.state || '') ? <Square size={13} /> : <Play size={13} />}{space.state === 'preparing' ? 'Cancel setup' : space.state === 'stopping' ? 'Stopping…' : space.state === 'running' ? 'Stop' : space.state === 'failed' ? 'Retry' : 'Start'}</button><button disabled={space.state === 'recovering'} onClick={() => edit(space)}><Pencil size={13} />Edit</button><button disabled={changing === space.id || ['checking', 'preparing', 'stopping', 'recovering', 'unavailable'].includes(space.state || '')} title="Erase and rebuild the private workspace disk. Your mounted project folder is kept." onClick={() => setReinstalling(space)}><RefreshCw size={13} />Reinstall</button>{space.recovery_available && <button title="Back up and repair this workspace" disabled={changing === space.id || space.state === 'recovering'} onClick={() => setRecovering(space)}><Wrench size={13} />Recover</button>}<button className="workspace-library-remove" disabled={space.state === 'recovering'} onClick={() => setRemoving(space)}><Trash2 size={13} />Remove</button></div>
         </article>)}
       </div>}
+      {tab === 'workspaces' && !loading && !onboarding && <WorkspaceDiskUsage machines={machines.filter(machine => !machineFilter || machine.id === machineFilter)} />}
     </div>
     {editor && <WorkspaceEditor workspace={editor} machines={machines} saving={saving} onClose={() => setEditor(null)} onSave={save} />}
     {recovering && <WorkspaceRecoveryDialog key={recovering.id} workspace={recovering} onClose={() => setRecovering(null)} onStarted={reload} onReinstall={() => { setReinstalling(recovering); setRecovering(null); }} onRemove={() => { setRemoving(recovering); setRecovering(null); }} />}

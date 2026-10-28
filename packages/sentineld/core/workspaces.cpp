@@ -28,7 +28,9 @@
 #include "agent.hpp"
 #include "catalog.hpp"
 #include "computer.hpp"
+#include "help/help.hpp"
 #include "image/disk.hpp"
+#include "image/download.hpp"
 #include "image/install.hpp"
 #include "image/media.hpp"
 #include "loop.hpp"
@@ -73,6 +75,18 @@ bool isId(const std::string& s) {
   for (char c : s)
     if (!std::isalnum(static_cast<unsigned char>(c)) && c != '-') return false;
   return true;
+}
+
+// A file's path inside a distribution folder: relative, with no empty, "." or ".." part.
+bool isInside(const std::string& path) {
+  if (path.empty() || path.size() > 512 || path[0] == '/' || path.find('\0') != std::string::npos) return false;
+  for (size_t i = 0;;) {
+    const size_t j = path.find('/', i);
+    const std::string part = path.substr(i, j == std::string::npos ? std::string::npos : j - i);
+    if (part.empty() || part == "." || part == "..") return false;
+    if (j == std::string::npos) return true;
+    i = j + 1;
+  }
 }
 
 std::string readFile(const std::string& path) {
@@ -226,6 +240,7 @@ Workspaces::Workspaces(Loop& loop, Platform& platform, std::string state, std::s
     : loop_(loop), platform_(platform), media_(media), state_(std::move(state)), cache_(std::move(cache)), mke2fs_(std::move(mke2fs)),
       share_(std::move(share)), keepImages_(keepImages), distributionDirs_(std::move(distributions)) {
   fs::create_directories(state_ + "/workspaces");
+  distributionDirs_.push_back(ownDistributions());
   try {
     catalog_ = catalog::load(share_, distributionDirs_);
   } catch (const std::exception& e) {
@@ -336,7 +351,7 @@ void Workspaces::handle(const std::string& op, const json::Value& r, Reply reply
     return reply(error("conflict", "sentineld is shutting down", {{"reason", "busy"}}));
   try {
     if (op == "list") return reply({{"workspaces", records()}});
-    if (op == "catalog" || op == "configure" || op == "start") reloadCatalog();
+    if (op == "catalog" || op == "configure" || op == "start" || op.starts_with("distribution")) reloadCatalog();
     if (op == "catalog") return reply(catalog::list(catalog_));
     if (op == "configure") return configure(r, reply);
     if (op == "start") return start(r, reply);
@@ -350,6 +365,17 @@ void Workspaces::handle(const std::string& op, const json::Value& r, Reply reply
     if (op == "wallpaper") return wallpaper(r, reply);
     if (op == "computer") return computer(r, reply);
     if (op == "computer_cancel") return computerCancel(r, reply);
+    if (op == "help") {
+      const char* text = helpText(r["topic"].isNull() ? "" : r["topic"].str().c_str());
+      if (!text) return reply(error("not_found", "no help on that topic (topics: distributions)", {{"field", "topic"}}));
+      return reply({{"text", text}});
+    }
+    if (op == "source") return source(r, reply);
+    if (op == "log") return log(r, reply);
+    if (op == "usage") return usage(reply);
+    if (op == "distribution") return distribution(r, reply);
+    if (op == "distribution_read") return distributionRead(r, reply);
+    if (op == "distribution_delete") return distributionDelete(r, reply);
     reply(error("unsupported", "unknown op", {{"field", "op"}}));
   } catch (const json::TypeError& e) {
     reply(error("invalid", e.what()));
@@ -822,6 +848,7 @@ void Workspaces::installDisk(const std::string& distribution, const std::string&
   if (fs::exists(base + ".boot.raw")) return loop_.post([done, base] { done(base, ""); });
   if (auto w = workspaces_.find(id); w != workspaces_.end()) {
     w->second.progress = "Installing the operating system — the first start takes a while…";
+    w->second.build = cache_ + "/install/" + key;
     changed(w->second);
   }
   auto& conversion = converting_[distribution];
@@ -839,7 +866,7 @@ void Workspaces::installDisk(const std::string& distribution, const std::string&
       if (!err.empty() || *cancel) return converted(distribution, "", "install: " + (err.empty() ? "cancelled" : err));
       const json::Value& d = catalog_.distributions.at(distribution);
       const json::Value& install = d["install"];
-      Install in{distribution, base, work, {}, cancel, 0, false, {}, ""};
+      Install in{distribution, base, work, {}, cancel, 0, false, {}, "", ""};
       VmConfig& c = in.vm;
       c.id = key;  // hex: never a workspace id
       c.bootDisk = work + "/target.raw";
@@ -868,8 +895,24 @@ void Workspaces::installDisk(const std::string& distribution, const std::string&
       platform_.start(config, [this, vm = config.id](std::string startErr) {
         if (!startErr.empty() && installs_.count(vm)) installExited(vm, startErr, false);
       });
+      watchInstall(config.id);
     });
   }).detach();
+}
+
+// A guest kernel that panics stops nothing by itself: its console says so, and the install fails at
+// once instead of at its timeout.
+void Workspaces::watchInstall(const std::string& vm) {
+  loop_.after(2000, [this, vm] {
+    auto it = installs_.find(vm);
+    if (it == installs_.end() || !it->second.panic.empty()) return;
+    const std::string console = consoleText(platform_.consoleTail(vm, 8192));
+    if (size_t at = console.find("Kernel panic"); at != std::string::npos) {
+      it->second.panic = console.substr(at, console.find('\n', at) - at);
+      return platform_.powerOff(vm, [](std::string) {});
+    }
+    watchInstall(vm);
+  });
 }
 
 void Workspaces::installExited(const std::string& vm, const std::string& error, bool reboot) {
@@ -881,7 +924,8 @@ void Workspaces::installExited(const std::string& vm, const std::string& error, 
   }
   loop_.cancel(in.timer);
   std::string why = error;
-  if (in.timedOut) why = "the installer did not finish in time";
+  if (!in.panic.empty()) why = "the guest kernel panicked: " + in.panic;
+  else if (in.timedOut) why = "the installer did not finish in time";
   else if (*in.cancel) why = "cancelled";
   else if (!in.layer.empty()) why = why.empty() ? in.failure : why;
   else if (why.empty()) try {
@@ -909,13 +953,25 @@ void Workspaces::installExited(const std::string& vm, const std::string& error, 
       for (auto& [_, source] : *sources) fs::remove(cache_ + "/sources/" + source["sha256"].str(), ec);
   // The work folder goes either way; a failed install keeps its log and its disk (the installer's
   // own logs are on it) for the next look, until the next attempt or a success.
-  fs::remove(in.work + ".failed.raw", ec);
+  // Each removal of a failure's evidence is logged: a missing one can then be explained.
+  auto forget = [&](const fs::path& file, const char* reason) {
+    if (fs::remove(file, ec)) std::fprintf(stderr, "sentineld: removed %s (%s)\n", file.c_str(), reason);
+  };
+  forget(in.work + ".failed.raw", "this recipe's next install ended");
+  forget(in.work + ".failed.root.raw", "this recipe's next install ended");
   if (why.empty())  // installed: no earlier failure (of this recipe or an older one) needs a look any more
     for (auto& e : fs::directory_iterator(cache_ + "/install", ec))
-      if (e.path().extension() == ".raw" || e.path().extension() == ".log") fs::remove(e.path(), ec);
+      if (e.path().extension() == ".raw" || e.path().extension() == ".log") forget(e.path(), "an install succeeded");
   if (!why.empty()) {
+    // The console, the disk and the root disk (the installer's own logs) stay for a look: the disks
+    // of the newest failure only (tens of GB each), every failure's console (a few KB).
+    for (auto& e : fs::directory_iterator(cache_ + "/install", ec))
+      if (e.path().extension() == ".raw") forget(e.path(), "a newer install failed");
     fs::copy_file(in.work + "/console.log", in.work + ".console.log", fs::copy_options::overwrite_existing, ec);
     fs::rename(in.work + "/target.raw", in.work + ".failed.raw", ec);
+    fs::rename(in.work + "/root.raw", in.work + ".failed.root.raw", ec);
+    std::fprintf(stderr, "sentineld: %s failed: %s; its console, disks: %s.{console.log,failed.raw,failed.root.raw}\n",
+                 in.layer.empty() ? "install" : "layer", printable(why, 512).c_str(), in.work.c_str());
   }
   fs::remove_all(in.work, ec);
   const std::string base = in.base, name = in.layer.empty() ? in.distribution : fs::path(base).filename().string();
@@ -957,6 +1013,7 @@ void Workspaces::layerDisk(const std::string& base, const std::string& distribut
   if (fs::exists(layer + ".boot.raw")) return loop_.post([done, layer] { done(layer, ""); });
   if (auto w = workspaces_.find(id); w != workspaces_.end()) {
     w->second.progress = "Installing your software — the first start takes a few minutes…";
+    w->second.build = cache_ + "/install/" + name;
     changed(w->second);
   }
   auto& conversion = converting_[name];
@@ -990,7 +1047,7 @@ void Workspaces::startLayer(const std::string& base, const std::string& distribu
     steps.push_back(std::move(argv));
   }
   for (auto& script : scripts) steps.push_back(json::Array{"sh", "-c", std::move(script)});
-  Install in{distribution, layer, work, {}, conversion.cancel, 0, false, std::move(steps), ""};
+  Install in{distribution, layer, work, {}, conversion.cancel, 0, false, std::move(steps), "", ""};
   VmConfig& c = in.vm;
   c.id = key;  // hex: never a workspace id
   c.consoleLog = work + "/console.log";
@@ -1051,6 +1108,7 @@ void Workspaces::startLayer(const std::string& base, const std::string& distribu
     if (!startErr.empty()) return installExited(vm, startErr, false);
     layerReady(vm, now() + kReadyMs);
   });
+  watchInstall(config.id);
 }
 
 // Waits for a layer VM's agent, then runs its scripts.
@@ -1183,6 +1241,7 @@ void Workspaces::prune() {
     for (auto& [_, d] : catalog_.distributions)
       if (auto* sources = d["install"]["sources"].obj())
         for (auto& [_, source] : *sources) pinned.insert(source["sha256"].str());
+    for (auto& [_, f] : fetches_) pinned.insert(f.sha256);  // fetched for a recipe being written
     for (auto& e : fs::directory_iterator(cache_ + "/sources", ec))
       if (!pinned.count(e.path().filename().string())) fs::remove(e.path(), ec);
   }
@@ -1476,6 +1535,7 @@ void Workspaces::process(const json::Value& r, std::function<void(int, std::stri
 void Workspaces::drain(std::function<void()> done) {
   draining_ = true;
   for (auto& [_, c] : converting_) *c.cancel = true;  // downloads stop
+  *fetchCancel_ = true;
   for (auto& [vm, _] : installs_) platform_.powerOff(vm, [](std::string) {});  // installs start over next time
   auto shutdown = [this, done] { shutdownGuests([this, done] { platform_.drain(done); }); };
   if (converting_.empty()) return shutdown();
@@ -1512,6 +1572,248 @@ void Workspaces::shutdownGuests(std::function<void()> done) {
     loop_.after(200, *wait);
   };
   loop_.after(200, *wait);
+}
+
+// The folder, files and problem (catalog.hpp) of a distribution, as the distribution ops reply.
+json::Object Workspaces::distributionState(const std::string& id) const {
+  json::Object o{{"distribution", id}};
+  auto folder = catalog_.folders.find(id);
+  if (folder == catalog_.folders.end()) return o;
+  json::Array files;
+  std::error_code ec;
+  for (auto it = fs::recursive_directory_iterator(folder->second, ec); !ec && it != fs::recursive_directory_iterator(); it.increment(ec))
+    if (it->is_regular_file())
+      files.push_back(json::Object{{"path", fs::relative(it->path(), folder->second).string()}, {"bytes", double(it->file_size())}});
+  std::sort(files.begin(), files.end(), [](const json::Value& a, const json::Value& b) { return a["path"].str() < b["path"].str(); });
+  o["folder"] = folder->second;
+  o["writable"] = fs::path(folder->second).parent_path() == fs::path(ownDistributions());
+  o["files"] = std::move(files);
+  auto problem = catalog_.problems.find(id);
+  o["problem"] = problem == catalog_.problems.end() ? json::Value() : json::Value(problem->second);
+  return o;
+}
+
+// Writes files of a distribution in sentineld's own folder, creating it: {path: {text, executable}}
+// writes a file, {path: null} removes one. The catalog reads it at once.
+void Workspaces::distribution(const json::Value& r, Reply reply) {
+  const std::string id = r["distribution"].str();
+  if (!isId(id)) return reply(error("invalid", "distribution must be 1-64 letters, digits or '-'", {{"field", "distribution"}}));
+  const fs::path folder = fs::path(ownDistributions()) / id;
+  if (auto it = catalog_.folders.find(id); it != catalog_.folders.end() && fs::path(it->second) != folder)
+    return reply(error("conflict", "distribution " + id + " is " + it->second + ", which sentineld does not write", {{"field", "distribution"}}));
+  auto* files = r["files"].obj();
+  if (!files || files->empty()) return reply(error("invalid", "files must name at least one file", {{"field", "files"}}));
+  for (auto& [path, file] : *files)
+    if (!isInside(path) || !(file.isNull() || (file.obj() && std::holds_alternative<std::string>(file["text"].v))))
+      return reply(error("invalid", "files: " + path + ": a relative path to {text, [executable]} or null", {{"field", "files"}}));
+  for (auto& [path, file] : *files) {
+    const fs::path target = folder / path;
+    if (file.isNull()) {
+      fs::remove(target);
+      for (fs::path dir = target.parent_path(); dir != folder && fs::is_empty(dir); dir = dir.parent_path()) fs::remove(dir);
+      continue;
+    }
+    fs::create_directories(target.parent_path());
+    writeAtomic(target.string(), file["text"].str());
+    const bool executable = std::holds_alternative<bool>(file["executable"].v) && std::get<bool>(file["executable"].v);
+    fs::permissions(target, executable ? fs::perms(0755) : fs::perms(0644));
+  }
+  reloadCatalog();
+  reply(distributionState(id));
+}
+
+// Any distribution's file list, or with path, one file's text.
+void Workspaces::distributionRead(const json::Value& r, Reply reply) {
+  const std::string id = r["distribution"].str();
+  auto folder = catalog_.folders.find(id);
+  if (folder == catalog_.folders.end()) return reply(error("not_found", "no such distribution", {{"field", "distribution"}}));
+  if (r["path"].isNull()) return reply(distributionState(id));
+  const std::string path = r["path"].str();
+  const fs::path file = fs::path(folder->second) / path;
+  if (!isInside(path) || !fs::is_regular_file(file)) return reply(error("not_found", "no such file", {{"field", "path"}}));
+  if (fs::file_size(file) > 1024 * 1024) return reply(error("unsupported", "file larger than 1 MiB", {{"field", "path"}}));
+  reply({{"path", path}, {"text", readFile(file.string())},
+         {"executable", (fs::status(file).permissions() & fs::perms::owner_exec) != fs::perms::none}});
+}
+
+// Removes a distribution sentineld wrote, unless a workspace uses it.
+void Workspaces::distributionDelete(const json::Value& r, Reply reply) {
+  const std::string id = r["distribution"].str();
+  const fs::path folder = fs::path(ownDistributions()) / id;
+  if (!isId(id) || !fs::is_directory(folder)) {
+    if (catalog_.folders.count(id)) return reply(error("conflict", "sentineld did not write distribution " + id, {{"field", "distribution"}}));
+    return reply(error("not_found", "no such distribution", {{"field", "distribution"}}));
+  }
+  json::Array users;
+  std::string names;
+  for (auto& [wid, w] : workspaces_)
+    if (auto it = w.spec.find("distribution"); it != w.spec.end() && it->second.str() == id) {
+      users.push_back(wid);
+      names += (names.empty() ? "" : ", ") + wid;
+    }
+  if (!users.empty()) return reply(error("conflict", "workspaces use distribution " + id + ": " + names, {{"workspaces", std::move(users)}}));
+  fs::remove_all(folder);
+  reloadCatalog();
+  reply(json::Object{});
+}
+
+// Downloads a URL into the install sources (<cache>/sources/<sha256>), for a distribution to pin:
+// the reply gives its sha256 and size once downloaded, and until then how far it got; asking again
+// follows the same download. A distribution pinning it installs from the copy.
+void Workspaces::source(const json::Value& r, Reply reply) {
+  const std::string url = r["url"].str();
+  if (url.rfind("https://", 0) != 0 && url.rfind("http://", 0) != 0)
+    return reply(error("invalid", "url must be http:// or https://", {{"field", "url"}}));
+  if (!r["match"].isNull() || !r["paths"].isNull()) return browseSource(url, r, reply);
+  if (auto it = fetches_.find(url); it != fetches_.end()) {
+    Fetch& f = it->second;
+    if (!f.done) return reply({{"url", url}, {"state", "downloading"}, {"bytes", double(f.got->load())}});
+    if (!f.error.empty()) {
+      const std::string why = f.error;
+      fetches_.erase(it);
+      return reply(error("unavailable", why, {{"field", "url"}}));
+    }
+    const std::string file = cache_ + "/sources/" + f.sha256;
+    if (fs::exists(file))
+      return reply({{"url", url}, {"state", "ready"}, {"sha256", f.sha256}, {"bytes", double(fs::file_size(file))}});
+    fetches_.erase(it);  // installed and removed since: fetched again
+  }
+  Fetch& f = fetches_[url];
+  std::thread([this, url, got = f.got, cancel = fetchCancel_] {
+    std::string sha, err;
+    try {
+      const std::string dir = cache_ + "/fetch", part = dir + "/" + randomId();
+      fs::create_directories(dir);
+      fs::create_directories(cache_ + "/sources");
+      sha = image::download(url, "", part, *cancel, got.get()).substr(7);
+      fs::rename(part, cache_ + "/sources/" + sha);
+    } catch (const std::exception& e) {
+      err = e.what();
+    }
+    loop_.post([this, url, sha, err] {
+      auto it = fetches_.find(url);
+      if (it == fetches_.end()) return;
+      it->second.done = true;
+      it->second.sha256 = sha;
+      it->second.error = err;
+    });
+  }).detach();
+  reply({{"url", url}, {"state", "downloading"}, {"bytes", 0.0}});
+}
+
+// Inside a downloaded source (image::browseArchive): its members matching `match`, or those in
+// `paths`, within `limit` characters (default 50000), on a worker thread: a large archive is read
+// through once.
+void Workspaces::browseSource(const std::string& url, const json::Value& r, Reply reply) {
+  auto it = fetches_.find(url);
+  const std::string file = it == fetches_.end() || !it->second.done ? "" : cache_ + "/sources/" + it->second.sha256;
+  if (file.empty() || !fs::exists(file))
+    return reply(error("conflict", "not downloaded: call source with this url alone until it is ready", {{"field", "url"}}));
+  std::vector<std::string> paths;
+  if (!r["paths"].isNull())
+    for (auto& p : r["paths"].arr()) paths.push_back(p.str());
+  const std::string match = r["match"].isNull() ? "*" : r["match"].str();
+  const size_t limit = r["limit"].isNull() ? 50000 : size_t(std::max(1000.0, r["limit"].num()));
+  const uint64_t offset = r["offset"].isNull() ? 0 : uint64_t(r["offset"].num()),
+                 length = r["length"].isNull() ? 0 : uint64_t(r["length"].num());
+  std::thread([this, file, match, paths = std::move(paths), limit, offset, length, reply] {
+    json::Object result;
+    try {
+      result = image::browseArchive(file, match, paths, limit, offset, length);
+    } catch (const image::TooLarge& e) {
+      result = error("too_large", e.what());
+    } catch (const std::exception& e) {
+      result = error("unsupported", e.what());
+    }
+    loop_.post([reply, result = std::move(result)]() mutable { reply(std::move(result)); });
+  }).detach();
+}
+
+// The end of a text file, at most `lines` lines and 256 KiB; null when there is none.
+static json::Value tail(const std::string& path, size_t lines) {
+  std::ifstream in(path, std::ios::binary | std::ios::ate);
+  if (!in) return {};
+  const std::streamoff size = in.tellg(), start = std::max<std::streamoff>(0, size - 256 * 1024);
+  in.seekg(start);
+  std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  size_t cut = text.size();
+  for (size_t n = 0; cut > 0; --cut)
+    if (text[cut - 1] == '\n' && ++n > lines) break;
+  // Without terminal escapes (colors, cursor moves): what a reader wants is the text.
+  std::string plain;
+  for (size_t i = cut; i < text.size(); ++i) {
+    if (text[i] != '\x1b') { plain += text[i]; continue; }
+    if (i + 1 < text.size() && text[i + 1] == '[')
+      for (i += 2; i < text.size() && !(text[i] >= 0x40 && text[i] <= 0x7e); ++i) {}
+  }
+  return printable(plain, plain.size());
+}
+
+// What a workspace's guest printed: its newest boot's console and, when it waited for one, the
+// console of the install or layer that made its disks (running, or the last failed one).
+void Workspaces::log(const json::Value& r, Reply reply) {
+  Workspace* w = find(r, reply);
+  if (!w) return;
+  const size_t lines = r["lines"].isNull() ? 200 : std::clamp(size_t(r["lines"].num()), size_t(1), size_t(5000));
+  std::string newest;
+  std::error_code ec;
+  for (auto& e : fs::directory_iterator(fs::path(state_) / "logs" / w->id, ec))
+    if (e.path().filename().string().rfind("console-", 0) == 0 && e.path().string() > newest) newest = e.path().string();
+  json::Value build;
+  if (!w->build.empty()) build = tail(fs::exists(w->build + "/console.log") ? w->build + "/console.log" : w->build + ".console.log", lines);
+  // "failure", not "error": an "error" member is how a reply says the request itself failed.
+  reply({{"console", newest.empty() ? json::Value() : tail(newest, lines)}, {"build", std::move(build)}, {"failure", w->error}});
+}
+
+// Where sentineld's disk space goes (DESIGN.md §18), counting each file's own bytes (clones share
+// their base's): each workspace (its disks and logs: what deleting it frees), then what workspaces
+// share. Measured on a worker thread: the package caches hold many files.
+void Workspaces::usage(Reply reply) {
+  std::vector<std::string> ids;
+  for (auto& [id, _] : workspaces_) ids.push_back(id);
+  std::thread([this, ids = std::move(ids), reply] {
+    auto measure = [this](const fs::path& dir) {
+      uint64_t bytes = 0;
+      std::error_code ec;
+      for (auto it = fs::recursive_directory_iterator(dir, fs::directory_options::skip_permission_denied, ec);
+           !ec && it != fs::recursive_directory_iterator(); it.increment(ec))
+        if (it->is_regular_file(ec)) bytes += platform_.ownBytes(it->path().string());
+      return double(bytes);
+    };
+    json::Object workspaces;
+    double total = 0;
+    for (auto& id : ids) {
+      const double bytes = measure(dir(id)) + measure(fs::path(state_) / "logs" / id);
+      workspaces[id] = bytes;
+      total += bytes;
+    }
+    // Installed systems: a base whole (the clones made from it share its blocks), a layer by what it
+    // adds to its base (<layer>.parent names it).
+    auto allocated = [](const fs::path& file) {
+      struct stat st;
+      return ::stat(file.c_str(), &st) == 0 ? double(st.st_blocks) * 512 : 0.0;
+    };
+    double systems = 0;
+    std::error_code ec;
+    for (auto& e : fs::directory_iterator(cache_ + "/images", ec)) {
+      const std::string name = e.path().filename().string();
+      if (e.path().extension() != ".raw") continue;
+      const std::string stem = name.substr(0, name.find('.')), disk = name.substr(stem.size());
+      const std::string parent = readFile(cache_ + "/images/" + stem + ".parent");
+      systems += parent.empty() ? allocated(e.path()) : std::max(0.0, allocated(e.path()) - allocated(cache_ + "/images/" + parent + disk));
+    }
+    json::Object shared{{"systems", systems},
+                        {"packages", measure(cache_ + "/packages")},
+                        {"sources", measure(cache_ + "/sources") + measure(cache_ + "/fetch")},
+                        {"installs", measure(cache_ + "/install")},  // running and failed installs
+                        {"distributions", measure(ownDistributions())}};
+    for (auto& [_, bytes] : shared) total += bytes.num();
+    const fs::space_info disk = fs::space(state_, ec);
+    json::Object result{{"workspaces", std::move(workspaces)}, {"shared", std::move(shared)}, {"total", total},
+                        {"free", ec ? json::Value() : json::Value(double(disk.available))},
+                        {"capacity", ec ? json::Value() : json::Value(double(disk.capacity))}};
+    loop_.post([reply, result = std::move(result)]() mutable { reply(std::move(result)); });
+  }).detach();
 }
 
 }  // namespace sentineld
