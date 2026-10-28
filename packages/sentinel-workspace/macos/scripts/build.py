@@ -68,7 +68,7 @@ def rust(work):
         run(
             "curl",
             "-fsSL",
-            "https://static.rust-lang.org/rustup/dist/aarch64-apple-darwin/rustup-init",
+            "https://static.rust-lang.org/rustup/archive/1.29.1/aarch64-apple-darwin/rustup-init",
             "-o",
             init,
         )
