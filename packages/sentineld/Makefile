@@ -169,10 +169,8 @@ $(BUILD)/share/%: guest/%
 	@mkdir -p $(@D) && cp -p $< $@
 
 # The release the desktop app downloads (DESIGN.md §24): build/release/sentineld-<sha256[:16]>.tar.gz
-# and sentineld.json. It packs what is built (make share release).
-release: $(BUILD)/bin/sentineld $(BUILD)/bin/sentineld-media tools
-	@test -f $(BUILD)/share/sentineld-agent -a -f $(BUILD)/share/catalog.json -a -d $(BUILD)/distributions || \
-		{ echo "build/share or build/distributions is incomplete: run make share distributions"; exit 1; }
+# and sentineld.json, from the binaries, tools, share and distributions it builds first.
+release: $(BUILD)/bin/sentineld $(BUILD)/bin/sentineld-media tools share distributions
 	@rm -rf $(BUILD)/release && mkdir -p $(BUILD)/release
 	@COPYFILE_DISABLE=1 tar -czf $(BUILD)/release/sentineld.tar.gz --exclude=__pycache__ --exclude=.DS_Store \
 		-C $(BUILD) bin/sentineld bin/sentineld-media tools/mke2fs tools/resize2fs tools/wimlib-imagex tools/mkntfs tools/hive share distributions
