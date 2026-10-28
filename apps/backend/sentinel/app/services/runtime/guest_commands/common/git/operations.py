@@ -42,17 +42,21 @@ def run(command: list[str], *, cwd: Path | None = None, timeout: float = 8) -> t
 def resolve_git_root(start: Path) -> Path | None:
     code, stdout, stderr = run(["git", "-C", str(start), "rev-parse", "--show-toplevel"], timeout=4)
     if code != 0:
-        if "not a git repository" in stderr.lower():
-            # A linked checkout can exist while its metadata is not mounted.
-            for parent in (start, *start.parents):
-                marker = parent / ".git"
-                if marker.is_file():
+        # A linked checkout can exist while its metadata is not mounted: its .git file names a
+        # gitdir that is missing here. Checked on disk, since Git's wording differs by version.
+        for parent in (start, *start.parents):
+            marker = parent / ".git"
+            if marker.is_file():
+                gitdir = marker.read_text(errors="replace").partition("gitdir:")[2].strip()
+                if gitdir and not (parent / gitdir).exists():
                     raise RuntimePathError(
                         "This worktree's Git metadata is unavailable inside the workspace. "
                         "Its .git file may point outside the mounted project."
                     )
-                if parent == WORKSPACE or parent == parent.parent:
-                    break
+                break
+            if marker.is_dir() or parent == WORKSPACE or parent == parent.parent:
+                break
+        if "not a git repository" in stderr.lower():
             return None
         raise RuntimePathError(stderr.strip() or "Git could not inspect this folder")
     return Path(stdout.strip()).resolve(strict=False) if stdout.strip() else None
