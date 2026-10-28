@@ -29,7 +29,7 @@ $(BUILD)/bin/sentinel-workspace: $(LIB)/libkrun.dylib $(SRC) $(wildcard macos/wo
 	@mv -f $@.new $@  # a new file: running VMs keep the one they started with
 
 # The encoder's backpressure, against VideoToolbox, and virglrenderer's renderers (no VM).
-test:
+test: $(LIB)/libkrun.dylib
 	@mkdir -p $(BUILD)/tests && clang -fobjc-arc -Imacos/video -o $(BUILD)/tests/encoder-backpressure \
 		macos/tests/encoder-backpressure.m $(addprefix -framework ,Foundation CoreMedia CoreVideo QuartzCore VideoToolbox) && \
 		$(BUILD)/tests/encoder-backpressure && echo "PASS encoder-backpressure"
