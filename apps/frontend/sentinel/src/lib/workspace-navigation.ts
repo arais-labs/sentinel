@@ -22,6 +22,11 @@ export function openWorkspaceTab(
   navigate(instanceRoute(instanceName, 'workspace'), { replace: options.replace, state: options.state });
 }
 
+/** Settings → MCP, starting the sign-in of a server an agent's call is waiting for. */
+export function openMcpSignIn(navigate: NavigateFunction, instanceName: string, serverId: string): void {
+  openWorkspaceTab(navigate, instanceName, 'settings', { state: { settingsInstance: instanceName, settingsSection: 'mcp', mcpSignIn: serverId } });
+}
+
 /** Carry the section through pane creation/remount instead of a consumed event. */
 export function openVoiceSettings(navigate: NavigateFunction, instanceName: string): void {
   openWorkspaceTab(navigate, instanceName, 'settings', { state: { settingsInstance: instanceName, settingsSection: 'voice' } });

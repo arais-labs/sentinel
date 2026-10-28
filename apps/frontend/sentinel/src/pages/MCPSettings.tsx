@@ -5,12 +5,12 @@ import { requestJson } from '../lib/api';
 import './mcp-settings.css';
 
 type Connection = { transport: 'auto' | 'stdio'; url: string; command: string; args: string[]; headers: Record<string, null>; env: Record<string, null>; timeout_seconds: number };
-type Server = { id: string; name: string; enabled: boolean; always_load: boolean; authenticated: boolean; connection: Connection; tools: { name: string; description: string }[] };
+type Server = { id: string; name: string; enabled: boolean; always_load: boolean; authenticated: boolean; sign_in_required: boolean; connection: Connection; tools: { name: string; description: string }[] };
 type Progress = { status: 'connecting' | 'sign_in' | 'connected' | 'disconnected' | 'cancelled' | 'error'; authorization_url?: string | null; message?: string | null };
 type Credential = { id: number; key: string; value: string; saved: boolean };
 type Editor = { id?: string; name: string; local: boolean; address: string; args: string; credentials: Credential[]; timeout: number };
 
-export function MCPSettings() {
+export function MCPSettings({ signIn }: { signIn?: { serverId: string; key: string } } = {}) {
   const [servers, setServers] = useState<Server[]>([]);
   const [editor, setEditor] = useState<Editor | null>(null);
   const [busy, setBusy] = useState(false);
@@ -59,6 +59,14 @@ export function MCPSettings() {
     setProgress(value => ({ ...value, [id]: state }));
     void poll(id);
   }
+
+  // Opened from a "Sign in to …" notification: start that server's sign-in once.
+  const startedSignIn = useRef<string | null>(null);
+  useEffect(() => {
+    if (!signIn || startedSignIn.current === signIn.key || !servers.some(server => server.id === signIn.serverId)) return;
+    startedSignIn.current = signIn.key;
+    void run(() => connect(signIn.serverId));
+  }, [signIn, servers]);
 
   function edit(server?: Server) {
     setError(''); setRemoveId(null);
@@ -147,9 +155,9 @@ export function MCPSettings() {
           const waiting = state?.status === 'connecting' || state?.status === 'sign_in';
           return <article className="mcp-server" key={server.id}>
             <div className="mcp-server-row">
-              <div className="mcp-server-identity"><div className="mcp-server-title"><h4>{server.name}</h4><span className={`mcp-status ${server.enabled ? 'is-connected' : ''}`}>{server.enabled ? <><Check size={12} />Connected</> : waiting ? 'Connecting' : 'Not connected'}</span></div><p title={server.connection.url || server.connection.command}>{server.connection.url || server.connection.command}</p></div>
+              <div className="mcp-server-identity"><div className="mcp-server-title"><h4>{server.name}</h4><span className={`mcp-status ${server.enabled && !server.sign_in_required ? 'is-connected' : ''}`}>{waiting ? 'Connecting' : server.enabled && server.sign_in_required ? 'Sign in required' : server.enabled ? <><Check size={12} />Connected</> : 'Not connected'}</span></div><p title={server.connection.url || server.connection.command}>{server.connection.url || server.connection.command}</p></div>
               <div className="mcp-server-actions">
-                {!server.enabled && !waiting && <button className="btn-secondary h-8 px-3 gap-2 text-[10px] font-bold uppercase tracking-widest" disabled={busy} onClick={() => void run(() => connect(server.id))}><Plug size={13} />Connect</button>}
+                {(!server.enabled || server.sign_in_required) && !waiting && <button className="btn-secondary h-8 px-3 gap-2 text-[10px] font-bold uppercase tracking-widest" disabled={busy} onClick={() => void run(() => connect(server.id))}><Plug size={13} />{server.sign_in_required ? 'Sign in' : 'Connect'}</button>}
                 {server.enabled && <button className="mcp-icon-action" title="Disconnect" aria-label={`Disconnect ${server.name}`} disabled={busy} onClick={() => void run(async () => { await requestJson(`/mcp/${server.id}`, { method: 'PATCH', body: { enabled: false } }); setProgress(value => ({ ...value, [server.id]: { status: 'disconnected' } })); })}><Unplug size={16} /></button>}
                 <button className="mcp-icon-action" title="Edit" aria-label={`Edit ${server.name}`} disabled={busy || waiting} onClick={() => edit(server)}><Pencil size={15} /></button>
                 <button className="mcp-icon-action" title="Remove" aria-label={`Remove ${server.name}`} disabled={busy} onClick={() => setRemoveId(server.id)}><Trash2 size={15} /></button>

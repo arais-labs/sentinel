@@ -10,6 +10,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from sqlalchemy import delete, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.mcp import MCPServer, MCPSessionExposure
@@ -110,10 +111,16 @@ async def load(db: AsyncSession, session_id: UUID, server_id: str) -> SessionExp
                 session_id=session_id, server_id=server_id, loaded_at=clock, last_used_at=clock
             )
         )
-    else:
+        try:
+            await db.commit()
+        except IntegrityError:
+            # Parallel calls load the same server at once: the other one inserted the row.
+            await db.rollback()
+            row = await db.get(MCPSessionExposure, (session_id, server_id))
+    if row is not None:
         row.last_used_at = clock
         row.updated_at = datetime.now(UTC)
-    await db.commit()
+        await db.commit()
     state.loaded.add(server_id)
     return state
 

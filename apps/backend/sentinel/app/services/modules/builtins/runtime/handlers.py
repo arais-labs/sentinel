@@ -82,8 +82,10 @@ async def handle_tmux(payload, runtime):
                     await publish()
                 finally:
                     # A failed UI refresh must not suppress the agent's report.
+                    # The agent that ran it gets the report: a sub-agent borrows its parent's
+                    # terminals (session_id), but its results are its own.
                     await notify_runtime_job_completed(
-                        session_id,
+                        str(runtime.session_id or session_id),
                         job,
                         stdout_tail=stdout[-8000:],
                         stderr_tail=stderr[-8000:],

@@ -1,5 +1,5 @@
 export type NotificationSeverity = 'info' | 'success' | 'warning' | 'error' | 'urgent';
-export interface NotificationTarget { instanceName?: string; sessionId?: string; workspaceId?: string }
+export interface NotificationTarget { instanceName?: string; sessionId?: string; workspaceId?: string; /** an MCP server waiting for the user to sign in */ mcpServerId?: string }
 export interface NotificationInput {
   source: string;
   key?: string;

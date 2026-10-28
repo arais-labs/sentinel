@@ -1,24 +1,220 @@
-"""Provider protocol regressions: cache accounting and lossless continuations."""
+"""Provider protocol regressions: compatibility, retries, and lossless continuations."""
 
+import asyncio
 import json
+
+import httpx
 import pytest
 from sentral.llm.providers.anthropic import (
     AnthropicProvider,
     _map_anthropic_stop_reason,
 )
 from sentral.llm.generic.types import (
+    ReasoningConfig,
     SystemMessage,
     UserMessage,
     ToolSchema,
     ToolResultMessage,
 )
+from sentral.llm.generic.errors import is_retryable, status_code
+from sentral.llm.providers.codex import CodexProvider
+from sentral.llm.tier_defaults import TierDefaults
+from sentral.llm.ids import TierName
+from app.services.llm.tier import TierConfig, TierModelConfig, TierProvider
 from sentral.llm.runtime_adapter import SentinelProviderAdapter
 from sentral import GenerationConfig
 from tests.test_llm_providers import (
     _FakeAsyncClient,
     _FakeResponse,
     _FakeStreamResponse,
+    _TierCaptureProvider,
 )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider_name", ["anthropic", "codex"])
+@pytest.mark.parametrize("tier", ["fast", "normal", "hard"])
+async def test_subscription_defaults_send_compatible_client_versions(provider_name, tier):
+    defaults = TierDefaults()
+    model = getattr(defaults, f"tier_{tier}_{provider_name}_model")
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        if request.url.path.endswith("/codex/models"):
+            # A stale client catalog deliberately excludes the current defaults.
+            models = (
+                [{"slug": model, "use_responses_lite": True}]
+                if request.url.params["client_version"] == "0.160.0"
+                else []
+            )
+            return httpx.Response(200, json={"models": models})
+        payload = json.loads(request.content)
+        assert payload["model"] == model
+        if provider_name == "codex":
+            assert request.headers["x-openai-internal-codex-responses-lite"] == "true"
+            return httpx.Response(
+                200,
+                text='data: {"type":"response.completed","response":{"status":"completed","output":[]}}\n\n',
+            )
+        assert request.headers["user-agent"] == "claude-cli/2.1.284 (external, cli)"
+        assert request.headers["x-anthropic-billing-header"].startswith(
+            f"cc_version=2.1.284.{model};"
+        )
+        return httpx.Response(200, json={"model": model, "content": [], "usage": {}})
+
+    def client_factory():
+        return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    provider = (
+        AnthropicProvider("sk-ant-oat-test", client_factory=client_factory)
+        if provider_name == "anthropic"
+        else CodexProvider("test-token", transport="sse", client_factory=client_factory)
+    )
+    result = await provider.chat(
+        [UserMessage(content="Hello")], model, reasoning_config=ReasoningConfig()
+    )
+    assert result.model == model
+    assert len(requests) == (1 if provider_name == "anthropic" else 2)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["chat", "stream", "count_input_tokens"])
+async def test_claude_client_version_rejection_does_not_refresh_credentials(operation):
+    def handler(request):
+        return httpx.Response(
+            400,
+            json={
+                "error": {
+                    "message": "Unsupported client version",
+                    "details": {"error_code": "claude_code_version_too_old"},
+                },
+                "request_id": "synthetic-metadata",
+            },
+        )
+
+    async def renew(previous):
+        pytest.fail("A compatibility error must not refresh credentials")
+
+    provider = AnthropicProvider(
+        "sk-ant-oat-test",
+        renew_credentials=renew,
+        client_factory=lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    with pytest.raises(RuntimeError, match="Update Sentinel") as raised:
+        if operation == "stream":
+            _ = [event async for event in provider.stream([], "claude-opus-5-5")]
+        else:
+            await getattr(provider, operation)([], "claude-opus-5-5")
+    assert not is_retryable(raised.value)
+    assert "synthetic-metadata" not in str(raised.value)
+    assert "reconnect" not in str(raised.value).lower()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("code,retryable", [(400, False), (429, True), (503, True)])
+async def test_claude_stream_http_errors_preserve_retry_classification(code, retryable):
+    provider = AnthropicProvider(
+        "test-key",
+        client_factory=lambda: httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda request: httpx.Response(code, text="Rejected"))
+        ),
+    )
+    with pytest.raises(httpx.HTTPStatusError) as raised:
+        _ = [event async for event in provider.stream([], "claude-opus-5-5")]
+    assert status_code(raised.value) == code
+    assert is_retryable(raised.value) is retryable
+    assert raised.value.response.text == "Rejected"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cached", [False, True])
+async def test_codex_catalog_network_failure_uses_only_an_existing_snapshot(cached):
+    def handler(request):
+        raise httpx.ConnectError("Connection unavailable", request=request)
+
+    provider = CodexProvider(
+        "test-token",
+        client_factory=lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    if cached:
+        provider._model_catalog_by_slug = {"gpt-6.1-sol": {"slug": "gpt-6.1-sol"}}
+        assert await provider.list_model_ids() == ["gpt-6.1-sol"]
+    else:
+        with pytest.raises(httpx.ConnectError) as raised:
+            await provider.list_model_ids()
+        assert is_retryable(raised.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("failure", ["claude_version", "codex_missing_model", "codex_unavailable"])
+async def test_subscription_failures_retry_only_transient_errors_before_fallback(
+    monkeypatch, streaming, failure
+):
+    calls, sleeps, notifications = [], [], []
+
+    def handler(request):
+        calls.append(request.url.path)
+        if failure == "claude_version":
+            return httpx.Response(
+                400,
+                json={"error": {"details": {"error_code": "claude_code_version_too_old"}}},
+            )
+        if failure == "codex_unavailable":
+            return httpx.Response(503, text="Temporarily unavailable")
+        return httpx.Response(200, json={"models": []})
+
+    async def sleep(seconds):
+        sleeps.append(seconds)
+
+    async def notify(notification):
+        notifications.append(notification)
+
+    monkeypatch.setattr("app.services.llm.tier.publish_notification", notify)
+
+    def client_factory():
+        return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    primary = (
+        AnthropicProvider("sk-ant-oat-test", client_factory=client_factory)
+        if failure == "claude_version"
+        else CodexProvider("test-token", transport="sse", client_factory=client_factory)
+    )
+    fallback = _TierCaptureProvider("openai")
+    provider = TierProvider(
+        tiers={
+            TierName.NORMAL: TierConfig(
+                primary=TierModelConfig(
+                    primary,
+                    "claude-opus-5-5" if failure == "claude_version" else "gpt-6.1-sol",
+                    ReasoningConfig(),
+                ),
+                fallbacks=[TierModelConfig(fallback, "fallback-model", ReasoningConfig())],
+            )
+        },
+        max_retries=3,
+        sleep_func=sleep,
+    )
+    if streaming:
+        events = [event async for event in provider.stream([], "normal")]
+        assert events[-1].type == "done"
+        assert len(fallback.stream_calls) == 1
+    else:
+        result = await provider.chat([], "normal")
+        assert result.provider == "openai"
+        assert len(fallback.chat_calls) == 1
+    await asyncio.gather(*provider._notification_tasks)
+    assert len(calls) == (3 if failure == "codex_unavailable" else 1)
+    assert len(sleeps) == (2 if failure == "codex_unavailable" else 0)
+    assert len(notifications) == 1
+    assert "reconnect" not in notifications[0].message.lower()
+    if failure == "claude_version":
+        assert "Update Sentinel" in notifications[0].message
+    elif failure == "codex_missing_model":
+        assert "Codex catalog" in notifications[0].message
+    else:
+        assert "http_503" in notifications[0].message
 
 
 def test_claude_cache_prefix_is_stable_and_does_not_mutate_history():

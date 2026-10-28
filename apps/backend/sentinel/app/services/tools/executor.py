@@ -85,6 +85,8 @@ class ToolExecutor:
             runtime_context.instance_name = self._instance_name
         if runtime_context.agent_mode is None and agent_mode is not None:
             runtime_context.agent_mode = str(getattr(agent_mode, "value", agent_mode))
+        if tool.deferred and tool.server_id and runtime_context.session_id is not None:
+            await _load_server(runtime_context, tool.server_id)
         validate_payload(tool.schema_for(runtime_context.agent_mode) or {}, payload)
         with runtime_db_session_factory(runtime_context.db_session_factory):
             mode_definition = get_agent_mode_definition(agent_mode)
@@ -283,6 +285,27 @@ async def evaluate_approval_check(
     return evaluated
 
 
+async def _load_server(runtime: ToolRuntimeContext, server_id: str) -> None:
+    """An on-demand MCP server leaves the model's tool list when idle, but the model may still
+    call its tools from memory, without their schemas. Calling one loads the server again, so the
+    next step has its full schema instead of guessed argument types."""
+    from app.services.mcp import exposure
+
+    if runtime.db_session_factory is None:
+        return
+    try:
+        async with runtime.db_session_factory() as db:
+            await exposure.load(db, runtime.session_id, server_id)
+    except Exception:  # noqa: BLE001 - a convenience: never fail the call itself over it
+        logger.warning("Could not load MCP server %s for the session", server_id, exc_info=True)
+
+
+def _hint(field_schema: dict[str, Any]) -> str:
+    # The schema's own words (e.g. "Pass as a JSON number, unquoted") let the agent fix the call.
+    description = " ".join(str(field_schema.get("description") or "").split())
+    return f" ({description[:200]})" if description else ""
+
+
 def validate_payload(schema: dict[str, Any], payload: dict[str, Any]) -> None:
 
     properties = schema.get("properties", {})
@@ -326,23 +349,33 @@ def _validate_field(field_name: str, value: Any, field_schema: dict[str, Any]) -
 
         if expected_type == "string" and not isinstance(value, str):
 
-            raise ToolValidationError(f"Field '{field_name}' must be a string")
+            raise ToolValidationError(
+                f"Field '{field_name}' must be a string" + _hint(field_schema)
+            )
 
         if expected_type == "integer" and (not isinstance(value, int) or isinstance(value, bool)):
 
-            raise ToolValidationError(f"Field '{field_name}' must be an integer")
+            raise ToolValidationError(
+                f"Field '{field_name}' must be an integer" + _hint(field_schema)
+            )
 
         if expected_type == "boolean" and not isinstance(value, bool):
 
-            raise ToolValidationError(f"Field '{field_name}' must be a boolean")
+            raise ToolValidationError(
+                f"Field '{field_name}' must be a boolean" + _hint(field_schema)
+            )
 
         if expected_type == "object" and not isinstance(value, dict):
 
-            raise ToolValidationError(f"Field '{field_name}' must be an object")
+            raise ToolValidationError(
+                f"Field '{field_name}' must be an object" + _hint(field_schema)
+            )
 
         if expected_type == "array" and not isinstance(value, list):
 
-            raise ToolValidationError(f"Field '{field_name}' must be an array")
+            raise ToolValidationError(
+                f"Field '{field_name}' must be an array" + _hint(field_schema)
+            )
 
     enum = field_schema.get("enum")
 

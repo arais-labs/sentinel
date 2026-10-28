@@ -2747,7 +2747,7 @@ def test_text_is_yielded_before_server_completes():
 
 
 def catalog(request):
-    assert request.url.params["client_version"] == "0.153.4"
+    assert request.url.params["client_version"] == "0.160.0"
     return httpx.Response(
         200,
         json={

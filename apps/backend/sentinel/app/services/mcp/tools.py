@@ -6,7 +6,8 @@ from sentral.errors import ToolValidationError
 from sqlalchemy import select
 from app.models.mcp import MCPServer
 from app.schemas.mcp import MCPConnection
-from app.services.mcp import connections, exposure
+from app.services.mcp import connections, exposure, signin
+from app.services.mcp.errors import SignInRequired
 from app.services.modules.definitions import ActionDefinition, ModuleDefinition
 from app.services.modules.tool_adapter import build_module_tools
 from app.services.tools.registry import ToolRuntimeContext
@@ -63,25 +64,41 @@ def server_tools(server: MCPServer, session_factory, *, namespace: str | None = 
         async def execute(arguments, runtime: ToolRuntimeContext, name=remote_name):
             # Re-read before execution so disabling/removing a server takes effect
             # even for a previously assembled agent registry.
-            async with session_factory() as db:
-                current = await db.get(MCPServer, server.id)
-                if current is None or not current.enabled:
-                    raise PermissionError("This MCP server is disabled or removed")
-                config = MCPConnection.model_validate_json(current.config)
-            try:
-                result = await connections.call(
-                    session_factory,
-                    server.id,
-                    runtime.runtime_session_id or runtime.session_id,
-                    config,
-                    name,
-                    arguments,
-                )
-            except Exception:
-                # Transport errors can contain authorization headers or URL secrets.
-                raise RuntimeError(
-                    "MCP call failed. Check the server connection; the call was not retried."
-                ) from None
+            for attempt in range(2):
+                async with session_factory() as db:
+                    current = await db.get(MCPServer, server.id)
+                    if current is None or not current.enabled:
+                        raise PermissionError("This MCP server is disabled or removed")
+                    config = MCPConnection.model_validate_json(current.config)
+                try:
+                    result = await connections.call(
+                        session_factory,
+                        server.id,
+                        runtime.runtime_session_id or runtime.session_id,
+                        config,
+                        name,
+                        arguments,
+                    )
+                    break
+                except SignInRequired:
+                    # The provider expired the sign-in: the call waits for the user to sign in
+                    # again (Settings and a notification ask), then runs once more.
+                    if attempt or not await signin.wait(
+                        session_factory,
+                        server.id,
+                        server.name,
+                        instance_name=runtime.instance_name,
+                        session_id=runtime.session_id,
+                    ):
+                        raise ToolValidationError(
+                            f"{server.name} needs you to sign in. Sign-in was not completed "
+                            f"within {signin.WAIT_SECONDS // 60} minutes, so the call was not made."
+                        ) from None
+                except Exception:
+                    # Transport errors can contain authorization headers or URL secrets.
+                    raise RuntimeError(
+                        "MCP call failed. Check the server connection; the call was not retried."
+                    ) from None
             if result.get("isError"):
                 message = "\n".join(
                     block.get("text", "")

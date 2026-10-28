@@ -73,3 +73,6 @@ tmp/
 .desktop-dev/
 
 apps/desktop/sentinel/.test-dist/
+
+# Local agent rules ignored (can be added at the dev's discretion)
+AGENTS.md

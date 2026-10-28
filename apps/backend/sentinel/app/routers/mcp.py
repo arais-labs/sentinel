@@ -22,7 +22,9 @@ def public_server(server):
         "transport": config.transport,
         "enabled": server.enabled,
         "always_load": server.always_load,
-        "authenticated": bool(config.oauth.get("tokens")),
+        "authenticated": bool(config.oauth.get("tokens"))
+        and not config.oauth.get("sign_in_required"),
+        "sign_in_required": bool(config.oauth.get("sign_in_required")),
         "connection": {
             "transport": "stdio" if config.transport == "stdio" else "auto",
             "url": config.url,
@@ -154,9 +156,13 @@ async def connection_status(server_id: str, request: Request, db: AsyncSession =
     server = await get_server(db, server_id)
     context = get_request_instance_runtime_context(request)
     login = oauth.get(context.session_factory, server_id)
-    return (
-        login.public() if login else {"status": "connected" if server.enabled else "disconnected"}
-    )
+    if login:
+        return login.public()
+    if server.enabled and MCPConnection.model_validate_json(server.config).oauth.get(
+        "sign_in_required"
+    ):
+        return {"status": "sign_in_required"}
+    return {"status": "connected" if server.enabled else "disconnected"}
 
 
 @router.delete("/{server_id}/connection", status_code=204)

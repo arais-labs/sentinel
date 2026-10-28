@@ -19,6 +19,16 @@ def http_status(error):
     return None
 
 
+def needs_sign_in(error):
+    """Whether a connection failed because the server needs the user to sign in."""
+    if isinstance(error, SignInRequired):
+        return True
+    if any(needs_sign_in(child) for child in getattr(error, "exceptions", [])):
+        return True
+    cause = error.__cause__ or error.__context__
+    return cause is not None and cause is not error and needs_sign_in(cause)
+
+
 def connection_message(error):
     if isinstance(error, SignInRequired) or http_status(error) in {401, 403}:
         return "This server requires sign-in. Connect it from MCP settings."

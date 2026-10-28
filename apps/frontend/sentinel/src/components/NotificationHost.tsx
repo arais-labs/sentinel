@@ -4,7 +4,7 @@ import { AlertCircle, Bell, Check, ChevronRight, Loader2, X } from 'lucide-react
 import { useNavigate } from 'react-router-dom';
 import type { AppNotification } from '../../../../desktop/sentinel/src/shared/notifications';
 import { connectNotifications, hideNotificationBanner, updateNotification, useNotificationStore } from '../lib/notifications';
-import { openWorkspaceTab } from '../lib/workspace-navigation';
+import { openMcpSignIn, openWorkspaceTab } from '../lib/workspace-navigation';
 import './notifications.css';
 
 function NotificationBanner({ item, paused }: { item: AppNotification; paused: boolean }) {
@@ -32,7 +32,8 @@ function NotificationBanner({ item, paused }: { item: AppNotification; paused: b
     if (!target?.instanceName) return;
     void updateNotification(item.id, 'read').catch(() => {});
     hideNotificationBanner(item.id);
-    openWorkspaceTab(navigate, target.instanceName, target.sessionId ? 'sessions' : 'workspaces', { sessionId: target.sessionId });
+    if (target.mcpServerId) openMcpSignIn(navigate, target.instanceName, target.mcpServerId);
+    else openWorkspaceTab(navigate, target.instanceName, target.sessionId ? 'sessions' : 'workspaces', { sessionId: target.sessionId });
   };
   return <article className={`notification-banner severity-${item.severity}`} data-closing={closing}
     onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}
@@ -43,7 +44,7 @@ function NotificationBanner({ item, paused }: { item: AppNotification; paused: b
       <h3>{item.title}</h3>
       {item.message && <p>{item.message}</p>}
       {item.progress && <div className="notification-progress" aria-label="In progress"><span /></div>}
-      {item.target?.instanceName && <button className="notification-banner-open" onClick={open}>{item.target.sessionId ? 'Open session' : 'Open workspace'}<ChevronRight size={12} /></button>}
+      {item.target?.instanceName && <button className="notification-banner-open" onClick={open}>{item.target.mcpServerId ? 'Sign in' : item.target.sessionId ? 'Open session' : 'Open workspace'}<ChevronRight size={12} /></button>}
     </div>
     <button className="notification-banner-close" aria-label="Hide banner; keep in inbox" title="Hide banner" onClick={() => setClosing(true)}><X size={14} /></button>
   </article>;

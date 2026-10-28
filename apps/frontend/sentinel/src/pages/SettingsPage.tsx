@@ -243,12 +243,15 @@ function ProviderConnectionSettings({
 export function SettingsPage({ initialSection = 'providers' }: { initialSection?: 'providers' | 'git' | 'telegram' } = {}) {
   const instance = useInstanceName();
   const location = useLocation();
-  const destination = location.state as { settingsInstance?: string; settingsSection?: string } | null;
-  const voiceSettingsRequested = destination?.settingsInstance === instance && destination?.settingsSection === 'voice';
-  const [section, setSection] = useState<'providers' | 'voice' | 'backup' | 'services' | 'updates' | 'appearance' | 'git' | 'telegram' | 'mcp'>(() => voiceSettingsRequested ? 'voice' : initialSection);
+  const destination = location.state as { settingsInstance?: string; settingsSection?: string; mcpSignIn?: string } | null;
+  const requested = destination?.settingsInstance === instance && (destination?.settingsSection === 'voice' || destination?.settingsSection === 'mcp')
+    ? destination.settingsSection : null;
+  const [section, setSection] = useState<'providers' | 'voice' | 'backup' | 'services' | 'updates' | 'appearance' | 'git' | 'telegram' | 'mcp'>(() => requested ?? initialSection);
   useEffect(() => {
-    if (voiceSettingsRequested) setSection('voice');
-  }, [location.key, voiceSettingsRequested]);
+    if (requested) setSection(requested);
+  }, [location.key, requested]);
+  // An MCP server an agent's call waits on: Settings starts its sign-in once per request.
+  const mcpSignIn = requested === 'mcp' && destination?.mcpSignIn ? { serverId: destination.mcpSignIn, key: location.key } : undefined;
 
 
   const [providerStatus, setProviderStatus] = useState<ProvidersStatusResponse | null>(null);
@@ -547,7 +550,7 @@ export function SettingsPage({ initialSection = 'providers' }: { initialSection?
           {window.sentinelDesktop && <><button className="menu-selection-item" type="button" aria-current={section === 'services' ? 'page' : undefined} onClick={() => setSection('services')}><Server size={16} />Services</button><button className="menu-selection-item" type="button" aria-current={section === 'updates' ? 'page' : undefined} onClick={() => setSection('updates')}><Download size={16} />Updates</button></>}
         </nav>
         <main className="settings-content"><div className="settings-layout">
-        {section === 'mcp' && <MCPSettings />}
+        {section === 'mcp' && <MCPSettings signIn={mcpSignIn} />}
         {section === 'git' && <GitPage embedded />}
         {section === 'voice' && <VoiceSettings />}
         {section === 'telegram' && <TelegramPage embedded />}

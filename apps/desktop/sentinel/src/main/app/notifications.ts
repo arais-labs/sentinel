@@ -16,10 +16,11 @@ export function validateNotification(value: NotificationInput): void {
       || (value.progress !== undefined && typeof value.progress !== 'boolean')
       || (value.durationMs !== undefined && (!Number.isFinite(value.durationMs) || value.durationMs < 1000 || value.durationMs > 30000))) throw new Error('Invalid notification');
   if (value.target) {
-    const { instanceName, sessionId, workspaceId } = value.target;
+    const { instanceName, sessionId, workspaceId, mcpServerId } = value.target;
     if ((instanceName !== undefined && !bounded(instanceName, 80))
         || (sessionId !== undefined && (typeof sessionId !== 'string' || !uuid.test(sessionId)))
-        || (workspaceId !== undefined && (typeof workspaceId !== 'string' || !uuid.test(workspaceId)))) throw new Error('Invalid notification target');
+        || (workspaceId !== undefined && (typeof workspaceId !== 'string' || !uuid.test(workspaceId)))
+        || (mcpServerId !== undefined && (typeof mcpServerId !== 'string' || !/^[0-9a-f]{32}$/.test(mcpServerId)))) throw new Error('Invalid notification target');
   }
 }
 

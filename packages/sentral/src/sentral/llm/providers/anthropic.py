@@ -38,7 +38,8 @@ _OAUTH_BASE_BETAS = [
     "prompt-caching-scope-2026-01-05",
     "context-management-2025-06-27",
 ]
-_CLAUDE_CODE_VERSION = "2.1.263"
+# Subscription protocol compatibility, independent of any locally installed CLI.
+_CLAUDE_CODE_VERSION = "2.1.284"
 _CLAUDE_CODE_SYSTEM_PREFIX = "You are Claude Code, Anthropic's official CLI for Claude."
 _BOUND_THINKING_MODELS = ("claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-1")
 _THINKING_BINDING_BETA = "thinking-binding-controls-2026-08-01"
@@ -186,9 +187,24 @@ class AnthropicProvider(LLMProvider):
                 json=payload,
                 headers=self._headers(model=model, fast_mode=payload.get("speed") == "fast"),
             )
-        response.raise_for_status()
+        self._raise_for_status(response)
 
         return self._message(response.json(), model)
+
+    @staticmethod
+    def _raise_for_status(response: httpx.Response) -> None:
+        if response.status_code == 400:
+            try:
+                error = response.json().get("error") or {}
+                code = (error.get("details") or {}).get("error_code")
+            except (ValueError, AttributeError):
+                code = None
+            if code == "claude_code_version_too_old":
+                raise RuntimeError(
+                    "Sentinel's Claude subscription client is too old for this model. "
+                    "Update Sentinel or choose another model."
+                )
+        response.raise_for_status()
 
     def supports_fast_mode(self, model: str) -> bool:
 
@@ -287,7 +303,7 @@ class AnthropicProvider(LLMProvider):
                 json=payload,
                 headers=self._headers(model=model, fast_mode=payload.get("speed") == "fast"),
             )
-            response.raise_for_status()
+            self._raise_for_status(response)
             return int(response.json()["input_tokens"])
 
     def _message(self, data, model):
@@ -370,13 +386,9 @@ class AnthropicProvider(LLMProvider):
                 json=payload,
                 headers=self._headers(model=model, fast_mode=payload.get("speed") == "fast"),
             ) as response:
-                if response.status_code == 401:
-                    response.raise_for_status()
                 if response.is_error:
-                    body = await response.aread()
-                    detail = body.decode("utf-8", errors="replace").strip()
-                    snippet = detail[:500] if detail else "<no response body>"
-                    raise RuntimeError(f"Anthropic stream http_{response.status_code}: {snippet}")
+                    await response.aread()
+                    self._raise_for_status(response)
                 async for raw_line in response.aiter_lines():
                     line = raw_line.strip()
                     if not line or not line.startswith("data:"):

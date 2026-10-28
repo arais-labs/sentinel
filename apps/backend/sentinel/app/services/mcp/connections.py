@@ -8,6 +8,7 @@ from typing import Any
 from app.schemas.mcp import MCPConnection
 from app.services.mcp import oauth
 from app.services.mcp.client import connect, serialize_result
+from app.services.mcp.errors import SignInRequired, connection_message, needs_sign_in
 
 IDLE_SECONDS = 900
 
@@ -28,6 +29,8 @@ class Connection:
 
     async def run(self):
         current = None
+        reason = "MCP connection closed; the call was not retried"
+        sign_in = False
         try:
             async with connect(self.config, self.auth) as session:
                 while True:
@@ -45,9 +48,11 @@ class Connection:
                     current = None
         except asyncio.CancelledError:
             raise
-        except Exception:
-            # Never return credentials from transport errors or replay a call.
-            pass
+        except Exception as error:
+            # Never return credentials from transport errors or replay a call: only a safe reason.
+            reason = f"{connection_message(error)} The call was not retried."
+            sign_in = needs_sign_in(error)
+
         finally:
             pending = [current] if current else []
             while not self.queue.empty():
@@ -55,7 +60,7 @@ class Connection:
             for request in pending:
                 if not request.result.done():
                     request.result.set_exception(
-                        RuntimeError("MCP connection closed; the call was not retried")
+                        SignInRequired(reason) if sign_in else RuntimeError(reason)
                     )
 
     async def call(self, name, arguments):
